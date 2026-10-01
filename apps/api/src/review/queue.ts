@@ -38,8 +38,12 @@ async function loadCards(tx: Tx, userId: string, boardId: string | null): Promis
   return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs }));
 }
 
-async function loadStates(tx: Tx, userId: string, boardId: string | null) {
-  const scope = boardId ? sql`and card_id in (select id from cards where board_id = ${boardId})` : sql``;
+/**
+ * `cardIds` null = every state of the user. Scoping by ids (PK lookups) instead of a subquery on `cards`: the cards RLS
+ * subquery isn't leakproof, so `card_id in (select … from cards)` planned as a nested loop (~200 ms for 500 cards).
+ */
+async function loadStates(tx: Tx, userId: string, cardIds: string[] | null) {
+  const scope = cardIds ? sql`and card_id = any(${`{${cardIds.join(',')}}`}::uuid[])` : sql``;
   const rows = await tx.execute<{
     card_id: string; sub_id: string; stability: number; difficulty: number; due_ms: number; reps: number; lapses: number;
     last_ms: number | null; state: FsrsCardState; learning_steps: number; scheduled_days: number; created_ms: number;
@@ -61,7 +65,7 @@ async function loadStates(tx: Tx, userId: string, boardId: string | null) {
 }
 
 /** "Today" = user's timezone, rolling over at 04:00 local. Returns the next rollover and the start of the current study day (epoch ms). */
-async function dayWindow(tx: Tx, userId: string, now: Date) {
+export async function dayWindow(tx: Tx, userId: string, now: Date) {
   const [p] = await tx.execute<{ tz: string }>(sql`select timezone as tz from profiles where user_id = ${userId}`);
   let tz = p?.tz ?? DEFAULT_TZ;
   try {
@@ -69,11 +73,11 @@ async function dayWindow(tx: Tx, userId: string, now: Date) {
   } catch {
     tz = DEFAULT_TZ;
   }
-  const [w] = await tx.execute<{ start_ms: number; end_ms: number }>(sql`
+  const [w] = await tx.execute<{ start_ms: number; end_ms: number; day: string }>(sql`
     with l as (select ((${now.toISOString()}::timestamptz at time zone ${tz}::text) - make_interval(hours => ${ROLLOVER_HOUR}))::date as d)
-    select (extract(epoch from ((l.d + time '04:00') at time zone ${tz}::text)) * 1000)::float8 as start_ms,
+    select l.d::text as day, (extract(epoch from ((l.d + time '04:00') at time zone ${tz}::text)) * 1000)::float8 as start_ms,
            (extract(epoch from (((l.d + 1) + time '04:00') at time zone ${tz}::text)) * 1000)::float8 as end_ms from l`);
-  return { startMs: Math.round(w!.start_ms), endMs: Math.round(w!.end_ms) };
+  return { startMs: Math.round(w!.start_ms), endMs: Math.round(w!.end_ms), day: w!.day };
 }
 
 /** D-057: concept/case = the card; flow = one item per step; image = one per mask. */
@@ -153,7 +157,8 @@ export async function computeRetrievability(userId: string, boardId: string, now
   return run(userId, async (tx) => {
     const [b] = await tx.execute<{ id: string }>(sql`select id from boards where id = ${boardId}`);
     if (!b) return err<RetrievabilityMap>('not_found', 'board not found');
-    const [cards, states] = await Promise.all([loadCards(tx, userId, boardId), loadStates(tx, userId, boardId)]);
+    const cards = await loadCards(tx, userId, boardId);
+    const states = await loadStates(tx, userId, cards.map((c) => c.id));
     const map: RetrievabilityMap = {};
     for (const c of cards) {
       let earliest: Date | null = null;

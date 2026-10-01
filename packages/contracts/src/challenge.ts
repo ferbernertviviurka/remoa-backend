@@ -3,14 +3,50 @@ import { challengeModes, sessionKinds } from './enums';
 import { idSchema, subIdSchema, timestampSchema } from './common';
 import { gradeSchema, intervalPreviewSchema } from './review';
 import { graderVerdictSchema } from './ai';
+import { caseStageSchema, maskPointSchema } from './card';
+
+/** Default and max items per session (PRD: 12 items in < 8 min; "Mais 5" starts a 5-item session). */
+export const SESSION_SIZE = 12;
+export const MAX_SKIPS_PER_ITEM = 2;
+
+/**
+ * What the screen shows around the question. Never contains the answer: the answer card/label is left out of
+ * `neighbors`, and occlusion masks carry polygons only (labels are answers).
+ */
+export const challengeContextSchema = z.object({
+  /** "No mapa": neighbour cards with the connection label (null = unlabelled). */
+  neighbors: z.array(z.object({ title: z.string(), label: z.string().nullable() })).max(12),
+  /** next_step: steps 1..k; case: revealed stage texts, in order. */
+  revealed: z.array(z.string()).optional(),
+  /** case: the stage being asked. */
+  stage: caseStageSchema.optional(),
+  /** occlusion: the image and every mask polygon; `maskId` is the one asked (covered differently). */
+  image: z
+    .object({
+      assetId: idSchema,
+      maskId: idSchema,
+      masks: z.array(z.object({ id: idSchema, polygon: z.array(maskPointSchema).min(3) })),
+    })
+    .optional(),
+  /** edge: the two ends ("O que liga A a B?"). */
+  edge: z.object({ fromTitle: z.string(), toTitle: z.string() }).optional(),
+});
+export type ChallengeContext = z.infer<typeof challengeContextSchema>;
+
+/** Text answers are AI-graded only against an approved rubric, or the student's own rubric on a private card ("rubrica sua"). */
+export const gradingKinds = ['rubric_approved', 'rubric_own', 'none'] as const;
 
 /** Server-side item, frozen in `sessions.items`. `canonical` never leaves the server before answer/reveal. */
 export const challengeItemSchema = z.object({
   id: z.string().min(1),
   cardId: idSchema,
+  boardId: idSchema,
+  cardTitle: z.string(),
   subId: subIdSchema,
   mode: z.enum(challengeModes),
   prompt: z.string().min(1),
+  context: challengeContextSchema,
+  grading: z.enum(gradingKinds),
   options: z.array(z.string().min(1)).length(4).optional(),
   canonical: z.string().min(1),
 });
@@ -31,8 +67,10 @@ export const challengeSessionSchema = z.object({
 });
 export type ChallengeSession = z.infer<typeof challengeSessionSchema>;
 
-export const startSessionInputSchema = z.object({ kind: z.enum(sessionKinds), boardId: idSchema.optional() });
-export type StartSessionInput = z.infer<typeof startSessionInputSchema>;
+export const startSessionInputSchema = z
+  .object({ kind: z.enum(sessionKinds), boardId: idSchema.optional(), limit: z.number().int().min(1).max(SESSION_SIZE).default(SESSION_SIZE) })
+  .refine((v) => (v.kind === 'board') === !!v.boardId, 'board sessions need boardId (and only they)');
+export type StartSessionInput = z.input<typeof startSessionInputSchema>;
 export const startSessionOutputSchema = z.object({ sessionId: idSchema, items: z.array(challengeItemPublicSchema) });
 export type StartSessionOutput = z.infer<typeof startSessionOutputSchema>;
 
@@ -52,6 +90,8 @@ export const answerOutputSchema = z.object({
   suggestedGrade: gradeSchema.nullable(),
   /** true when criticalError locks the grade at `again`. */
   gradeLocked: z.boolean(),
+  /** Why a text answer was not AI-graded (the UI falls back to self-assessment and says why); null otherwise. */
+  fallback: z.enum(['no_rubric', 'quota', 'grader_error']).nullable(),
   preview: intervalPreviewSchema,
 });
 export type AnswerOutput = z.infer<typeof answerOutputSchema>;

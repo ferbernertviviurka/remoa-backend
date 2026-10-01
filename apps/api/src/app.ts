@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
-import { errorHttpStatus, type AppError, type HttpErrorBody } from '@remoa/contracts';
+import { errorHttpStatus, type AppError, type GradeAnswer, type HttpErrorBody } from '@remoa/contracts';
 import { boardsRoutes } from './routes/boards';
 import { cardsRoutes } from './routes/cards';
+import { challengeRoutes } from './routes/challenge';
 import { reviewRoutes } from './routes/review';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
@@ -15,7 +16,7 @@ export type Env = { Variables: { requestId: string; log: Logger; userId: string 
 
 export const fail = (error: AppError) => Response.json({ error } satisfies HttpErrorBody, { status: errorHttpStatus[error.code] });
 
-export function createApp({ verifyToken, webOrigin }: { verifyToken: VerifyToken; webOrigin: string }) {
+export function createApp({ verifyToken, webOrigin, grade }: { verifyToken: VerifyToken; webOrigin: string; grade?: GradeAnswer }) {
   const app = new Hono<Env>();
 
   app.use('*', async (c, next) => {
@@ -46,6 +47,7 @@ export function createApp({ verifyToken, webOrigin }: { verifyToken: VerifyToken
 
   app.use('/v1/cards', requireUser).use('/v1/cards/*', requireUser).route('/v1/cards', cardsRoutes);
   app.use('/v1/review', requireUser).use('/v1/review/*', requireUser).route('/v1/review', reviewRoutes);
+  app.use('/v1/challenge', requireUser).use('/v1/challenge/*', requireUser).route('/v1/challenge', challengeRoutes({ grade }));
   app.use('/v1/uploads', requireUser).use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
   app.use('/v1/assets', requireUser).use('/v1/assets/*', requireUser).route('/v1/assets', assetsRoutes);
 

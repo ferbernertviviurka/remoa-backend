@@ -58,6 +58,7 @@ export const reviewQueue = pgTable('review_queue', {
   reviewerId: uuid('reviewer_id').references(() => authUsers.id),
   note: text('note'),
   flagSource: flagSourceEnum('flag_source'),
+  attemptId: uuid('attempt_id').references(() => attempts.id, { onDelete: 'set null' }), // F04 dispute → F10
   ...timestamps,
 });
 

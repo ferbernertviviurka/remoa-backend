@@ -210,7 +210,16 @@ export const completeUpload: Api.CompleteUpload = async (_userId, { key, license
 function buildItem(q: (typeof reviewQueueFixture)[number], i: number): ChallengeItem | null {
   const card = cards.find((c) => c.id === q.cardId);
   if (!card) return null;
-  const base = { id: `item-${i}`, cardId: card.id, subId: q.subId ?? null, mode: q.mode ?? 'hidden_card' };
+  const base = {
+    id: `item-${i}`,
+    cardId: card.id,
+    boardId: card.boardId,
+    cardTitle: card.title,
+    subId: q.subId ?? null,
+    mode: q.mode ?? 'hidden_card',
+    context: { neighbors: [] },
+    grading: card.rubric ? ('rubric_own' as const) : ('none' as const),
+  };
   if (card.type === 'flow') {
     const steps = card.payload.steps;
     const idx = Math.max(0, steps.findIndex((s) => s.id === q.subId));
@@ -243,13 +252,13 @@ export const answer: Api.Answer = async (userId, input) => {
   const { item } = found;
   const preview = review.preview(null, new Date());
   if (input.inputKind === 'self')
-    return ok({ canonical: item.canonical, verdict: null, suggestedGrade: null, gradeLocked: false, preview });
+    return ok({ canonical: item.canonical, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: null, preview });
   if (input.inputKind === 'mcq') {
     const right = item.options?.[input.optionIndex] === item.canonical;
-    return ok({ canonical: item.canonical, verdict: null, suggestedGrade: right ? 'good' : 'again', gradeLocked: false, preview });
+    return ok({ canonical: item.canonical, verdict: null, suggestedGrade: right ? 'good' : 'again', gradeLocked: false, fallback: null, preview });
   }
   const card = cards.find((c) => c.id === item.cardId);
-  if (!card?.rubric) return ok({ canonical: item.canonical, verdict: null, suggestedGrade: null, gradeLocked: false, preview });
+  if (!card?.rubric) return ok({ canonical: item.canonical, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: 'no_rubric', preview });
   const quota = await assertQuota(userId, 'ai_grades');
   if (!quota.ok) return quota;
   usage.ai_grades++;
@@ -261,6 +270,7 @@ export const answer: Api.Answer = async (userId, input) => {
     verdict: v,
     suggestedGrade: review.verdictToGrade(v, { durationMs: input.durationMs, medianMs: null }),
     gradeLocked: v.criticalError,
+    fallback: null,
     preview,
   });
 };

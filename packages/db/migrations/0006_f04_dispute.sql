@@ -1,0 +1,2 @@
+ALTER TABLE "review_queue" ADD COLUMN "attempt_id" uuid;--> statement-breakpoint
+ALTER TABLE "review_queue" ADD CONSTRAINT "review_queue_attempt_id_attempts_id_fk" FOREIGN KEY ("attempt_id") REFERENCES "public"."attempts"("id") ON DELETE set null ON UPDATE no action;
