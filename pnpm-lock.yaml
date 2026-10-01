@@ -44,16 +44,28 @@ importers:
       '@remoa/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@remoa/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@remoa/log':
         specifier: workspace:*
         version: link:../../packages/log
       '@supabase/supabase-js':
         specifier: ^2.117.2
         version: 2.117.2
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(@types/sql.js@1.4.11)(postgres@3.4.9)(sql.js@1.14.2)
       hono:
         specifier: ^4.13.12
         version: 4.13.12
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
     devDependencies:
+      dotenv:
+        specifier: ^17.0.0
+        version: 17.4.2
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

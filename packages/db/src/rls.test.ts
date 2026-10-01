@@ -56,4 +56,14 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await expect(m.withUser(b, (tx) => tx.insert(s.boards).values({ userId: b, title: 'x', status: 'seed_approved' }))).rejects.toThrow();
     await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ role: 'admin' }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
   });
+
+  it('edge cannot point at a card from another board (P-004)', async () => {
+    const [b1] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'b1' }).returning());
+    const [b2] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'b2' }).returning());
+    const [c1] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: b1!.id, title: 'c1' }).returning());
+    const [c2] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: b1!.id, title: 'c2' }).returning());
+    const [other] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: b2!.id, title: 'x' }).returning());
+    await m.withUser(a, (tx) => tx.insert(s.edges).values({ boardId: b1!.id, fromCardId: c1!.id, toCardId: c2!.id }));
+    await expect(m.withUser(a, (tx) => tx.insert(s.edges).values({ boardId: b1!.id, fromCardId: c1!.id, toCardId: other!.id }))).rejects.toThrow();
+  });
 });

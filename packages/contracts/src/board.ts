@@ -53,15 +53,17 @@ export type Edge = z.infer<typeof edgeSchema>;
 export const boardGraphSchema = z.object({ board: boardSchema, cards: z.array(cardSchema), edges: z.array(edgeSchema) });
 export type BoardGraph = z.infer<typeof boardGraphSchema>;
 
+const edgeLabelSchema = z.string().max(120).nullable();
+
 // --- Map operations (idempotent by opId; autosave queue, F01) --------------
 const op = <T extends string, S extends z.ZodRawShape>(name: T, shape: S) =>
   z.object({ op: z.literal(name), opId: idSchema, boardId: idSchema, ...shape });
 
 export const mapOpSchema = z.discriminatedUnion('op', [
-  op('moveCards', { moves: z.array(z.object({ cardId: idSchema, position: positionSchema })).min(1) }),
-  op('createCard', { card: z.object({ id: idSchema, type: z.enum(cardTypes), title: z.string().min(1), position: positionSchema }) }),
-  op('createEdge', { edge: edgeSchema.pick({ id: true, fromCardId: true, toCardId: true, label: true }) }),
-  op('updateEdgeLabel', { edgeId: idSchema, label: z.string().nullable() }),
+  op('moveCards', { moves: z.array(z.object({ cardId: idSchema, position: positionSchema })).min(1).max(500) }),
+  op('createCard', { card: z.object({ id: idSchema, type: z.enum(cardTypes), title: z.string().min(1).max(200), position: positionSchema }) }),
+  op('createEdge', { edge: edgeSchema.pick({ id: true, fromCardId: true, toCardId: true }).extend({ label: edgeLabelSchema }) }),
+  op('updateEdgeLabel', { edgeId: idSchema, label: edgeLabelSchema }),
   op('deleteCards', { cardIds: z.array(idSchema).min(1) }),
   op('deleteEdges', { edgeIds: z.array(idSchema).min(1) }),
 ]);

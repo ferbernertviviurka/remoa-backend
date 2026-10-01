@@ -1,0 +1,39 @@
+import { Hono } from 'hono';
+import {
+  applyMapOpsInputSchema, boardTitleSchema, createBoardInputSchema, errorHttpStatus, parseWith, updateBoardInputSchema,
+  type HttpErrorBody, type Result,
+} from '@remoa/contracts';
+import { z } from 'zod';
+import type { Env } from '../app';
+import { applyMapOps, createBoard, duplicateBoard, getBoard, listBoards, updateBoard } from '../boards/boards';
+
+const send = <T>(r: Result<T>, status: 200 | 201 = 200) =>
+  r.ok
+    ? Response.json({ ok: true, data: r.data }, { status })
+    : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
+
+const body = (req: Request) => req.json().catch(() => null);
+const duplicateInput = z.object({ title: boardTitleSchema });
+
+export const boardsRoutes = new Hono<Env>()
+  .get('/', async (c) => send(await listBoards(c.get('userId'))))
+  .post('/', async (c) => {
+    const input = parseWith(createBoardInputSchema, await body(c.req.raw));
+    return send(input.ok ? await createBoard(c.get('userId'), input.data) : input, 201);
+  })
+  .post('/ops', async (c) => {
+    const input = parseWith(applyMapOpsInputSchema, await body(c.req.raw));
+    if (!input.ok) return send(input);
+    const r = await applyMapOps(c.get('userId'), input.data.ops);
+    if (!r.ok) c.get('log').warn('map ops rejected', { code: r.error.code });
+    return send(r);
+  })
+  .get('/:id', async (c) => send(await getBoard(c.get('userId'), c.req.param('id'))))
+  .patch('/:id', async (c) => {
+    const input = parseWith(updateBoardInputSchema, await body(c.req.raw));
+    return send(input.ok ? await updateBoard(c.get('userId'), c.req.param('id'), input.data) : input);
+  })
+  .post('/:id/duplicate', async (c) => {
+    const input = parseWith(duplicateInput, await body(c.req.raw));
+    return send(input.ok ? await duplicateBoard(c.get('userId'), c.req.param('id'), input.data.title) : input, 201);
+  });

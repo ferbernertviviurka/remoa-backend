@@ -8,5 +8,7 @@ export const subIdSchema = z.string().min(1).nullable();
 /** 0..1 probability. */
 export const probabilitySchema = z.number().min(0).max(1);
 
-export const positionSchema = z.object({ x: z.number(), y: z.number() });
+/** Canvas px; bounded so it always fits the integer columns (F01 QA). */
+const coordSchema = z.number().finite().min(-1_000_000).max(1_000_000);
+export const positionSchema = z.object({ x: coordSchema, y: coordSchema });
 export type Position = z.infer<typeof positionSchema>;

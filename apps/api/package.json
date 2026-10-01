@@ -15,9 +15,13 @@
     "@remoa/contracts": "workspace:*",
     "@remoa/log": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
-    "hono": "^4.13.12"
+    "hono": "^4.13.12",
+    "@remoa/db": "workspace:*",
+    "drizzle-orm": "^0.45.3",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "dotenv": "^17.0.0"
   }
 }
