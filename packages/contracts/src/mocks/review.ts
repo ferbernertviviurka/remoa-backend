@@ -45,6 +45,8 @@ export const schedule: Schedule = (m, grade, now) => {
     lapses: (m?.lapses ?? 0) + (lapse ? 1 : 0),
     lastReview: now,
     state: grade === 'again' ? (lapse ? 'relearning' : 'learning') : 'review',
+    learningSteps: 0,
+    scheduledDays: days,
   };
 };
 
@@ -92,3 +94,6 @@ export const getBoardQueue: GetBoardQueue = async (_userId, boardId, { limit }) 
 
 export const getRetrievability: GetRetrievability = async (_userId, boardId) =>
   boardId === sepseBoardId ? ok(retrievabilityFixture) : err('not_found', 'board not found');
+
+/** Items due in the mock queue for a board (sidebar badge, F03 FR-8). */
+export const reviewQueueDueCount = (boardId: string) => reviewQueueFixture.filter((q) => q.boardId === boardId && q.reason === 'due').length;

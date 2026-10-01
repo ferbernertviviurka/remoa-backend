@@ -53,6 +53,9 @@ importers:
       '@remoa/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@remoa/fsrs':
+        specifier: workspace:*
+        version: link:../../packages/fsrs
       '@remoa/log':
         specifier: workspace:*
         version: link:../../packages/log

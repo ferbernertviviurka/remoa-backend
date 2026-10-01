@@ -36,6 +36,13 @@
       "when": 1790877843724,
       "tag": "0004_f02_masks_cascade",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790879282855,
+      "tag": "0005_f03_fsrs",
+      "breakpoints": true
     }
   ]
 }

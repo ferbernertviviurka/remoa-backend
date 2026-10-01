@@ -72,6 +72,7 @@ export const listBoards: Api.ListBoards = async (userId) =>
         updatedAt: b.updatedAt,
         cardCount: cards.filter((c) => c.boardId === b.id).length,
         edgeCount: edges.filter((e) => e.boardId === b.id).length,
+        dueCount: review.reviewQueueDueCount(b.id),
       })),
   );
 

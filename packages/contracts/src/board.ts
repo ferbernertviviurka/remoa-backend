@@ -36,7 +36,11 @@ export type UpdateBoardInput = z.infer<typeof updateBoardInputSchema>;
 /** Row in "Meus mapas" / sidebar. */
 export const boardSummarySchema = boardSchema
   .pick({ id: true, title: true, area: true, status: true, updatedAt: true })
-  .extend({ cardCount: z.number().int().nonnegative(), edgeCount: z.number().int().nonnegative() });
+  .extend({
+    cardCount: z.number().int().nonnegative(),
+    edgeCount: z.number().int().nonnegative(),
+    dueCount: z.number().int().nonnegative().default(0), // F03 FR-8: sidebar badge, items due today
+  });
 export type BoardSummary = z.infer<typeof boardSummarySchema>;
 
 export const edgeSchema = z.object({

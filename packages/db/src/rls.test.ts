@@ -66,4 +66,22 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await m.withUser(a, (tx) => tx.insert(s.edges).values({ boardId: b1!.id, fromCardId: c1!.id, toCardId: c2!.id }));
     await expect(m.withUser(a, (tx) => tx.insert(s.edges).values({ boardId: b1!.id, fromCardId: c1!.id, toCardId: other!.id }))).rejects.toThrow();
   });
+
+  it('fsrs_state and attempts only for readable cards, never for another user (F03, P-004)', async () => {
+    const [priv] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'privado' }).returning());
+    const [pc] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: priv!.id, title: 'c' }).returning());
+    const [seed] = await m.db.insert(s.boards).values({ userId: a, title: 'seed', status: 'seed_approved' }).returning();
+    const [sc] = await m.db.insert(s.cards).values({ boardId: seed!.id, title: 's' }).returning();
+    const st = (userId: string, cardId: string) => ({ userId, cardId, subId: '', due: new Date() });
+    const at = (userId: string, cardId: string) => ({ userId, cardId, mode: 'hidden_card' as const, inputKind: 'self' as const, grade: 3, durationMs: 1 });
+
+    await expect(m.withUser(b, (tx) => tx.insert(s.fsrsState).values(st(b, pc!.id)))).rejects.toThrow(); // unreadable card
+    await expect(m.withUser(b, (tx) => tx.insert(s.attempts).values(at(b, pc!.id)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.insert(s.fsrsState).values(st(a, sc!.id)))).rejects.toThrow(); // someone else's row
+    await expect(m.withUser(b, (tx) => tx.insert(s.attempts).values(at(a, sc!.id)))).rejects.toThrow();
+    await m.withUser(b, (tx) => tx.insert(s.fsrsState).values(st(b, sc!.id))); // readable seed card
+    await m.withUser(b, (tx) => tx.insert(s.attempts).values(at(b, sc!.id)));
+    expect(await m.withUser(a, (tx) => tx.select().from(s.fsrsState).where(eq(s.fsrsState.cardId, sc!.id)))).toHaveLength(0); // A cannot read B's state
+    expect(await m.withUser(a, (tx) => tx.select().from(s.attempts).where(eq(s.attempts.cardId, sc!.id)))).toHaveLength(0);
+  });
 });

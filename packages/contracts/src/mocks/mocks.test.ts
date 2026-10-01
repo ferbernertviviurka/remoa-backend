@@ -36,7 +36,7 @@ beforeEach(resetMocks);
 
 describe('fsrs mocks', () => {
   const mem = (over: Partial<FsrsMemory> = {}): FsrsMemory => ({
-    stability: 10, difficulty: 5, due: new Date(now.getTime() + DAY), reps: 3, lapses: 0, lastReview: now, state: 'review', ...over,
+    stability: 10, difficulty: 5, due: new Date(now.getTime() + DAY), reps: 3, lapses: 0, lastReview: now, state: 'review', learningSteps: 0, scheduledDays: 1, ...over,
   });
 
   it('retrievability follows the forgetting curve', () => {

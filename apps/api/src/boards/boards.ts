@@ -7,6 +7,7 @@ import {
 import type { Tx } from '@remoa/db';
 import { Abort, guard, run } from '../db';
 import { cardPreview } from '../cards/cards';
+import { dueCountByBoard } from '../review/queue';
 
 const notFound = () => err<never>('not_found', 'board not found');
 const isUuid = (v: string) => idSchema.safeParse(v).success;
@@ -15,8 +16,8 @@ const liveCardEnds = sql`join cards f on f.id = e.from_card_id and f.deleted_at 
 
 export const listBoards: ListBoards = async (userId) =>
   ok(
-    await run(userId, async (tx, s) =>
-      tx
+    await run(userId, async (tx, s) => {
+      const rows = await tx
         .select({
           id: s.boards.id, title: s.boards.title, area: s.boards.area, status: s.boards.status, updatedAt: s.boards.updatedAt,
           cardCount: sql<number>`(select count(*)::int from cards c where c.board_id = boards.id and c.deleted_at is null)`,
@@ -24,8 +25,10 @@ export const listBoards: ListBoards = async (userId) =>
         })
         .from(s.boards)
         .where(and(eq(s.boards.userId, userId), isNull(s.boards.archivedAt)))
-        .orderBy(desc(s.boards.updatedAt)),
-    ),
+        .orderBy(desc(s.boards.updatedAt));
+      const due = await dueCountByBoard(tx, userId, new Date()); // F03 FR-8: badge = due items of the board queue
+      return rows.map((r) => ({ ...r, dueCount: due.get(r.id) ?? 0 }));
+    }),
   );
 
 export const getBoard: GetBoard = async (userId, boardId) => {

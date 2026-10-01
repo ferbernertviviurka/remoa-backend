@@ -16,6 +16,9 @@ export const fsrsMemorySchema = z.object({
   lapses: z.number().int().nonnegative(),
   lastReview: timestampSchema.nullable(),
   state: z.enum(fsrsCardStates),
+  /** ts-fsrs short-term (re)learning step index and last interval (D-056). */
+  learningSteps: z.number().int().nonnegative().default(0),
+  scheduledDays: z.number().int().nonnegative().default(0),
 });
 export type FsrsMemory = z.infer<typeof fsrsMemorySchema>;
 
@@ -43,11 +46,21 @@ export type Attempt = z.infer<typeof attemptSchema>;
 export const queueReasons = ['due', 'new', 'weak'] as const;
 export const queueItemSchema = z.object({
   cardId: idSchema,
+  boardId: idSchema, // "7 em Sepse": the queue screen groups by board
   subId: subIdSchema.optional(),
   reason: z.enum(queueReasons),
   mode: z.enum(challengeModes).optional(),
 });
 export type QueueItem = z.infer<typeof queueItemSchema>;
+
+/** Default new items per day until entitlements (F08) set 20 Pro / 10 Free. */
+export const DEFAULT_NEW_PER_DAY = 20;
+/** GET /v1/review/queue?boardId&limit */
+export const queueQuerySchema = z.object({
+  boardId: idSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+export type QueueQuery = z.infer<typeof queueQuerySchema>;
 
 /** cardId → estimated recall and map colour. */
 export const retrievabilityMapSchema = z.record(

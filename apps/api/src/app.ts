@@ -4,6 +4,7 @@ import { createMiddleware } from 'hono/factory';
 import { errorHttpStatus, type AppError, type HttpErrorBody } from '@remoa/contracts';
 import { boardsRoutes } from './routes/boards';
 import { cardsRoutes } from './routes/cards';
+import { reviewRoutes } from './routes/review';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
 
@@ -44,6 +45,7 @@ export function createApp({ verifyToken, webOrigin }: { verifyToken: VerifyToken
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 
   app.use('/v1/cards', requireUser).use('/v1/cards/*', requireUser).route('/v1/cards', cardsRoutes);
+  app.use('/v1/review', requireUser).use('/v1/review/*', requireUser).route('/v1/review', reviewRoutes);
   app.use('/v1/uploads', requireUser).use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
   app.use('/v1/assets', requireUser).use('/v1/assets/*', requireUser).route('/v1/assets', assetsRoutes);
 

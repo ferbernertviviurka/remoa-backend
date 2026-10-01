@@ -151,13 +151,13 @@ export const sepseEdges: Edge[] = [
 
 /** "Revisar hoje" fixture: due by recall asc, then new, then weak. */
 export const reviewQueueFixture: QueueItem[] = [
-  { cardId: c.pacote, subId: 'step-5', reason: 'due', mode: 'next_step' },
-  { cardId: c.choque, reason: 'due', mode: 'edge' },
-  { cardId: c.sepse, reason: 'due', mode: 'hidden_card' },
-  { cardId: c.qsofa, reason: 'due', mode: 'hidden_card' },
-  { cardId: c.caso, reason: 'new', mode: 'case' },
-  { cardId: c.lactato, reason: 'new', mode: 'hidden_card' },
-  { cardId: c.pacote, subId: 'step-2', reason: 'weak', mode: 'next_step' },
+  { boardId: sepseBoardId, cardId: c.pacote, subId: 'step-5', reason: 'due', mode: 'next_step' },
+  { boardId: sepseBoardId, cardId: c.choque, reason: 'due', mode: 'edge' },
+  { boardId: sepseBoardId, cardId: c.sepse, reason: 'due', mode: 'hidden_card' },
+  { boardId: sepseBoardId, cardId: c.qsofa, reason: 'due', mode: 'hidden_card' },
+  { boardId: sepseBoardId, cardId: c.caso, reason: 'new', mode: 'case' },
+  { boardId: sepseBoardId, cardId: c.lactato, reason: 'new', mode: 'hidden_card' },
+  { boardId: sepseBoardId, cardId: c.pacote, subId: 'step-2', reason: 'weak', mode: 'next_step' },
 ];
 
 export const graderVerdictFixture: GraderVerdict = {

@@ -16,6 +16,8 @@ export const fsrsState = pgTable('fsrs_state', {
   lapses: integer('lapses').notNull().default(0),
   lastReview: timestamp('last_review', { withTimezone: true }),
   state: fsrsStateEnum('state').notNull().default('new'),
+  learningSteps: integer('learning_steps').notNull().default(0), // ts-fsrs short-term step (D-056)
+  scheduledDays: integer('scheduled_days').notNull().default(0),
   ...timestamps,
 }, (t) => [
   primaryKey({ columns: [t.userId, t.cardId, t.subId] }),
