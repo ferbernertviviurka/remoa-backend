@@ -1,0 +1,30 @@
+{
+  "name": "remoa-backend",
+  "private": true,
+  "packageManager": "pnpm@9.11.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "turbo dev --filter=@remoa/api",
+    "check": "turbo lint typecheck test",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "db:up": "supabase start",
+    "db:down": "supabase stop",
+    "db:env": "supabase status -o env --override-name api.url=NEXT_PUBLIC_SUPABASE_URL --override-name auth.anon_key=NEXT_PUBLIC_SUPABASE_ANON_KEY --override-name auth.service_role_key=SUPABASE_SERVICE_ROLE --override-name db.url=DATABASE_URL --override-name auth.jwt_secret=SUPABASE_JWT_SECRET",
+    "db:generate": "pnpm --filter @remoa/db generate",
+    "db:migrate": "pnpm --filter @remoa/db migrate",
+    "db:seed": "pnpm --filter @remoa/db seed"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jiti": "^2.7.0",
+    "supabase": "^2.119.0",
+    "turbo": "^2.11.6",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^3.2.7"
+  }
+}

@@ -1,0 +1,11 @@
+# Lanes from ../AGENTS.md. Single owner until there is a team.
+* @ferbernertviviurka
+/packages/contracts/ @ferbernertviviurka # F00 architect
+/packages/db/ @ferbernertviviurka # F00 architect
+/supabase/ @ferbernertviviurka # F00 architect
+/packages/fsrs/ @ferbernertviviurka # F03 data-fsrs
+/packages/ai/ @ferbernertviviurka # F05 ai-engineer
+/apps/api/src/inngest/ @ferbernertviviurka # F05 ai-engineer
+/packages/anki/ @ferbernertviviurka # F06 backend
+/packages/db/seed/ @ferbernertviviurka # F07/F10 content
+/apps/api/src/billing/ @ferbernertviviurka # F08 backend

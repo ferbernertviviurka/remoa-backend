@@ -1,0 +1,10 @@
+{
+  "name": "@remoa/fsrs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests" },
+  "dependencies": { "@remoa/contracts": "workspace:*", "ts-fsrs": "^5.4.2" },
+  "devDependencies": {  }
+}

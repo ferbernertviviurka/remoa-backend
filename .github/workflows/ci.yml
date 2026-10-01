@@ -1,0 +1,19 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm i --frozen-lockfile
+      - uses: supabase/setup-cli@v1
+      - run: supabase start
+      - run: pnpm --silent db:env > .env && pnpm db:migrate
+      - run: pnpm check # includes the RLS integration test (DATABASE_URL from .env)
