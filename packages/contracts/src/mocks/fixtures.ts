@@ -174,7 +174,17 @@ export const retrievabilityFixture: RetrievabilityMap = {
   [c.sepse]: { r: 0.62, state: 'review' },
   [c.qsofa]: { r: 0.78, state: 'watch' },
   [c.lactato]: { r: 0, state: 'unknown' },
-  [c.pacote]: { r: 0.74, state: 'watch' }, // step 5 weak
+  [c.pacote]: {
+    r: 0.74,
+    state: 'watch',
+    subs: { // step 5 weak (F02 FR-2)
+      'step-1': { r: 0.93, state: 'steady' },
+      'step-2': { r: 0.88, state: 'steady' },
+      'step-3': { r: 0.86, state: 'steady' },
+      'step-4': { r: 0.8, state: 'watch' },
+      'step-5': { r: 0.52, state: 'review' },
+    },
+  },
   [c.choque]: { r: 0.55, state: 'review' },
   [c.caso]: { r: 0.91, state: 'steady' },
 };

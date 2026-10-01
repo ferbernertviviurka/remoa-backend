@@ -3,7 +3,7 @@
 import type { Grade, MapState } from './enums';
 import type { Result } from './errors';
 import type { Board, BoardGraph, BoardSummary, CreateBoardInput, MapOp, UpdateBoardInput } from './board';
-import type { AssetRef, CardDetail, CardDraft, Rubric, UploadSignInput, UploadSignOutput } from './card';
+import type { AssetRef, AssetView, CardDetail, CardDraft, Rubric, SaveCardInput, UploadCompleteInput, UploadSignInput, UploadSignOutput } from './card';
 import type { Attempt, FsrsMemory, IntervalPreview, QueueItem, RecordAttemptOutput, RetrievabilityMap } from './review';
 import type {
   AnswerInput,
@@ -36,9 +36,11 @@ export type ApplyMapOps = (userId: string, ops: MapOp[]) => Async<{ applied: str
 
 // F02 cards
 export type GetCard = (userId: string, cardId: string) => Async<CardDetail>;
-export type SaveCard = (userId: string, card: CardDetail) => Async<CardDetail>;
+/** Owner only; image payloads must point at an asset the user can read. */
+export type SaveCard = (userId: string, cardId: string, input: SaveCardInput) => Async<CardDetail>;
 export type SignUpload = (userId: string, input: UploadSignInput) => Async<UploadSignOutput>;
-export type CompleteUpload = (userId: string, key: string) => Async<AssetRef>;
+export type CompleteUpload = (userId: string, input: UploadCompleteInput) => Async<AssetRef>;
+export type GetAsset = (userId: string, assetId: string) => Async<AssetView>;
 
 // F03 packages/fsrs — pure and synchronous. `null` memory = card never reviewed.
 export type Schedule = (memory: FsrsMemory | null, grade: Grade, now: Date) => FsrsMemory;

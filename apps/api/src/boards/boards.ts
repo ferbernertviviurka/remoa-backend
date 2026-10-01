@@ -1,35 +1,15 @@
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
-  type AppError, type MapOp, type Result,
+  type CardMask, type MapOp,
   type ListBoards, type GetBoard, type CreateBoard, type UpdateBoard, type DuplicateBoard, type ApplyMapOps,
   MAX_CARDS_PER_BOARD, err, idSchema, ok,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-
-// Lazy: importing @remoa/db throws without DATABASE_URL, and app.test.ts must load the app without a database.
-const dbm = () => import('@remoa/db');
-const run = async <T>(userId: string, fn: (tx: Tx, s: typeof import('@remoa/db')) => Promise<T>) => {
-  const m = await dbm();
-  return m.withUser(userId, (tx) => fn(tx, m));
-};
+import { Abort, guard, run } from '../db';
+import { cardPreview } from '../cards/cards';
 
 const notFound = () => err<never>('not_found', 'board not found');
 const isUuid = (v: string) => idSchema.safeParse(v).success;
-
-/** Thrown inside a transaction to roll it back with a domain error. */
-class Abort extends Error {
-  constructor(readonly error: AppError) {
-    super(error.message);
-  }
-}
-const guard = async <T>(fn: () => Promise<T>): Promise<Result<T>> => {
-  try {
-    return ok(await fn());
-  } catch (e) {
-    if (e instanceof Abort) return { ok: false, error: e.error };
-    throw e;
-  }
-};
 
 const liveCardEnds = sql`join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null`;
 
@@ -57,12 +37,12 @@ export const getBoard: GetBoard = async (userId, boardId) => {
       .select({
         id: s.cards.id, boardId: s.cards.boardId, type: s.cards.type, title: s.cards.title, front: s.cards.front,
         back: s.cards.back, source: s.cards.source, x: s.cards.x, y: s.cards.y, status: s.cards.status,
-        order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt,
+        order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt, payload: s.cards.payload,
       })
       .from(s.cards)
       .where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)))
       .orderBy(asc(s.cards.order), asc(s.cards.createdAt));
-    const cards = cardRows.map(({ x, y, ...c }) => ({ ...c, position: { x, y } }));
+    const cards = cardRows.map(({ x, y, payload, ...c }) => ({ ...c, position: { x, y }, preview: cardPreview(c.type, payload) }));
     const edgeRows = await tx.execute<{ id: string; board_id: string; from_card_id: string; to_card_id: string; label: string | null; question: string | null }>(
       sql`select e.id, e.board_id, e.from_card_id, e.to_card_id, e.label, e.question from edges e ${liveCardEnds} where e.board_id = ${boardId} order by e.created_at, e.id`,
     );
@@ -99,16 +79,19 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
     const cards = await tx.select().from(s.cards).where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)));
     const ids = new Map<string, string>();
     if (cards.length) {
+      const maskRows: (typeof s.masks.$inferInsert)[] = [];
       const rows = cards.map((c) => {
         const nid = crypto.randomUUID();
         ids.set(c.id, nid);
+        const payload = copyImagePayload(c, nid, maskRows);
         return {
-          id: nid, boardId: copy!.id, type: c.type, title: c.title, front: c.front, back: c.back, payload: c.payload,
+          id: nid, boardId: copy!.id, type: c.type, title: c.title, front: c.front, back: c.back, payload,
           // copies of seed content restart as draft: approval belongs to the reviewed original (rule 6)
           rubric: c.rubric, source: c.source, x: c.x, y: c.y, status: src.status === 'private' ? c.status : 'draft', order: c.order,
         };
       });
       await tx.insert(s.cards).values(rows);
+      if (maskRows.length) await tx.insert(s.masks).values(maskRows);
     }
     const edges = await tx.select().from(s.edges).where(eq(s.edges.boardId, boardId));
     const edgeRows = edges.flatMap((e) => {
@@ -120,6 +103,15 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
     return ok(copy!);
   });
 };
+
+/** Image cards: mask ids are masks.id (PK) and FSRS sub_ids, so the copy gets fresh ones, in the payload and in `masks`. */
+function copyImagePayload(c: { type: string; payload: unknown }, cardId: string, maskRows: (typeof import('@remoa/db').masks.$inferInsert)[]) {
+  const p = c.payload as { assetId?: string; masks?: CardMask[] };
+  if (c.type !== 'image' || !p.assetId || !Array.isArray(p.masks)) return c.payload;
+  const masks = p.masks.map((m) => ({ ...m, id: crypto.randomUUID() }));
+  for (const m of masks) maskRows.push({ id: m.id, cardId, assetId: p.assetId, polygon: m.polygon, label: m.label });
+  return { ...p, masks };
+}
 
 const invalid = (message: string) => new Abort({ code: 'validation', message });
 /** Integer px columns; positionSchema bounds keep it in range. */

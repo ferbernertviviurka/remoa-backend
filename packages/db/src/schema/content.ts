@@ -85,7 +85,7 @@ export const edges = pgTable('edges', {
 export const masks = pgTable('masks', {
   id: uuid('id').primaryKey().defaultRandom(),
   cardId: uuid('card_id').notNull().references(() => cards.id, { onDelete: 'cascade' }),
-  assetId: uuid('asset_id').notNull().references(() => assets.id),
+  assetId: uuid('asset_id').notNull().references(() => assets.id, { onDelete: 'cascade' }), // account deletion (F08) removes assets
   polygon: jsonb('polygon').notNull(),
   label: text('label'),
   ...timestamps,

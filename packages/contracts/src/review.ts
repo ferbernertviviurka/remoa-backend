@@ -52,7 +52,12 @@ export type QueueItem = z.infer<typeof queueItemSchema>;
 /** cardId → estimated recall and map colour. */
 export const retrievabilityMapSchema = z.record(
   idSchema,
-  z.object({ r: probabilitySchema, state: mapStateSchema, due: timestampSchema.nullable().optional() }), // due: inspector "Próxima revisão" (F01)
+  z.object({
+    r: probabilitySchema,
+    state: mapStateSchema,
+    due: timestampSchema.nullable().optional(), // inspector "Próxima revisão" (F01)
+    subs: z.record(z.string(), z.object({ r: probabilitySchema, state: mapStateSchema })).optional(), // flow steps / masks by sub_id (F02)
+  }),
 );
 export type RetrievabilityMap = z.infer<typeof retrievabilityMapSchema>;
 

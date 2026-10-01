@@ -3,13 +3,13 @@ import { assetLicenses, cardStatuses, cardTypes } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
 
 // --- Payload parts ---------------------------------------------------------
-export const flowStepSchema = z.object({ id: z.string().min(1), text: z.string().min(1), note: z.string().optional() });
+export const flowStepSchema = z.object({ id: z.string().min(1).max(64), text: z.string().trim().min(1).max(500), note: z.string().max(1000).optional() });
 export type FlowStep = z.infer<typeof flowStepSchema>;
 
 export const caseStages = ['presentation', 'workup', 'diagnosis', 'management'] as const;
 export const caseStageSchema = z.enum(caseStages);
 export type CaseStage = z.infer<typeof caseStageSchema>;
-export const caseStepSchema = z.object({ stage: caseStageSchema, text: z.string().min(1) });
+export const caseStepSchema = z.object({ stage: caseStageSchema, text: z.string().trim().min(1).max(2000) });
 export type CaseStep = z.infer<typeof caseStepSchema>;
 
 /** Polygon vertex in image-relative coordinates (0..1), so masks render at any size. */
@@ -18,12 +18,19 @@ export const maskSchema = z.object({
   id: idSchema,
   cardId: idSchema,
   assetId: idSchema,
-  polygon: z.array(maskPointSchema).min(3),
-  label: z.string().min(1),
+  polygon: z.array(maskPointSchema).min(3).max(64),
+  label: z.string().trim().min(1).max(120),
 });
 export type Mask = z.infer<typeof maskSchema>;
+/** F02 open question answered: 30 masks per image. */
+export const MAX_MASKS_PER_IMAGE = 30;
+/** Mask as stored in an image card payload; `id` is the FSRS sub_id. Rectangles are 4-point polygons. */
+export const cardMaskSchema = maskSchema.pick({ id: true, polygon: true, label: true });
+export type CardMask = z.infer<typeof cardMaskSchema>;
 
 export const imageMimes = ['image/jpeg', 'image/png', 'image/webp'] as const;
+/** Asset with short-lived signed URLs for the WebP variants (GET /v1/assets/:id). */
+export const assetVariants = ['w800', 'w1600'] as const;
 export const assetRefSchema = z.object({
   id: idSchema,
   key: z.string().min(1),
@@ -34,10 +41,17 @@ export const assetRefSchema = z.object({
   attribution: z.string().nullable(),
 });
 export type AssetRef = z.infer<typeof assetRefSchema>;
+export const assetViewSchema = assetRefSchema.extend({ urls: z.object({ w800: z.string().url(), w1600: z.string().url() }) });
+export type AssetView = z.infer<typeof assetViewSchema>;
 
 export const conceptPayloadSchema = z.object({}).strict();
-export const flowPayloadSchema = z.object({ steps: z.array(flowStepSchema).min(2).max(12) });
-export const imagePayloadSchema = z.object({ assetId: idSchema, maskIds: z.array(idSchema) });
+const uniqueIds = (xs: { id: string }[]) => new Set(xs.map((x) => x.id)).size === xs.length;
+export const flowPayloadSchema = z.object({ steps: z.array(flowStepSchema).min(2).max(12).refine(uniqueIds, 'duplicate step id') });
+/** Masks live inline here (the API mirrors them into `masks`); never burned into the image. */
+export const imagePayloadSchema = z.object({
+  assetId: idSchema,
+  masks: z.array(cardMaskSchema).max(MAX_MASKS_PER_IMAGE).refine(uniqueIds, 'duplicate mask id'),
+});
 export const casePayloadSchema = z.object({ caseSteps: z.array(caseStepSchema).min(1).max(caseStages.length) });
 
 // --- Rubric (cards.rubric; produced by F05) --------------------------------
@@ -51,6 +65,15 @@ export const rubricSchema = z.object({
 export type Rubric = z.infer<typeof rubricSchema>;
 
 // --- Card --------------------------------------------------------------------
+/** What the map card shows without loading the payload (F02 T6). */
+export const cardPreviewSchema = z.object({
+  steps: z.number().int().nonnegative().optional(),
+  stages: z.array(caseStageSchema).optional(),
+  masks: z.number().int().nonnegative().optional(),
+  assetId: idSchema.optional(),
+});
+export type CardPreview = z.infer<typeof cardPreviewSchema>;
+
 /** Map node without payload (what the canvas needs, F01). */
 export const cardSchema = z.object({
   id: idSchema,
@@ -65,6 +88,7 @@ export const cardSchema = z.object({
   order: z.number().int(),
   reviewerId: idSchema.nullable(),
   updatedAt: timestampSchema,
+  preview: cardPreviewSchema.optional(),
 });
 export type Card = z.infer<typeof cardSchema>;
 
@@ -86,6 +110,24 @@ export const cardDetailSchema = z.discriminatedUnion('type', [
   cardCaseSchema,
 ]);
 export type CardDetail = z.infer<typeof cardDetailSchema>;
+
+/**
+ * PUT /v1/cards/:id body (F02). Status, reviewer, rubric and position are not editable here:
+ * status/reviewer belong to the editorial flow (rule 6), position to map ops (F01).
+ */
+const editable = z.object({
+  title: z.string().trim().min(1).max(200),
+  front: z.string().max(5000).nullable(),
+  back: z.string().max(5000).nullable(),
+  source: z.string().max(1000).nullable(),
+});
+export const saveCardInputSchema = z.discriminatedUnion('type', [
+  editable.extend({ type: z.literal('concept'), payload: conceptPayloadSchema }),
+  editable.extend({ type: z.literal('flow'), payload: flowPayloadSchema }),
+  editable.extend({ type: z.literal('image'), payload: imagePayloadSchema }),
+  editable.extend({ type: z.literal('case'), payload: casePayloadSchema }),
+]);
+export type SaveCardInput = z.infer<typeof saveCardInputSchema>;
 
 // --- Drafts (AI generation F05, Anki import F06) ---------------------------
 const draftBase = z.object({
@@ -116,5 +158,13 @@ export type EdgeDraft = z.infer<typeof edgeDraftSchema>;
 // --- Uploads (F02 routes) ----------------------------------------------------
 export const uploadSignInputSchema = z.object({ mime: z.enum(imageMimes), sizeBytes: z.number().int().positive().max(10 * 1024 * 1024) });
 export type UploadSignInput = z.infer<typeof uploadSignInputSchema>;
+/** `url` is a presigned PUT: send the file with the same Content-Type and Content-Length. */
 export const uploadSignOutputSchema = z.object({ url: z.string().url(), key: z.string().min(1) });
 export type UploadSignOutput = z.infer<typeof uploadSignOutputSchema>;
+/** POST /v1/uploads/complete: converts the original to WebP variants and creates the asset. */
+export const uploadCompleteInputSchema = z.object({
+  key: z.string().min(1).max(300),
+  license: z.enum(assetLicenses).default('own'),
+  attribution: z.string().trim().max(300).nullable().default(null),
+});
+export type UploadCompleteInput = z.input<typeof uploadCompleteInputSchema>;

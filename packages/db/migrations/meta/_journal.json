@@ -22,6 +22,20 @@
       "when": 1790873057718,
       "tag": "0002_f01_boards",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790877451183,
+      "tag": "0003_f02_assets",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790877843724,
+      "tag": "0004_f02_masks_cascade",
+      "breakpoints": true
     }
   ]
 }

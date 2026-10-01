@@ -21,6 +21,7 @@ import {
   sepseCardIds,
   sepseCards,
   sepseRubric,
+  setCardStatusMock,
   setUsage,
 } from './index';
 
@@ -146,10 +147,14 @@ describe('board + card mocks', () => {
     const card = data(await m.getCard(user, sepseCardIds.pacote));
     expect(card.type).toBe('flow');
     expect(code(await m.getCard(user, fid(9)))).toBe('not_found');
-    expect(data(await m.saveCard(user, { ...sepseCards[0]!, title: 'Sepse (def.)' })).title).toBe('Sepse (def.)');
-    expect(code(await m.saveCard(user, { ...sepseCards[0]!, title: '' }))).toBe('validation');
+    const { title, front, back, source } = sepseCards[0]!;
+    const input = { type: 'concept' as const, title, front, back, source, payload: {} };
+    expect(data(await m.saveCard(user, sepseCardIds.sepse, { ...input, title: 'Sepse (def.)' })).title).toBe('Sepse (def.)');
+    expect(code(await m.saveCard(user, sepseCardIds.sepse, { ...input, title: ' ' }))).toBe('validation');
+    expect(code(await m.saveCard(user, fid(9), input))).toBe('not_found');
     const { key } = data(await m.signUpload(user, { mime: 'image/png', sizeBytes: 1000 }));
-    expect(data(await m.completeUpload(user, key)).key).toMatch(/\.webp$/);
+    expect(data(await m.completeUpload(user, { key })).key).toMatch(/\.webp$/);
+    expect(data(await m.getAsset(user, fid(9))).urls.w800).toMatch(/^https:/);
   });
 });
 
@@ -232,7 +237,7 @@ describe('other lanes', () => {
     const [item] = data(await m.listReviewQueue(reviewer));
     expect(data(await m.decideReviewItem(reviewer, { reviewItemId: item!.id, decision: 'approved', note: null })).status).toBe('approved');
     expect(code(await m.publishVersion(reviewer, { boardId: sepseBoardId, changelog: 'v2', temporalMark: '2026.2' }))).toBe('conflict');
-    for (const c of sepseCards) await m.saveCard(user, { ...c, status: 'approved' });
+    for (const c of sepseCards) setCardStatusMock(c.id, 'approved');
     const v = data(await m.publishVersion(reviewer, { boardId: sepseBoardId, changelog: 'v2', temporalMark: '2026.2' }));
     expect(v).toMatchObject({ version: 2 });
     expect(v.snapshot.cards).toHaveLength(6);

@@ -2,7 +2,7 @@
 import { err, ok, parseWith } from '../errors';
 import type { Board, Edge } from '../board';
 import { MAX_CARDS_PER_BOARD, mapOpSchema } from '../board';
-import { cardDetailSchema, cardSchema, type Card, type CardDetail } from '../card';
+import { cardDetailSchema, cardSchema, saveCardInputSchema, type Card, type CardDetail } from '../card';
 import { challengeItemPublicSchema, type ChallengeItem } from '../challenge';
 import type { Grade } from '../enums';
 import type { Entitlements } from '../billing';
@@ -177,20 +177,33 @@ export const getCard: Api.GetCard = async (_userId, cardId) => {
   return card ? ok(card) : err('not_found', 'card not found');
 };
 
-export const saveCard: Api.SaveCard = async (_userId, input) => {
-  const parsed = parseWith(cardDetailSchema, input);
+export const saveCard: Api.SaveCard = async (_userId, cardId, input) => {
+  const parsed = parseWith(saveCardInputSchema, input);
   if (!parsed.ok) return parsed;
-  cards = [...cards.filter((c) => c.id !== parsed.data.id), parsed.data];
-  return parsed;
+  const current = cards.find((c) => c.id === cardId);
+  if (!current) return err('not_found', 'card not found');
+  const saved = cardDetailSchema.parse({ ...current, ...parsed.data, updatedAt: new Date() });
+  cards = cards.map((c) => (c.id === cardId ? saved : c));
+  return ok(saved);
 };
+
+/** Test helper: the editorial flow (F10) is the only real way to approve a card. */
+export function setCardStatusMock(cardId: string, status: CardDetail['status']) {
+  const c = cards.find((x) => x.id === cardId);
+  if (c) c.status = status;
+}
+
+export const getAsset: Api.GetAsset = async (userId, assetId) =>
+  ok({ id: assetId, key: `${userId}/${assetId}`, mime: 'image/webp', width: 1600, height: 1200, license: 'own', attribution: null,
+    urls: { w800: `https://r2.mock.local/${assetId}-800.webp`, w1600: `https://r2.mock.local/${assetId}-1600.webp` } });
 
 export const signUpload: Api.SignUpload = async (userId, { mime }) => {
   const key = `${userId}/${nextId()}.${mime.split('/')[1]}`;
   return ok({ url: `https://r2.mock.local/upload/${key}`, key });
 };
 
-export const completeUpload: Api.CompleteUpload = async (_userId, key) =>
-  ok({ id: nextId(), key: key.replace(/\.\w+$/, '.webp'), mime: 'image/webp', width: 1600, height: 1200, license: 'own', attribution: null });
+export const completeUpload: Api.CompleteUpload = async (_userId, { key, license = 'own', attribution = null }) =>
+  ok({ id: nextId(), key: key.replace(/\.\w+$/, '.webp'), mime: 'image/webp', width: 1600, height: 1200, license, attribution });
 
 // --- F04 challenge -----------------------------------------------------------
 function buildItem(q: (typeof reviewQueueFixture)[number], i: number): ChallengeItem | null {
@@ -461,6 +474,7 @@ export const mocks = {
   applyMapOps,
   getCard,
   saveCard,
+  getAsset,
   signUpload,
   completeUpload,
   schedule: review.schedule,
@@ -511,6 +525,7 @@ export const mocks = {
   applyMapOps: Api.ApplyMapOps;
   getCard: Api.GetCard;
   saveCard: Api.SaveCard;
+  getAsset: Api.GetAsset;
   signUpload: Api.SignUpload;
   completeUpload: Api.CompleteUpload;
   schedule: Api.Schedule;

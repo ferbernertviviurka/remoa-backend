@@ -1,6 +1,8 @@
 import { serve } from '@hono/node-server';
 import { createClient } from '@supabase/supabase-js';
 import { createApp } from './app';
+import { ensureBucket } from './storage/storage';
+import { createLogger } from '@remoa/log';
 
 const env = (k: string) => {
   const v = process.env[k];
@@ -15,6 +17,8 @@ const app = createApp({
   webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',
   verifyToken: async (token) => (await supabase.auth.getUser(token)).data.user?.id ?? null,
 });
+
+ensureBucket().catch((e) => createLogger({ requestId: 'boot' }).error('storage bucket unavailable', { error: String(e) }));
 
 const port = Number(process.env.PORT ?? 4000);
 serve({ fetch: app.fetch, port });

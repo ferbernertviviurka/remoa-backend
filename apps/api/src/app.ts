@@ -3,6 +3,8 @@ import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
 import { errorHttpStatus, type AppError, type HttpErrorBody } from '@remoa/contracts';
 import { boardsRoutes } from './routes/boards';
+import { cardsRoutes } from './routes/cards';
+import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
 
 /** Resolves a Supabase access token to a user id, or null if invalid. */
@@ -40,6 +42,10 @@ export function createApp({ verifyToken, webOrigin }: { verifyToken: VerifyToken
   app.get('/v1/me', requireUser, (c) => c.json({ ok: true, data: { userId: c.get('userId') } }));
 
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
+
+  app.use('/v1/cards', requireUser).use('/v1/cards/*', requireUser).route('/v1/cards', cardsRoutes);
+  app.use('/v1/uploads', requireUser).use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
+  app.use('/v1/assets', requireUser).use('/v1/assets/*', requireUser).route('/v1/assets', assetsRoutes);
 
   app.notFound(() => fail({ code: 'not_found', message: 'route not found' }));
   app.onError((e, c) => {

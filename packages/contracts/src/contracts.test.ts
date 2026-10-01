@@ -3,6 +3,7 @@ import {
   answerInputSchema,
   boardSchema,
   cardDetailSchema,
+  saveCardInputSchema,
   cardDraftSchema,
   edgeSchema,
   err,
@@ -63,7 +64,24 @@ describe('schemas reject bad input', () => {
     expect(cardDetailSchema.safeParse({ ...concept, type: 'flow' }).success).toBe(false);
     expect(cardDetailSchema.safeParse({ ...concept, type: 'flow', payload: { steps: [{ id: 'a', text: 'x' }] } }).success).toBe(false);
     expect(cardDetailSchema.safeParse({ ...concept, payload: { steps: [] } }).success).toBe(false);
-    expect(cardDetailSchema.safeParse({ ...concept, type: 'image', payload: { assetId: concept.id, maskIds: [] } }).success).toBe(true);
+    const square = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+    const mask = { id: concept.id, polygon: square, label: 'l' };
+    expect(cardDetailSchema.safeParse({ ...concept, type: 'image', payload: { assetId: concept.id, masks: [mask] } }).success).toBe(true);
+    expect(cardDetailSchema.safeParse({ ...concept, type: 'image', payload: { assetId: concept.id, masks: [mask, mask] } }).success).toBe(false);
+    expect(cardDetailSchema.safeParse({ ...concept, type: 'image', payload: { assetId: concept.id, masks: Array.from({ length: 31 }, (_, i) => ({ ...mask, id: `m${i}` })) } }).success).toBe(false);
+    const steps = [{ id: 'a', text: 'x' }, { id: 'a', text: 'y' }];
+    expect(cardDetailSchema.safeParse({ ...concept, type: 'flow', payload: { steps } }).success).toBe(false);
+  });
+  it('save input: the 4 types validate their payload; status is not editable', () => {
+    const base = { title: 't', front: null, back: null, source: null };
+    expect(saveCardInputSchema.safeParse({ ...base, type: 'concept', payload: {} }).success).toBe(true);
+    expect(saveCardInputSchema.safeParse({ ...base, type: 'concept', payload: { steps: [] } }).success).toBe(false);
+    expect(saveCardInputSchema.safeParse({ ...base, type: 'flow', payload: { steps: [{ id: 'a', text: 'x' }, { id: 'b', text: 'y' }] } }).success).toBe(true);
+    expect(saveCardInputSchema.safeParse({ ...base, type: 'case', payload: { caseSteps: [{ stage: 'presentation', text: 'x' }] } }).success).toBe(true);
+    expect(saveCardInputSchema.safeParse({ ...base, type: 'case', payload: { caseSteps: [] } }).success).toBe(false);
+    expect(saveCardInputSchema.safeParse({ ...base, type: 'image', payload: { assetId: concept.id, masks: [] } }).success).toBe(true);
+    const parsed = saveCardInputSchema.parse({ ...base, type: 'concept', payload: {}, status: 'approved' });
+    expect(parsed).not.toHaveProperty('status');
   });
   it('drafts, map ops, answers, generation input', () => {
     expect(cardDraftSchema.safeParse({ ref: 'a', type: 'image', title: 't', front: null, back: null, source: null, payload: { media: 'x.png', masks: [{ polygon: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], label: 'l' }] } }).success).toBe(true);
