@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
-  DEFAULT_NEW_PER_DAY, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
-  type GetDailyQueue, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
+  DEFAULT_NEW_PER_DAY, PREVIEW_MAX_NODES, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
+  type BoardSummary, type GetDailyQueue, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
 } from '@remoa/contracts';
 import { aggregate, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
@@ -11,7 +11,7 @@ const ROLLOVER_HOUR = 4; // FRD: the study day rolls over at 04:00 local
 const DEFAULT_TZ = 'America/Sao_Paulo';
 const MODE: Record<CardType, ChallengeMode> = { concept: 'hidden_card', case: 'case', flow: 'next_step', image: 'occlusion' };
 
-type CardRow = { id: string; boardId: string; type: CardType; order: number; boardMs: number; own: boolean; subs: string[] };
+type CardRow = { id: string; boardId: string; type: CardType; order: number; boardMs: number; own: boolean; subs: string[]; x: number; y: number };
 type StateRow = FsrsMemory & { cardId: string; subId: string; createdMs: number };
 type Item = { cardId: string; boardId: string; subId: string; mode: ChallengeMode; order: number; boardMs: number; idx: number; newAllowed: boolean };
 
@@ -30,12 +30,12 @@ async function loadCards(tx: Tx, userId: string, boardId: string | null): Promis
   const scope = boardId
     ? sql`c.board_id = ${boardId}`
     : sql`b.archived_at is null and (b.user_id = ${userId} or exists (select 1 from fsrs_state s where s.user_id = ${userId} and s.card_id = c.id))`;
-  const rows = await tx.execute<{ id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[] }>(sql`
-    select c.id, c.board_id, c.type, c."order", (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
+  const rows = await tx.execute<{ id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[]; x: number; y: number }>(sql`
+    select c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
       case c.type when 'flow' then ${subIds('steps')} when 'image' then ${subIds('masks')} else '[""]'::jsonb end as subs
     from cards c join boards b on b.id = c.board_id
     where c.deleted_at is null and ${scope}`);
-  return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs }));
+  return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y }));
 }
 
 /**
@@ -77,7 +77,7 @@ export async function dayWindow(tx: Tx, userId: string, now: Date) {
     with l as (select ((${now.toISOString()}::timestamptz at time zone ${tz}::text) - make_interval(hours => ${ROLLOVER_HOUR}))::date as d)
     select l.d::text as day, (extract(epoch from ((l.d + time '04:00') at time zone ${tz}::text)) * 1000)::float8 as start_ms,
            (extract(epoch from (((l.d + 1) + time '04:00') at time zone ${tz}::text)) * 1000)::float8 as end_ms from l`);
-  return { startMs: Math.round(w!.start_ms), endMs: Math.round(w!.end_ms), day: w!.day };
+  return { startMs: Math.round(w!.start_ms), endMs: Math.round(w!.end_ms), day: w!.day, tz };
 }
 
 /** D-057: concept/case = the card; flow = one item per step; image = one per mask. */
@@ -137,20 +137,101 @@ export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) => {
   });
 };
 
-/** FR-8: due items today per board, same rule as the queue (D-058: computed on read, no job). */
-export async function dueCountByBoard(tx: Tx, userId: string, now: Date): Promise<Map<string, number>> {
+/**
+ * FR-8 + G01, one pass over the user's cards/states (D-058: computed on read, no job). Per board: due items today (same rule as the
+ * queue), card-level state counts and the graph thumbnail (<= PREVIEW_MAX_NODES cards by order, positions in the bounding box of
+ * all live cards, same span for x and y so the aspect ratio is kept).
+ */
+export async function boardListExtras(tx: Tx, userId: string, now: Date, boardIds: string[]) {
   const [cards, states, win] = await Promise.all([loadCards(tx, userId, null), loadStates(tx, userId, null), dayWindow(tx, userId, now)]);
-  const counts = new Map<string, number>();
+  const edgeRows = boardIds.length
+    ? await tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
+        sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${`{${boardIds.join(',')}}`}::uuid[])`,
+      )
+    : [];
+  const out = new Map<string, { dueCount: number; stateCounts: Record<MapState, number>; preview: BoardSummary['preview'] }>();
+  const of = (id: string) => {
+    let o = out.get(id);
+    if (!o) out.set(id, (o = { dueCount: 0, stateCounts: { review: 0, watch: 0, steady: 0, unknown: 0 }, preview: { nodes: [], edges: [] } }));
+    return o;
+  };
   for (const it of itemsOf(cards, false)) {
     const m = states.get(stateKey(it.cardId, it.subId));
-    if (m && isDue(m, win.endMs)) counts.set(it.boardId, (counts.get(it.boardId) ?? 0) + 1);
+    if (m && isDue(m, win.endMs)) of(it.boardId).dueCount++;
   }
-  return counts;
+  const byBoard = new Map<string, CardRow[]>();
+  for (const c of cards) byBoard.set(c.boardId, [...(byBoard.get(c.boardId) ?? []), c]);
+  for (const [boardId, list] of byBoard) {
+    const o = of(boardId);
+    list.sort((a, b) => a.order - b.order || cmp(a.id, b.id));
+    const st = list.map((c) => cardState(c, states, now).state);
+    for (const s of st) o.stateCounts[s]++;
+    const xs = list.map((c) => c.x);
+    const ys = list.map((c) => c.y);
+    const [minX, minY] = [Math.min(...xs), Math.min(...ys)];
+    const span = Math.max(1, Math.max(...xs) - minX, Math.max(...ys) - minY);
+    const shown = list.slice(0, PREVIEW_MAX_NODES);
+    const idx = new Map(shown.map((c, i) => [c.id, i]));
+    o.preview.nodes = shown.map((c, i) => ({ x: (c.x - minX) / span, y: (c.y - minY) / span, state: st[i]! }));
+    for (const e of edgeRows) {
+      const [i, j] = [idx.get(e.from_card_id), idx.get(e.to_card_id)];
+      if (e.board_id === boardId && i !== undefined && j !== undefined) o.preview.edges.push([i, j]);
+    }
+  }
+  return out;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * G01 "Hoje": items due per study-day offset (0 = today incl. overdue, same rule as the queue's `due`; k = k days ahead), offsets 0..days-1.
+ * ponytail: fixed 24 h day buckets; wrong by 1 h across a DST change (BR has none). Use dayWindow per offset if that matters.
+ */
+export async function dueByOffset(tx: Tx, userId: string, win: { endMs: number }, days: number) {
+  const [cards, states] = await Promise.all([loadCards(tx, userId, null), loadStates(tx, userId, null)]);
+  const out = Array<number>(days).fill(0);
+  for (const it of itemsOf(cards, false)) {
+    const m = states.get(stateKey(it.cardId, it.subId));
+    if (!m) continue;
+    const k = isDue(m, win.endMs) ? 0 : Math.floor((m.due.getTime() - win.endMs) / DAY_MS) + 1;
+    if (k < days) out[k]!++;
+  }
+  return out;
+}
+
+/** F07: live cards and reviewed-card recall per board (same loaders and per-card state rule as the map). */
+export async function boardCardStats(tx: Tx, userId: string, now: Date) {
+  const [cards, states] = await Promise.all([loadCards(tx, userId, null), loadStates(tx, userId, null)]);
+  const out = new Map<string, { cards: number; recalls: number[] }>();
+  for (const c of cards) {
+    const o = out.get(c.boardId) ?? out.set(c.boardId, { cards: 0, recalls: [] }).get(c.boardId)!;
+    o.cards++;
+    const s = cardState(c, states, now);
+    if (s.state !== 'unknown') o.recalls.push(s.r);
+  }
+  return out;
 }
 
 // --- retrievability map (FR-7) ----------------------------------------------------------------------------------
 
 const unreviewed = { r: 0, state: 'unknown' as MapState };
+
+/** Per-card map state (D-057): concept/case from its '' state; flow/image = aggregate of steps/masks; no state = unknown. Single rule for the map and the list. */
+function cardState(c: CardRow, states: Map<string, StateRow>, now: Date) {
+  let earliest: Date | null = null;
+  const one = (subId: string): { r: number; state: MapState } => {
+    const m = states.get(stateKey(c.id, subId));
+    if (!m) return unreviewed;
+    if (!earliest || m.due < earliest) earliest = m.due;
+    return { r: retrievability(m, now), state: mapState(m, now) };
+  };
+  if (c.type === 'flow' || c.type === 'image') {
+    const subs = Object.fromEntries(c.subs.map((id) => [id, one(id)]));
+    const agg = c.subs.length ? aggregate(Object.values(subs)) : unreviewed;
+    return { ...agg, due: earliest, subs };
+  }
+  return { ...one(''), due: earliest };
+}
 
 export async function computeRetrievability(userId: string, boardId: string, now: Date) {
   if (!idSchema.safeParse(boardId).success) return err<RetrievabilityMap>('not_found', 'board not found');
@@ -160,22 +241,7 @@ export async function computeRetrievability(userId: string, boardId: string, now
     const cards = await loadCards(tx, userId, boardId);
     const states = await loadStates(tx, userId, cards.map((c) => c.id));
     const map: RetrievabilityMap = {};
-    for (const c of cards) {
-      let earliest: Date | null = null;
-      const one = (subId: string): { r: number; state: MapState } => {
-        const m = states.get(stateKey(c.id, subId));
-        if (!m) return unreviewed;
-        if (!earliest || m.due < earliest) earliest = m.due;
-        return { r: retrievability(m, now), state: mapState(m, now) };
-      };
-      if (c.type === 'flow' || c.type === 'image') {
-        const subs = Object.fromEntries(c.subs.map((id) => [id, one(id)]));
-        const agg = c.subs.length ? aggregate(Object.values(subs)) : unreviewed;
-        map[c.id] = { ...agg, due: earliest, subs };
-      } else {
-        map[c.id] = { ...one(''), due: earliest };
-      }
-    }
+    for (const c of cards) map[c.id] = cardState(c, states, now);
     return ok(map);
   });
 }

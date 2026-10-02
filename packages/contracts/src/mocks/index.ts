@@ -1,7 +1,7 @@
 // In-memory implementations of every signature in ../api. State is module-level; call resetMocks() between tests.
 import { err, ok, parseWith } from '../errors';
 import type { Board, Edge } from '../board';
-import { MAX_CARDS_PER_BOARD, mapOpSchema } from '../board';
+import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, mapOpSchema } from '../board';
 import { cardDetailSchema, cardSchema, saveCardInputSchema, type Card, type CardDetail } from '../card';
 import { challengeItemPublicSchema, type ChallengeItem } from '../challenge';
 import type { Grade } from '../enums';
@@ -10,7 +10,7 @@ import type { ReviewItem } from '../editorial';
 import type { ApkgSummary, ImportReport } from '../import';
 import { onboardingAnswersSchema, waitlistEntrySchema } from '../onboarding';
 import type * as Api from '../api';
-import { FIXTURE_NOW, fid, reviewQueueFixture, sepseBoard, sepseCards, sepseEdges } from './fixtures';
+import { FIXTURE_NOW, fid, retrievabilityFixture, reviewQueueFixture, sepseBoard, sepseCards, sepseEdges } from './fixtures';
 import * as review from './review';
 import * as ai from './ai';
 
@@ -60,6 +60,28 @@ const toCard = (c: CardDetail): Card => cardSchema.parse(c); // strips payload +
 const findBoard = (id: string) => boards.find((b) => b.id === id);
 
 // --- F01 board ---------------------------------------------------------------
+/** G01 list extras: state counts from the retrievability fixture, graph preview normalised to 0..1. */
+function boardOverview(boardId: string) {
+  const own = cards.filter((c) => c.boardId === boardId).slice(0, PREVIEW_MAX_NODES);
+  const stateCounts = { review: 0, watch: 0, steady: 0, unknown: 0 };
+  const states = own.map((c) => retrievabilityFixture[c.id]?.state ?? 'unknown');
+  for (const st of states) stateCounts[st]++;
+  const xs = own.map((c) => c.position?.x ?? 0);
+  const ys = own.map((c) => c.position?.y ?? 0);
+  const [minX, minY] = [Math.min(...xs), Math.min(...ys)];
+  const span = Math.max(1, Math.max(...xs) - minX, Math.max(...ys) - minY);
+  const index = new Map(own.map((c, i) => [c.id, i]));
+  return {
+    stateCounts,
+    preview: {
+      nodes: own.map((c, i) => ({ x: (xs[i]! - minX) / span, y: (ys[i]! - minY) / span, state: states[i]! })),
+      edges: edges
+        .filter((e) => e.boardId === boardId && index.has(e.fromCardId) && index.has(e.toCardId))
+        .map((e) => [index.get(e.fromCardId)!, index.get(e.toCardId)!] as [number, number]),
+    },
+  };
+}
+
 export const listBoards: Api.ListBoards = async (userId) =>
   ok(
     boards
@@ -70,9 +92,11 @@ export const listBoards: Api.ListBoards = async (userId) =>
         area: b.area,
         status: b.status,
         updatedAt: b.updatedAt,
+        matrixItemId: b.matrixItemId,
         cardCount: cards.filter((c) => c.boardId === b.id).length,
         edgeCount: edges.filter((e) => e.boardId === b.id).length,
         dueCount: review.reviewQueueDueCount(b.id),
+        ...boardOverview(b.id),
       })),
   );
 
@@ -86,13 +110,14 @@ export const getBoard: Api.GetBoard = async (userId, boardId) => {
   });
 };
 
-export const createBoard: Api.CreateBoard = async (userId, { title, area = 'CM' }) => {
+export const createBoard: Api.CreateBoard = async (userId, { title, area = 'CM', matrixItemId = null }) => {
   const board: Board = {
     ...clone(sepseBoard),
     id: nextId(),
     userId,
     title,
     area,
+    matrixItemId,
     status: 'private',
     temporalMark: null,
     archivedAt: null,
@@ -382,6 +407,33 @@ export const getCoverage: Api.GetCoverage = async () =>
       avgRetrievability: 0.6,
     },
   ]);
+
+export const listMatrixItems: Api.ListMatrixItems = async (area) =>
+  ok(
+    area === 'CM'
+      ? [
+          { id: fid(800), area: 'CM', code: 'CM-INF-01', title: 'Sepse e choque séptico', parentId: null, targetCards: 40 },
+          { id: fid(801), area: 'CM', code: 'CM-CAR-01', title: 'Insuficiência cardíaca', parentId: null, targetCards: 40 },
+          { id: fid(802), area: 'CM', code: 'CM-PNE-01', title: 'Pneumonia', parentId: null, targetCards: 30 },
+          { id: fid(803), area: 'CM', code: 'CM-END-01', title: 'Cetoacidose diabética', parentId: null, targetCards: 30 },
+        ]
+      : [],
+  );
+
+// --- G01 v2 home -------------------------------------------------------------
+export const getHomeSummary: Api.GetHomeSummary = async (_userId, now) => {
+  const day = (offset: number) => new Date(now.getTime() + offset * 86_400_000).toISOString().slice(0, 10);
+  const monday = -((now.getUTCDay() + 6) % 7);
+  const done = [5, 7, 6, 3, 0, 0, 0];
+  const planned = [0, 0, 0, 12, 14, 6, 9];
+  return ok({
+    reviewedToday: 3,
+    dueToday: 12,
+    week: done.map((d, i) => ({ date: day(monday + i), done: monday + i < 0 ? d : monday + i === 0 ? 3 : 0, planned: monday + i > 0 ? planned[i]! : 0 })),
+    streakDays: 4,
+    upcoming: [12, 14, 6, 9].map((count, i) => ({ date: day(i), count })),
+  });
+};
 
 // --- F08 billing -------------------------------------------------------------
 const FREE_LIMITS: Entitlements['limits'] = { ai_grades: 20, ai_generations: 1, boards: 3, cards: 300 };

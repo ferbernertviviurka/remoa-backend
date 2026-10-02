@@ -5,6 +5,9 @@ import { errorHttpStatus, type AppError, type GradeAnswer, type HttpErrorBody } 
 import { boardsRoutes } from './routes/boards';
 import { cardsRoutes } from './routes/cards';
 import { challengeRoutes } from './routes/challenge';
+import { coverageRoutes } from './routes/coverage';
+import { homeRoutes } from './routes/home';
+import { matrixRoutes } from './routes/matrix';
 import { reviewRoutes } from './routes/review';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
@@ -46,6 +49,9 @@ export function createApp({ verifyToken, webOrigin, grade }: { verifyToken: Veri
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 
   app.use('/v1/cards', requireUser).use('/v1/cards/*', requireUser).route('/v1/cards', cardsRoutes);
+  app.use('/v1/home', requireUser).route('/v1/home', homeRoutes);
+  app.use('/v1/matrix/*', requireUser).route('/v1/matrix', matrixRoutes);
+  app.use('/v1/coverage', requireUser).route('/v1/coverage', coverageRoutes);
   app.use('/v1/review', requireUser).use('/v1/review/*', requireUser).route('/v1/review', reviewRoutes);
   app.use('/v1/challenge', requireUser).use('/v1/challenge/*', requireUser).route('/v1/challenge', challengeRoutes({ grade }));
   app.use('/v1/uploads', requireUser).use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);

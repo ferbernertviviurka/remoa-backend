@@ -24,3 +24,19 @@ export const progressSummarySchema = z.object({
   accuracy: z.array(areaAccuracySchema),
 });
 export type ProgressSummary = z.infer<typeof progressSummarySchema>;
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+/** G01 v2 "Hoje": progress of the day, the week (Mon–Sun of the profile's time zone, day turns at 04h like the queue) and the next days. */
+export const homeSummarySchema = z.object({
+  /** Items rated today and items still due today (ring "3 de 15" = reviewedToday / (reviewedToday + dueToday)). */
+  reviewedToday: z.number().int().nonnegative(),
+  dueToday: z.number().int().nonnegative(),
+  /** Exactly 7 entries, Monday first. `done` = attempts rated that day; `planned` = items due that day (future days only, 0 for past). */
+  week: z.array(z.object({ date: isoDate, done: z.number().int().nonnegative(), planned: z.number().int().nonnegative() })).length(7),
+  /** Consecutive days up to today (or yesterday, if nothing yet today) with at least one rated attempt. */
+  streakDays: z.number().int().nonnegative(),
+  /** Today and the next 3 days: items due on each day (today = dueToday). */
+  upcoming: z.array(z.object({ date: isoDate, count: z.number().int().nonnegative() })).length(4),
+});
+export type HomeSummary = z.infer<typeof homeSummarySchema>;

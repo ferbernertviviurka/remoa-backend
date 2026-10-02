@@ -7,7 +7,7 @@ import {
 import type { Tx } from '@remoa/db';
 import { Abort, guard, run } from '../db';
 import { cardPreview } from '../cards/cards';
-import { dueCountByBoard } from '../review/queue';
+import { boardListExtras } from '../review/queue';
 
 const notFound = () => err<never>('not_found', 'board not found');
 const isUuid = (v: string) => idSchema.safeParse(v).success;
@@ -19,15 +19,15 @@ export const listBoards: ListBoards = async (userId) =>
     await run(userId, async (tx, s) => {
       const rows = await tx
         .select({
-          id: s.boards.id, title: s.boards.title, area: s.boards.area, status: s.boards.status, updatedAt: s.boards.updatedAt,
+          id: s.boards.id, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, updatedAt: s.boards.updatedAt,
           cardCount: sql<number>`(select count(*)::int from cards c where c.board_id = boards.id and c.deleted_at is null)`,
           edgeCount: sql<number>`(select count(*)::int from edges e ${liveCardEnds} where e.board_id = boards.id)`,
         })
         .from(s.boards)
         .where(and(eq(s.boards.userId, userId), isNull(s.boards.archivedAt)))
         .orderBy(desc(s.boards.updatedAt));
-      const due = await dueCountByBoard(tx, userId, new Date()); // F03 FR-8: badge = due items of the board queue
-      return rows.map((r) => ({ ...r, dueCount: due.get(r.id) ?? 0 }));
+      const extra = await boardListExtras(tx, userId, new Date(), rows.map((r) => r.id)); // F03 FR-8 badge + G01 state bar/preview
+      return rows.map((r) => ({ ...r, ...(extra.get(r.id) ?? { dueCount: 0, stateCounts: { review: 0, watch: 0, steady: 0, unknown: 0 }, preview: { nodes: [], edges: [] } }) }));
     }),
   );
 
@@ -55,9 +55,14 @@ export const getBoard: GetBoard = async (userId, boardId) => {
 };
 
 export const createBoard: CreateBoard = async (userId, input) =>
-  ok(
-    await run(userId, async (tx, s) => {
-      const [row] = await tx.insert(s.boards).values({ userId, title: input.title, area: input.area }).returning();
+  guard(() =>
+    run(userId, async (tx, s) => {
+      if (input.matrixItemId) {
+        const [m] = await tx.select({ id: s.matrixItems.id }).from(s.matrixItems).where(eq(s.matrixItems.id, input.matrixItemId));
+        if (!m) throw invalid('unknown matrixItemId');
+      }
+      const [row] = await tx.insert(s.boards).values({ userId, title: input.title, area: input.area, matrixItemId: input.matrixItemId ?? null }).returning();
+      if (input.matrixItemId) await tx.insert(s.boardMatrixItems).values({ boardId: row!.id, matrixItemId: input.matrixItemId });
       return row!;
     }),
   );

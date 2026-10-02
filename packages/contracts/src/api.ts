@@ -16,10 +16,10 @@ import type {
 } from './challenge';
 import type { BoardGenerationProgress, GenerateBoardInput, GraderInput, GraderVerdict } from './ai';
 import type { CheckoutInput, Entitlements, QuotaKey, RedirectUrl } from './billing';
-import type { CoverageRow } from './matrix';
+import type { CoverageRow, MatrixItem, MatrixArea } from './matrix';
 import type { BoardVersion, PublishVersionInput, ResolveDisputeInput, ReviewDecision, ReviewItem } from './editorial';
 import type { ApkgSummary, FieldMapping, ImportPlan, ImportProgress, ImportReport } from './import';
-import type { ProgressSummary } from './reports';
+import type { HomeSummary, ProgressSummary } from './reports';
 import type { OnboardingAnswers, WaitlistEntry } from './onboarding';
 
 type Async<T> = Promise<Result<T>>;
@@ -81,6 +81,10 @@ export type GetImportReport = (userId: string, importId: string) => Async<Import
 
 // F07 matrix
 export type GetCoverage = (userId: string) => Async<CoverageRow[]>;
+/** G01 v2 "Novo mapa": items of an area (public reference data). */
+export type ListMatrixItems = (area: MatrixArea) => Async<MatrixItem[]>;
+/** G01 v2 "Hoje" (GET /v1/home). */
+export type GetHomeSummary = (userId: string, now: Date) => Async<HomeSummary>;
 
 // F08 billing
 export type GetEntitlements = (userId: string) => Async<Entitlements>;

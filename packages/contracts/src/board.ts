@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { areas, boardStatuses, cardTypes } from './enums';
+import { areas, boardStatuses, cardTypes, mapStates } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
 import { cardSchema } from './card';
 
@@ -24,7 +24,12 @@ export type Board = z.infer<typeof boardSchema>;
 export const MAX_CARDS_PER_BOARD = 500;
 
 export const boardTitleSchema = z.string().trim().min(1).max(120);
-export const createBoardInputSchema = z.object({ title: boardTitleSchema, area: z.enum(areas).default('CM') });
+export const createBoardInputSchema = z.object({
+  title: boardTitleSchema,
+  area: z.enum(areas).default('CM'),
+  /** G01 v2 "Novo mapa" › Detalhes: item da matriz Enamed (também grava `board_matrix_items`). */
+  matrixItemId: idSchema.nullable().optional(),
+});
 export type CreateBoardInput = z.input<typeof createBoardInputSchema>;
 /** PATCH /v1/boards/:id — rename and/or archive (`archived: false` restores). */
 export const updateBoardInputSchema = z
@@ -39,8 +44,23 @@ export const boardSummarySchema = boardSchema
   .extend({
     cardCount: z.number().int().nonnegative(),
     edgeCount: z.number().int().nonnegative(),
+    /** G01 v2: item da matriz do mapa (D-081). */
+    matrixItemId: idSchema.nullable().default(null),
     dueCount: z.number().int().nonnegative().default(0), // F03 FR-8: sidebar badge, items due today
+    /** G01: state bar and the sidebar dot (dominant state). Card-level states (D-057 aggregate). */
+    stateCounts: z
+      .object(Object.fromEntries(mapStates.map((k) => [k, z.number().int().nonnegative()])) as Record<(typeof mapStates)[number], z.ZodNumber>)
+      .default({ review: 0, watch: 0, steady: 0, unknown: 0 }),
+    /** G01: graph thumbnail. Positions normalised to 0..1 in the board's bounding box; at most PREVIEW_MAX_NODES nodes. */
+    preview: z
+      .object({
+        nodes: z.array(z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), state: z.enum(mapStates) })),
+        /** Index pairs into `nodes`. */
+        edges: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])),
+      })
+      .default({ nodes: [], edges: [] }),
   });
+export const PREVIEW_MAX_NODES = 60;
 export type BoardSummary = z.infer<typeof boardSummarySchema>;
 
 export const edgeSchema = z.object({

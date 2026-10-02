@@ -335,6 +335,55 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
     });
   });
 
+  describe('board list extras (G01)', () => {
+    type Summary = { id: string; stateCounts: Record<string, number>; preview: { nodes: { x: number; y: number; state: string }[]; edges: [number, number][] } };
+    const listed = async (u: string, board: string) => ((await call(u, '/boards')).json.data as Summary[]).find((b) => b.id === board)!;
+
+    it('state counts are card-level; preview is normalised (aspect kept), edges remapped', async () => {
+      const u = await newUser();
+      const board = await mkBoard(u);
+      const real = new Date();
+      const recent = new Date(real.getTime() - DAY);
+      const far = new Date(real.getTime() + 50 * DAY);
+      const flow = await mkFlow(board, 6);
+      const steady = await mkCard(board);
+      const unseen = await mkCard(board);
+      for (const i of [1, 2, 3, 4, 6]) await putState(u, flow, { sub: `s${i}`, lastReview: recent, stability: 60, due: far });
+      await putState(u, flow, { sub: 's5', lastReview: new Date(real.getTime() - 30 * DAY), stability: 1, due: new Date(real.getTime() - 20 * DAY) });
+      await putState(u, steady, { lastReview: recent, stability: 60, due: far });
+      const pos: [string, number, number, number][] = [[flow, 100, 300, 0], [steady, 500, 100, 1], [unseen, 300, 200, 2]];
+      for (const [id, x, y, order] of pos) await dbm.db.update(dbm.cards).set({ x, y, order }).where(eq(dbm.cards.id, id));
+      await dbm.db.insert(dbm.edges).values([{ boardId: board, fromCardId: flow, toCardId: unseen }, { boardId: board, fromCardId: unseen, toCardId: steady }]);
+
+      const b = await listed(u, board);
+      expect(b.stateCounts).toEqual({ review: 0, watch: 1, steady: 1, unknown: 1 });
+      // box 100..500 x 100..300, span 400 (x and y share it)
+      expect(b.preview.nodes).toEqual([{ x: 0, y: 0.5, state: 'watch' }, { x: 1, y: 0, state: 'steady' }, { x: 0.5, y: 0.25, state: 'unknown' }]);
+      expect(b.preview.edges).toEqual(expect.arrayContaining([[0, 2], [2, 1]]));
+      expect(b.preview.edges).toHaveLength(2);
+    });
+
+    it('caps the preview at 60 nodes, drops edges to the rest; empty board is zeros', async () => {
+      const u = await newUser();
+      const board = await mkBoard(u);
+      const rows = Array.from({ length: 70 }, (_, i) => ({ id: uuid(), boardId: board, title: `c${i}`, order: i, x: i * 10, y: (i % 5) * 10 }));
+      await dbm.db.insert(dbm.cards).values(rows);
+      await dbm.db.insert(dbm.edges).values([
+        { boardId: board, fromCardId: rows[0]!.id, toCardId: rows[1]!.id },
+        { boardId: board, fromCardId: rows[0]!.id, toCardId: rows[65]!.id },
+      ]);
+      const b = await listed(u, board);
+      expect(b.preview.nodes).toHaveLength(60);
+      expect(b.preview.edges).toEqual([[0, 1]]);
+      expect(b.stateCounts).toEqual({ review: 0, watch: 0, steady: 0, unknown: 70 });
+      for (const n of b.preview.nodes) expect(n.x >= 0 && n.x <= 1 && n.y >= 0 && n.y <= 1).toBe(true);
+
+      const empty = await listed(u, await mkBoard(u));
+      expect(empty.stateCounts).toEqual({ review: 0, watch: 0, steady: 0, unknown: 0 });
+      expect(empty.preview).toEqual({ nodes: [], edges: [] });
+    });
+  });
+
   describe('dueCount (FR-8)', () => {
     it('badge equals the due items of the board queue', async () => {
       const u = await newUser();
