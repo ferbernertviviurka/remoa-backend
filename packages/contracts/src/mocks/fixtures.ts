@@ -65,6 +65,8 @@ export const sepseCards: CardDetail[] = [
     type: 'concept',
     title: 'Sepse',
     front: 'Qual a definição atual de sepse?',
+    shape: 'rect',
+    frontAssetId: null,
     back: 'Disfunção orgânica com risco de vida causada por resposta desregulada do hospedeiro à infecção.',
     payload: {},
     rubric: sepseRubric,
@@ -74,6 +76,8 @@ export const sepseCards: CardDetail[] = [
     type: 'concept',
     title: 'qSOFA',
     front: 'Quais critérios compõem o qSOFA?',
+    shape: 'rect',
+    frontAssetId: null,
     back: 'Frequência respiratória aumentada, alteração do estado mental e pressão sistólica baixa. Triagem, não diagnóstico.',
     payload: {},
     rubric: null,
@@ -83,6 +87,8 @@ export const sepseCards: CardDetail[] = [
     type: 'concept',
     title: 'Lactato',
     front: 'Para que serve o lactato na suspeita de sepse?',
+    shape: 'rect',
+    frontAssetId: null,
     back: 'Marcador de hipoperfusão tecidual; dosar na suspeita e repetir se elevado.',
     payload: {},
     rubric: null,
@@ -92,6 +98,8 @@ export const sepseCards: CardDetail[] = [
     type: 'flow',
     title: 'Pacote da primeira hora',
     front: null,
+    shape: 'rect',
+    frontAssetId: null,
     back: null,
     payload: {
       steps: [
@@ -109,6 +117,8 @@ export const sepseCards: CardDetail[] = [
     type: 'concept',
     title: 'Choque séptico',
     front: 'O que caracteriza o choque séptico?',
+    shape: 'rect',
+    frontAssetId: null,
     back: 'Sepse com necessidade de vasopressor para manter a pressão arterial média e lactato elevado apesar de volume adequado.',
     payload: {},
     rubric: null,
@@ -118,6 +128,8 @@ export const sepseCards: CardDetail[] = [
     type: 'case',
     title: 'Idoso febril e confuso',
     front: null,
+    shape: 'rect',
+    frontAssetId: null,
     back: null,
     payload: {
       caseSteps: [

@@ -138,7 +138,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
     const now = new Date('2026-06-10T15:00:00Z'); // 12:00 in America/Sao_Paulo; study day = 06-10 07:00Z .. 06-11 07:00Z
     const ago = (days: number) => new Date(now.getTime() - days * DAY);
 
-    it('orders due by r asc, then new (capped, minus introduced today), then weak', async () => {
+    it('orders due by r asc, then new (free cap 10, minus introduced today), then weak', async () => {
       const u = await newUser();
       const board = await mkBoard(u);
       const d1 = await mkCard(board, { order: 100 });
@@ -156,8 +156,8 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
       const r = await q.getDailyQueue(u, { now });
       expect(r.ok).toBe(true);
       if (!r.ok) return;
-      expect(r.data.map((i) => i.reason)).toEqual(['due', 'due', ...Array(18).fill('new'), 'weak']);
-      expect(r.data.map((i) => i.cardId)).toEqual([d1, d2, ...fresh.slice(0, 18), w]);
+      expect(r.data.map((i) => i.reason)).toEqual(['due', 'due', ...Array(8).fill('new'), 'weak']);
+      expect(r.data.map((i) => i.cardId)).toEqual([d1, d2, ...fresh.slice(0, 8), w]);
       expect(r.data[0]).toEqual({ cardId: d1, boardId: board, subId: null, reason: 'due', mode: 'hidden_card' });
 
       const limited = await q.getDailyQueue(u, { now, limit: 3 });

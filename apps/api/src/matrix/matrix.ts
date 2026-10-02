@@ -1,16 +1,14 @@
-import { asc, eq, sql } from 'drizzle-orm';
-import { ok, type CoverageRow, type GetCoverage, type ListMatrixItems } from '@remoa/contracts';
+import { and, asc, eq, sql } from 'drizzle-orm';
+import { ok, type CoverageRow, type GetCoverage, type LinkBoardMatrix, type ListMatrixItems, type SuggestMatrixItems, type UnlinkBoardMatrix } from '@remoa/contracts';
+import type { Tx } from '@remoa/db';
 import { boardCardStats } from '../review/queue';
-import { dbm, run } from '../db';
-
-/** Seed leaves target_cards null until the F07 content pass; contract needs > 0. */
-export const DEFAULT_TARGET_CARDS = 20;
+import { Abort, dbm, guard, run } from '../db';
 
 export const listMatrixItems: ListMatrixItems = async (area) =>
   ok(
     await dbm().then(async (s) => {
       const rows = await s.db.select().from(s.matrixItems).where(eq(s.matrixItems.area, area)).orderBy(asc(s.matrixItems.code));
-      return rows.map((r) => ({ id: r.id, area: r.area, code: r.code, title: r.title, parentId: r.parentId, targetCards: r.targetCards ?? DEFAULT_TARGET_CARDS }));
+      return rows.map((r) => ({ id: r.id, area: r.area, code: r.code, title: r.title, parentId: r.parentId, targetCards: r.targetCards }));
     }),
   );
 
@@ -33,12 +31,58 @@ export const getCoverage: GetCoverage = async (userId) =>
           const st = boards.map((l) => stats.get(l.board_id));
           const cards = st.reduce((n, x) => n + (x?.cards ?? 0), 0);
           const recalls = st.flatMap((x) => x?.recalls ?? []);
-          const target = i.targetCards ?? DEFAULT_TARGET_CARDS;
+          const target = i.targetCards;
           return {
             matrixItemId: i.id, area: i.area, code: i.code, title: i.title, boards: boards.length, cards, targetCards: target,
             coverage: Math.min(100, (cards / target) * 100),
             avgRetrievability: recalls.length ? recalls.reduce((a, b) => a + b, 0) / recalls.length : null,
           };
         });
+    }),
+  );
+
+/** Title in -> up to 3 matrix items by trigram word_similarity (public data, service connection). 0.4 keeps junk out; groups (items with children) are never suggested. */
+export const suggestMatrixItems: SuggestMatrixItems = async (title) =>
+  ok(
+    await dbm().then(async (s) => {
+      const rows = await s.db.execute<{ id: string; area: 'CM'; code: string; title: string; parent_id: string | null; target_cards: number }>(
+        sql`select id, area, code, title, parent_id, target_cards from matrix_items m where word_similarity(lower(${title}), lower(title)) >= 0.4 and not exists (select 1 from matrix_items c where c.parent_id = m.id) order by word_similarity(lower(${title}), lower(title)) desc, code limit 3`,
+      );
+      return rows.map((r) => ({ id: r.id, area: r.area, code: r.code, title: r.title, parentId: r.parent_id, targetCards: r.target_cards }));
+    }),
+  );
+
+/** Own boards only: RLS also exposes seed_approved boards to SELECT, and writing links on those would fail the RLS check with a 500. */
+const boardOrNotFound = async (tx: Parameters<Parameters<typeof run>[1]>[0], s: Parameters<Parameters<typeof run>[1]>[1], userId: string, boardId: string) => {
+  const [b] = await tx.select().from(s.boards).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId)));
+  if (!b) throw new Abort({ code: 'not_found', message: 'board not found' });
+  return b;
+};
+
+/** A link target must exist and be a topic: groups (items with children) are headings. */
+export const isLinkableItem = async (tx: Tx, id: string) =>
+  (await tx.execute(sql`select 1 from matrix_items m where m.id = ${id} and not exists (select 1 from matrix_items c where c.parent_id = m.id)`)).length > 0;
+
+export const linkBoardMatrix: LinkBoardMatrix = async (userId, link) =>
+  guard(() =>
+    run(userId, async (tx, s) => {
+      const b = await boardOrNotFound(tx, s, userId, link.boardId);
+      if (!(await isLinkableItem(tx, link.matrixItemId))) throw new Abort({ code: 'validation', message: 'unknown or group matrixItemId' });
+      await tx.insert(s.boardMatrixItems).values(link).onConflictDoNothing();
+      if (!b.matrixItemId) await tx.update(s.boards).set({ matrixItemId: link.matrixItemId }).where(eq(s.boards.id, b.id));
+      return link;
+    }),
+  );
+
+export const unlinkBoardMatrix: UnlinkBoardMatrix = async (userId, link) =>
+  guard(() =>
+    run(userId, async (tx, s) => {
+      const b = await boardOrNotFound(tx, s, userId, link.boardId);
+      await tx.delete(s.boardMatrixItems).where(and(eq(s.boardMatrixItems.boardId, b.id), eq(s.boardMatrixItems.matrixItemId, link.matrixItemId)));
+      if (b.matrixItemId === link.matrixItemId) {
+        const [next] = await tx.select({ id: s.boardMatrixItems.matrixItemId }).from(s.boardMatrixItems).where(eq(s.boardMatrixItems.boardId, b.id)).limit(1);
+        await tx.update(s.boards).set({ matrixItemId: next?.id ?? null }).where(eq(s.boards.id, b.id));
+      }
+      return null;
     }),
   );

@@ -34,6 +34,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/boards', () => {
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => tokens[t] ?? null });
     for (const id of [a, b]) {
       await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+      await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan: 'pro', status: 'active' }); // F08: these tests are not about plan limits
     }
   });
   afterAll(async () => {

@@ -1,6 +1,7 @@
-import { type AnyPgColumn, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { type AnyPgColumn, check, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import {
-  areaEnum, authUsers, boardStatusEnum, cardStatusEnum, cardTypeEnum, licenseEnum, roleEnum, timestamps, userId,
+  areaEnum, authUsers, boardStatusEnum, cardShapeEnum, cardStatusEnum, cardTypeEnum, licenseEnum, roleEnum, timestamps, userId,
 } from './common';
 
 export const profiles = pgTable('profiles', {
@@ -10,11 +11,16 @@ export const profiles = pgTable('profiles', {
   school: text('school'),
   year: integer('year'),
   goal: text('goal'),
+  /** F13: y3_4 | y5_6 | graduated (stageSchema). */
+  stage: text('stage'),
+  /** F13: processed 512 px WebP key; server-owned (no GRANT to authenticated). */
+  avatarKey: text('avatar_key'),
+  avatarColor: smallint('avatar_color').notNull().default(0),
   timezone: text('timezone').notNull().default('America/Sao_Paulo'),
   onboardingDoneAt: timestamp('onboarding_done_at', { withTimezone: true }),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
   ...timestamps,
-});
+}, (t) => [check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`)]);
 
 export const matrixItems = pgTable('matrix_items', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -22,7 +28,9 @@ export const matrixItems = pgTable('matrix_items', {
   code: text('code').notNull().unique(),
   title: text('title').notNull(),
   parentId: uuid('parent_id').references((): AnyPgColumn => matrixItems.id),
-  targetCards: integer('target_cards'),
+  targetCards: integer('target_cards').notNull().default(40),
+  /** F07: edital version the item was transcribed from (e.g. 'INEP Enamed 2025'). */
+  temporalMark: text('temporal_mark'),
   ...timestamps,
 });
 
@@ -36,7 +44,7 @@ export const boards = pgTable('boards', {
   version: integer('version').notNull().default(1),
   temporalMark: text('temporal_mark'),
   reviewerId: uuid('reviewer_id').references(() => authUsers.id),
-  sourceBoardId: uuid('source_board_id').references((): AnyPgColumn => boards.id),
+  sourceBoardId: uuid('source_board_id').references((): AnyPgColumn => boards.id, { onDelete: 'set null' }),
   archivedAt: timestamp('archived_at', { withTimezone: true }), // F01: hidden from "Meus mapas"
   ...timestamps,
 }, (t) => [index('boards_user_idx').on(t.userId)]);
@@ -57,8 +65,10 @@ export const cards = pgTable('cards', {
   id: uuid('id').primaryKey().defaultRandom(),
   boardId: uuid('board_id').notNull().references(() => boards.id, { onDelete: 'cascade' }),
   type: cardTypeEnum('type').notNull().default('concept'),
+  shape: cardShapeEnum('shape').notNull().default('rect'),
   title: text('title').notNull(),
   front: text('front'),
+  frontAssetId: uuid('front_asset_id').references(() => assets.id, { onDelete: 'set null' }),
   back: text('back'),
   payload: jsonb('payload').notNull().default({}),
   rubric: jsonb('rubric'),

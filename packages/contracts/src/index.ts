@@ -15,3 +15,4 @@ export * from './onboarding';
 export * from './events';
 export * from './auth';
 export type * from './api';
+export * from './account';

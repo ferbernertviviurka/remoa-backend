@@ -1,5 +1,8 @@
 // Single source for enum values: used by zod schemas here and by pgEnum in @remoa/db.
 export const cardTypes = ['concept', 'flow', 'image', 'case'] as const;
+/** Card outline on the map (D-095). Flow, image and case cards are always `rect`. */
+export const cardShapes = ['rect', 'pill', 'circle', 'diamond', 'hexagon'] as const;
+export type CardShape = (typeof cardShapes)[number];
 export const mapStates = ['review', 'watch', 'steady', 'unknown'] as const;
 export const challengeModes = ['hidden_card', 'edge', 'next_step', 'occlusion', 'case'] as const;
 export const grades = ['again', 'hard', 'good', 'easy'] as const; // FSRS 1..4 = index + 1

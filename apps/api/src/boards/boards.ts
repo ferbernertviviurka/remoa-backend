@@ -2,10 +2,13 @@ import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
   type CardMask, type MapOp,
   type ListBoards, type GetBoard, type CreateBoard, type UpdateBoard, type DuplicateBoard, type ApplyMapOps,
-  MAX_CARDS_PER_BOARD, err, idSchema, ok,
+  MAX_CARDS_PER_BOARD, PLAN_LIMITS, err, idSchema, ok,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { Abort, guard, run } from '../db';
+import { assertQuota, overTotal } from '../billing/quota';
+import { planOf } from '../billing/plan';
+import { isLinkableItem } from '../matrix/matrix';
 import { cardPreview } from '../cards/cards';
 import { boardListExtras } from '../review/queue';
 
@@ -38,7 +41,8 @@ export const getBoard: GetBoard = async (userId, boardId) => {
     if (!board) return notFound();
     const cardRows = await tx
       .select({
-        id: s.cards.id, boardId: s.cards.boardId, type: s.cards.type, title: s.cards.title, front: s.cards.front,
+        id: s.cards.id, boardId: s.cards.boardId, type: s.cards.type, shape: s.cards.shape, title: s.cards.title, front: s.cards.front,
+        frontAssetId: s.cards.frontAssetId,
         back: s.cards.back, source: s.cards.source, x: s.cards.x, y: s.cards.y, status: s.cards.status,
         order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt, payload: s.cards.payload,
       })
@@ -54,22 +58,30 @@ export const getBoard: GetBoard = async (userId, boardId) => {
   });
 };
 
-export const createBoard: CreateBoard = async (userId, input) =>
-  guard(() =>
+const cardLimitOf = async (userId: string) => PLAN_LIMITS[(await planOf(userId)).plan].limits.cards;
+
+export const createBoard: CreateBoard = async (userId, input) => {
+  const q = await assertQuota(userId, 'boards');
+  if (!q.ok) return q;
+  return guard(() =>
     run(userId, async (tx, s) => {
-      if (input.matrixItemId) {
-        const [m] = await tx.select({ id: s.matrixItems.id }).from(s.matrixItems).where(eq(s.matrixItems.id, input.matrixItemId));
-        if (!m) throw invalid('unknown matrixItemId');
-      }
+      if (input.matrixItemId && !(await isLinkableItem(tx, input.matrixItemId))) throw invalid('unknown or group matrixItemId');
       const [row] = await tx.insert(s.boards).values({ userId, title: input.title, area: input.area, matrixItemId: input.matrixItemId ?? null }).returning();
       if (input.matrixItemId) await tx.insert(s.boardMatrixItems).values({ boardId: row!.id, matrixItemId: input.matrixItemId });
       return row!;
     }),
   );
+};
 
 export const updateBoard: UpdateBoard = async (userId, boardId, input) => {
   if (!isUuid(boardId)) return notFound();
+  const boardLimit = input.archived === false ? PLAN_LIMITS[(await planOf(userId)).plan].limits.boards : null;
   return run(userId, async (tx, s) => {
+    // F08: unarchiving is a new live board for the quota (archive -> create -> unarchive would bypass it).
+    if (boardLimit !== null) {
+      const [b] = await tx.select({ a: s.boards.archivedAt }).from(s.boards).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId)));
+      if (b?.a && (await overTotal(tx, userId, 'boards', boardLimit))) return err<never>('quota_exceeded', 'boards');
+    }
     const set: Partial<typeof s.boards.$inferInsert> = { updatedAt: new Date() };
     if (input.title !== undefined) set.title = input.title;
     if (input.archived !== undefined) set.archivedAt = input.archived ? new Date() : null;
@@ -80,11 +92,15 @@ export const updateBoard: UpdateBoard = async (userId, boardId, input) => {
 
 export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => {
   if (!isUuid(boardId)) return notFound();
+  const q = await assertQuota(userId, 'boards');
+  if (!q.ok) return q;
+  const limit = await cardLimitOf(userId);
   return run(userId, async (tx, s) => {
     const [src] = await tx.select().from(s.boards).where(eq(s.boards.id, boardId));
     if (!src) return notFound();
-    const [copy] = await tx.insert(s.boards).values({ userId, title, area: src.area, sourceBoardId: src.id }).returning();
     const cards = await tx.select().from(s.cards).where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)));
+    if (await overTotal(tx, userId, 'cards', limit, cards.length)) return err<never>('quota_exceeded', 'cards'); // before any insert
+    const [copy] = await tx.insert(s.boards).values({ userId, title, area: src.area, sourceBoardId: src.id }).returning();
     const ids = new Map<string, string>();
     if (cards.length) {
       const maskRows: (typeof s.masks.$inferInsert)[] = [];
@@ -93,7 +109,7 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
         ids.set(c.id, nid);
         const payload = copyImagePayload(c, nid, maskRows);
         return {
-          id: nid, boardId: copy!.id, type: c.type, title: c.title, front: c.front, back: c.back, payload,
+          id: nid, boardId: copy!.id, type: c.type, shape: c.shape, title: c.title, front: c.front, frontAssetId: c.frontAssetId, back: c.back, payload,
           // copies of seed content restart as draft: approval belongs to the reviewed original (rule 6)
           rubric: c.rubric, source: c.source, x: c.x, y: c.y, status: src.status === 'private' ? c.status : 'draft', order: c.order,
         };
@@ -126,7 +142,7 @@ const invalid = (message: string) => new Abort({ code: 'validation', message });
 const coord = Math.round;
 const cleanLabel = (l: string | null) => l?.trim() || null;
 
-async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp) {
+async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp, q: { userId: string; cardLimit: number | null }) {
   const { cards, edges } = s;
   switch (o.op) {
     case 'moveCards':
@@ -144,6 +160,9 @@ async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp) {
         .from(cards)
         .where(and(eq(cards.boardId, o.boardId), isNull(cards.deletedAt), ne(cards.id, c.id)));
       if (n >= MAX_CARDS_PER_BOARD) throw invalid('board card limit');
+      // F08: replaying an op for an already-live card is not a new card. Over the plan: creation blocked, nothing deleted.
+      const [live] = await tx.select({ id: cards.id }).from(cards).where(and(eq(cards.id, c.id), isNull(cards.deletedAt)));
+      if (!live && (await overTotal(tx, q.userId, 'cards', q.cardLimit))) throw new Abort({ code: 'quota_exceeded', message: 'cards' });
       const x = coord(c.position.x);
       const y = coord(c.position.y);
       await tx
@@ -181,16 +200,18 @@ async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp) {
   }
 }
 
-export const applyMapOps: ApplyMapOps = async (userId, ops) =>
-  guard(() =>
+export const applyMapOps: ApplyMapOps = async (userId, ops) => {
+  const cardLimit = ops.some((o) => o.op === 'createCard') ? await cardLimitOf(userId) : null;
+  return guard(() =>
     run(userId, async (tx, s) => {
       const boardIds = [...new Set(ops.map((o) => o.boardId))];
       // RLS on UPDATE silently matches 0 rows, so ownership is checked explicitly.
       const owned = await tx.select({ id: s.boards.id }).from(s.boards).where(and(inArray(s.boards.id, boardIds), eq(s.boards.userId, userId)));
       if (owned.length !== boardIds.length) throw new Abort({ code: 'not_found', message: 'board not found' });
-      for (const o of ops) await applyOp(tx, s, o);
+      for (const o of ops) await applyOp(tx, s, o, { userId, cardLimit });
       await tx.update(s.boards).set({ updatedAt: new Date() }).where(inArray(s.boards.id, boardIds));
       return { applied: ops.map((o) => o.opId) };
     }),
   );
 
+};

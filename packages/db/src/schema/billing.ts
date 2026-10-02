@@ -1,4 +1,4 @@
-import { date, integer, pgTable, text, timestamp, uuid, primaryKey } from 'drizzle-orm/pg-core';
+import { boolean, date, integer, pgTable, text, timestamp, uuid, primaryKey } from 'drizzle-orm/pg-core';
 import { planEnum, subStatusEnum, timestamps, userId } from './common';
 
 export const subscriptions = pgTable('subscriptions', {
@@ -8,6 +8,14 @@ export const subscriptions = pgTable('subscriptions', {
   stripeCustomerId: text('stripe_customer_id'),
   stripeSubscriptionId: text('stripe_subscription_id'),
   renewsAt: timestamp('renews_at', { withTimezone: true }),
+  cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
+  ...timestamps,
+});
+
+/** F08 FR-2: processed Stripe event ids (webhook idempotency). Server-only, no user policy. */
+export const stripeEvents = pgTable('stripe_events', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(),
   ...timestamps,
 });
 

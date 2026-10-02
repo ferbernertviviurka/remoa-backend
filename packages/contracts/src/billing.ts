@@ -34,7 +34,22 @@ export const entitlementsSchema = z.object({
   newCardsPerDay: z.number().int().positive(),
   ankiImportMaxCards: z.number().int().positive(),
   renewsAt: timestampSchema.nullable(),
+  /** F08: canceled in the portal, Pro until renewsAt. */
+  cancelAtPeriodEnd: z.boolean(),
+  /** F08 FR-6: payment failed; Pro kept until this instant (renewsAt + PRO_GRACE_DAYS). */
+  graceUntil: timestampSchema.nullable(),
 });
+
+/**
+ * F08 plan table (provisional, Q-002), shared by server (enforcement) and pricing page (display).
+ * Windows: ai_grades per local study day; ai_generations per calendar month; boards/cards = live totals.
+ */
+export const PLAN_LIMITS = {
+  free: { limits: { ai_grades: 20, ai_generations: 1, boards: 3, cards: 200 }, newCardsPerDay: 10, ankiImportMaxCards: 5000 },
+  pro: { limits: { ai_grades: null, ai_generations: 20, boards: null, cards: null }, newCardsPerDay: 20, ankiImportMaxCards: 20000 },
+} as const satisfies Record<z.infer<typeof planSchema>, Pick<Entitlements, 'limits' | 'newCardsPerDay' | 'ankiImportMaxCards'>>;
+export const PRO_GRACE_DAYS = 7;
+export const PRICES_BRL = { monthly: 39, annual: 349 } as const;
 export type Entitlements = z.infer<typeof entitlementsSchema>;
 
 export const billingPeriods = ['monthly', 'annual'] as const;
@@ -45,5 +60,22 @@ export const checkoutInputSchema = z.object({
   coupon: z.string().optional(),
 });
 export type CheckoutInput = z.infer<typeof checkoutInputSchema>;
+export const portalInputSchema = z.object({ cancel: z.boolean().optional() }); // cancel: open the portal on the cancel flow
+export type PortalInput = z.infer<typeof portalInputSchema>;
+
+/** F08 FR-7 (LGPD): everything the user owns, as returned by POST /v1/account/export. */
+const rows = z.array(z.record(z.string(), z.unknown()));
+export const accountExportSchema = z.object({
+  version: z.literal(1),
+  exportedAt: timestampSchema,
+  userId: idSchema,
+  profile: z.record(z.string(), z.unknown()).nullable(),
+  boards: rows,
+  cards: rows,
+  edges: rows,
+  attempts: rows,
+});
+export type AccountExport = z.infer<typeof accountExportSchema>;
+
 export const redirectUrlSchema = z.object({ url: z.string().url() });
 export type RedirectUrl = z.infer<typeof redirectUrlSchema>;

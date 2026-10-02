@@ -14,7 +14,8 @@ const ext: Record<(typeof imageMimes)[number], string> = { 'image/jpeg': 'jpg', 
 const variants = { w800: 800, w1600: 1600 } as const;
 
 export const signUpload: SignUpload = async (userId, input) => {
-  const key = `uploads/${userId}/${crypto.randomUUID()}.${ext[input.mime]}`;
+  // F13: avatars go under their own raw prefix; account/avatar.ts confirms them (size cap is enforced by the contract and the signed Content-Length).
+  const key = `${input.kind === 'avatar' ? `avatars/${userId}/raw` : `uploads/${userId}`}/${crypto.randomUUID()}.${ext[input.mime]}`;
   return ok({ url: await presignPut(key, input.mime, input.sizeBytes), key });
 };
 

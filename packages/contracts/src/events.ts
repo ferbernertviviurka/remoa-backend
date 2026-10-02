@@ -3,6 +3,7 @@ import { areas, cardTypes, challengeModes, grades, inputKinds, plans, sessionKin
 import { paywallReasons, billingPeriods, paymentMethods } from './billing';
 import { disputeOutcomes } from './editorial';
 import { segments, startPaths } from './onboarding';
+import { accountSections, completenessItems, identityProviders, passwordLabels, preferencesSchema, reminderHourSchema, themes } from './account';
 
 // Rule (F11): events carry counts and enums only, never answer text or card content.
 // Every schema is .strict() so an extra (free-text) prop fails validation.
@@ -73,6 +74,26 @@ export const eventSchemas = {
   onboarding_step: z.object({ step: z.number().int().min(1).max(4) }).strict(),
   onboarding_completed: z.object({ path: z.enum([...startPaths, 'skipped']) }).strict(),
   demo_started: none,
+  // F13 (no name, e-mail or free text)
+  account_viewed: z.object({ section: z.enum(accountSections) }).strict(),
+  avatar_changed: z.object({ source: z.enum(['upload', 'initials', 'removed']), zoom: z.number().min(100).max(200).nullable() }).strict(),
+  profile_name_changed: none,
+  email_change_requested: none,
+  email_change_confirmed: none,
+  password_changed: z.object({ strength: z.enum(passwordLabels) }).strict(),
+  identity_linked: z.object({ provider: z.enum(identityProviders) }).strict(),
+  identity_unlinked: z.object({ provider: z.enum(identityProviders) }).strict(),
+  session_revoked: z.object({ count }).strict(),
+  preference_changed: z
+    .object({ key: preferencesSchema.keyof(), value: z.union([z.boolean(), z.number().int(), z.enum(themes)]).nullable() })
+    .strict(),
+  reminder_enabled: z.object({ hour: reminderHourSchema }).strict(),
+  export_requested: none,
+  export_downloaded: none,
+  deletion_requested: none,
+  deletion_canceled: none,
+  upgrade_clicked: z.object({ source: z.enum(['account_plan', 'usage_nudge']) }).strict(),
+  completeness_chip_clicked: z.object({ item: z.enum(completenessItems) }).strict(),
 } as const;
 
 export type EventName = keyof typeof eventSchemas;

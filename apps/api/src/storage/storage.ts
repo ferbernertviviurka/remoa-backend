@@ -1,5 +1,5 @@
 import {
-  CreateBucketCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client,
+  CreateBucketCommand, DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -56,3 +56,16 @@ export const putBytes = (Key: string, Body: Buffer, ContentType: string) =>
   client().send(new PutObjectCommand({ Bucket: Bucket(), Key, Body, ContentType }));
 
 export const deleteObject = (Key: string) => client().send(new DeleteObjectCommand({ Bucket: Bucket(), Key }));
+
+/** Deletes every object under `Prefix` (account purge, F08). Returns how many were removed. */
+export async function deletePrefix(Prefix: string) {
+  let n = 0;
+  for (let token: string | undefined; ; ) {
+    const page = await client().send(new ListObjectsV2Command({ Bucket: Bucket(), Prefix, ContinuationToken: token }));
+    const Objects = (page.Contents ?? []).map((o) => ({ Key: o.Key! }));
+    if (Objects.length) await client().send(new DeleteObjectsCommand({ Bucket: Bucket(), Delete: { Objects } }));
+    n += Objects.length;
+    token = page.NextContinuationToken;
+    if (!token) return n;
+  }
+}
