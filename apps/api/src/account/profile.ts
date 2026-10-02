@@ -45,6 +45,16 @@ async function streakOf(userId: string, now: Date): Promise<number | null> {
   });
 }
 
+/** Uses the (user_id, type, created_at) index of account_events. */
+async function passwordChangedAt(userId: string): Promise<Date | null> {
+  const { db, accountEvents } = await dbm();
+  const [r] = await db
+    .select({ at: sql<Date | null>`max(${accountEvents.createdAt})` })
+    .from(accountEvents)
+    .where(sql`${accountEvents.userId} = ${userId} and ${accountEvents.type} = 'password_changed'`);
+  return r?.at ? new Date(r.at) : null;
+}
+
 /** FR-3 snapshot. Auth data (e-mail, pending e-mail, identities) comes from Supabase Admin, see `loadAuthUser`. */
 export async function getAccount(userId: string, auth: AuthData, now = new Date()): Promise<AccountSnapshot> {
   const { db, profiles } = await dbm();
@@ -65,6 +75,7 @@ export async function getAccount(userId: string, auth: AuthData, now = new Date(
     streakDays: await streakOf(userId, now),
     joinedAt: auth.joinedAt,
     deletionScheduledFor: row?.deletedAt ? new Date(row.deletedAt.getTime() + RETENTION.deletionGraceDays * DAY) : null,
+    passwordChangedAt: await passwordChangedAt(userId),
     avatarUrls: profile.avatarKey ? await signAvatarUrls(profile.avatarKey) : null,
   };
 }

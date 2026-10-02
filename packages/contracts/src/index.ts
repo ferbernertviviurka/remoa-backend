@@ -10,6 +10,7 @@ export * from './billing';
 export * from './matrix';
 export * from './editorial';
 export * from './import';
+export * from './share';
 export * from './reports';
 export * from './onboarding';
 export * from './events';

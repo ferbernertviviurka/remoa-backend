@@ -1,11 +1,14 @@
 import { Hono } from 'hono';
 import {
   applyMapOpsInputSchema, boardTitleSchema, createBoardInputSchema, errorHttpStatus, parseWith, updateBoardInputSchema,
+  SHARE_ACCESS_HEADER, copyBoardInputSchema, updateShareInputSchema,
   type HttpErrorBody, type Result,
 } from '@remoa/contracts';
 import { z } from 'zod';
 import type { Env } from '../app';
 import { applyMapOps, createBoard, duplicateBoard, getBoard, listBoards, updateBoard } from '../boards/boards';
+import { copySharedBoard } from '../boards/copy';
+import { getShare, updateShare } from '../boards/share';
 
 const send = <T>(r: Result<T>, status: 200 | 201 = 200) =>
   r.ok
@@ -27,6 +30,20 @@ export const boardsRoutes = new Hono<Env>()
     const r = await applyMapOps(c.get('userId'), input.data.ops);
     if (!r.ok) c.get('log').warn('map ops rejected', { code: r.error.code });
     return send(r);
+  })
+  // F17 T4: copy from a shared link (private boards need the access grant the web app keeps in the cookie)
+  .post('/copy', async (c) => {
+    const input = parseWith(copyBoardInputSchema, await body(c.req.raw));
+    if (!input.ok) return send(input);
+    const r = await copySharedBoard(c.get('userId'), input.data, { grant: c.req.header(SHARE_ACCESS_HEADER) ?? null });
+    if (!r.ok) c.get('log').warn('board copy rejected', { code: r.error.code });
+    return send(r, 201);
+  })
+  // F17 T3: owner-only share state
+  .get('/:id/share', async (c) => send(await getShare(c.get('userId'), c.req.param('id'))))
+  .put('/:id/share', async (c) => {
+    const input = parseWith(updateShareInputSchema, await body(c.req.raw));
+    return send(input.ok ? await updateShare(c.get('userId'), c.req.param('id'), input.data) : input);
   })
   .get('/:id', async (c) => send(await getBoard(c.get('userId'), c.req.param('id'))))
   .patch('/:id', async (c) => {

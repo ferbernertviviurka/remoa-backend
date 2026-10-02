@@ -1,16 +1,17 @@
 // In-memory implementations of every signature in ../api. State is module-level; call resetMocks() between tests.
 import { err, ok, parseWith } from '../errors';
 import type { Board, Edge } from '../board';
-import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, mapOpSchema } from '../board';
+import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, boardMatrixItemIds, createBoardInputSchema, mapOpSchema, normalizeBoardTitle } from '../board';
+import { SHARE_LIMITS, sharedBoardSchema, updateShareInputSchema, type ShareState } from '../share';
 import { cardDetailSchema, cardSchema, saveCardInputSchema, type Card, type CardDetail } from '../card';
 import { challengeItemPublicSchema, type ChallengeItem } from '../challenge';
 import type { Grade } from '../enums';
 import { PLAN_LIMITS, type Entitlements } from '../billing';
 import type { ReviewItem } from '../editorial';
-import type { ApkgSummary, ImportReport } from '../import';
+import { startImportInputSchema, type ApkgSummary, type ImportReport } from '../import';
 import { onboardingAnswersSchema, waitlistEntrySchema } from '../onboarding';
 import type * as Api from '../api';
-import { FIXTURE_NOW, fid, retrievabilityFixture, reviewQueueFixture, sepseBoard, sepseCards, sepseEdges } from './fixtures';
+import { FIXTURE_NOW, MOCK_APP_URL, fid, mockShareToken, retrievabilityFixture, reviewQueueFixture, sepseBoard, sepseCards, sepseEdges } from './fixtures';
 import * as review from './review';
 import * as ai from './ai';
 
@@ -18,6 +19,7 @@ export * from './fixtures';
 export * from './review';
 export * from './ai';
 export * from './account';
+export * from './billing';
 
 // --- store -------------------------------------------------------------------
 const clone = <T>(v: T): T => structuredClone(v);
@@ -28,6 +30,10 @@ let seenOps = new Set<string>();
 let sessions = new Map<string, { items: ChallengeItem[]; grades: Map<string, Grade>; skips: number }>();
 let usage: Entitlements['usage'] = { ai_grades: 0, ai_generations: 0, boards: 0, cards: 0 };
 let reviewItems: ReviewItem[] = [];
+/** F17: server-only share state, keyed by board id (the real columns never reach the client). */
+type ShareRow = { token: string | null; password: string | null; version: number; copies: number };
+let shares = new Map<string, ShareRow>();
+let unlockFails = new Map<string, number>();
 let seq = 0;
 const nextId = () => fid(10_000 + seq++);
 
@@ -51,6 +57,8 @@ export function resetMocks() {
       createdAt: FIXTURE_NOW,
     },
   ];
+  shares = new Map();
+  unlockFails = new Map();
   seq = 0;
   review.resetReviewMocks();
   ai.resetAiMocks();
@@ -94,6 +102,7 @@ export const listBoards: Api.ListBoards = async (userId) =>
         status: b.status,
         updatedAt: b.updatedAt,
         matrixItemId: b.matrixItemId,
+        access: b.access,
         cardCount: cards.filter((c) => c.boardId === b.id).length,
         edgeCount: edges.filter((e) => e.boardId === b.id).length,
         dueCount: review.reviewQueueDueCount(b.id),
@@ -111,14 +120,21 @@ export const getBoard: Api.GetBoard = async (userId, boardId) => {
   });
 };
 
-export const createBoard: Api.CreateBoard = async (userId, { title, area = 'CM', matrixItemId = null }) => {
+export const createBoard: Api.CreateBoard = async (userId, raw) => {
+  const parsed = parseWith(createBoardInputSchema, raw);
+  if (!parsed.ok) return parsed;
+  const { title, area, access, password } = parsed.data;
+  const id = nextId();
+  const share = access === 'owner' ? null : setShareMock(id, access, password);
   const board: Board = {
     ...clone(sepseBoard),
-    id: nextId(),
+    id,
     userId,
     title,
     area,
-    matrixItemId,
+    matrixItemId: boardMatrixItemIds(parsed.data)[0] ?? null,
+    access,
+    shareUrl: share?.url ?? null,
     status: 'private',
     temporalMark: null,
     archivedAt: null,
@@ -138,18 +154,22 @@ export const updateBoard: Api.UpdateBoard = async (userId, boardId, { title, arc
   return ok(clone(board));
 };
 
+function copyGraph(fromId: string, toId: string, keep: { tags: boolean }) {
+  const ids = new Map<string, string>();
+  for (const c of cards.filter((x) => x.boardId === fromId)) {
+    ids.set(c.id, nextId());
+    cards.push({ ...clone(c), id: ids.get(c.id)!, boardId: toId, tags: keep.tags ? c.tags : [] });
+  }
+  for (const e of edges.filter((x) => x.boardId === fromId))
+    edges.push({ ...e, id: nextId(), boardId: toId, fromCardId: ids.get(e.fromCardId)!, toCardId: ids.get(e.toCardId)! });
+}
+
 export const duplicateBoard: Api.DuplicateBoard = async (userId, boardId, title) => {
   const src = findBoard(boardId);
   if (!src || src.userId !== userId) return err('not_found', 'board not found');
   const created = await createBoard(userId, { title, area: src.area });
   if (!created.ok) return created;
-  const ids = new Map<string, string>();
-  for (const c of cards.filter((x) => x.boardId === boardId)) {
-    ids.set(c.id, nextId());
-    cards.push({ ...clone(c), id: ids.get(c.id)!, boardId: created.data.id });
-  }
-  for (const e of edges.filter((x) => x.boardId === boardId))
-    edges.push({ ...e, id: nextId(), boardId: created.data.id, fromCardId: ids.get(e.fromCardId)!, toCardId: ids.get(e.toCardId)! });
+  copyGraph(boardId, created.data.id, { tags: true });
   return created;
 };
 
@@ -166,6 +186,11 @@ export const applyMapOps: Api.ApplyMapOps = async (_userId, rawOps) => {
         for (const m of o.moves) {
           const c = cards.find((x) => x.id === m.cardId);
           if (c) c.position = m.position;
+        }
+      if (o.op === 'resizeCards')
+        for (const r of o.sizes) {
+          const c = cards.find((x) => x.id === r.cardId && x.boardId === o.boardId);
+          if (c) c.size = r.size;
         }
       if (o.op === 'createCard') {
         if (cards.filter((c) => c.boardId === o.boardId).length >= MAX_CARDS_PER_BOARD) return err('validation', 'board card limit');
@@ -351,8 +376,13 @@ export const finishSession: Api.FinishSession = async (_userId, sessionId) => {
 
 // --- F06 anki ----------------------------------------------------------------
 export const apkgSummaryFixture: ApkgSummary = {
-  decks: [{ id: '1', name: 'Clínica Médica::Sepse', cardCount: 2 }],
-  noteTypes: [{ id: '10', name: 'Basic', kind: 'basic', fields: ['Front', 'Back'], noteCount: 2 }],
+  decks: [{ id: '1', name: 'Clínica Médica::Sepse', cardCount: 2, noteCount: 2 }],
+  noteTypes: [
+    {
+      id: '10', name: 'Basic', kind: 'basic', fields: ['Front', 'Back'], noteCount: 2,
+      samples: [{ Front: 'Critério de sepse', Back: 'Disfunção orgânica com SOFA ≥ 2' }, { Front: 'Choque séptico', Back: 'Sepse com vasopressor e lactato > 2' }],
+    },
+  ],
   cardCount: 2,
   mediaCount: 0,
 };
@@ -372,7 +402,7 @@ export const inspect: Api.Inspect = async (file) =>
 export const planImport: Api.PlanImport = (summary, mappings, deckIds) => {
   const decks = summary.decks.filter((d) => deckIds.includes(d.id));
   if (decks.length === 0) return err('validation', 'no deck selected');
-  return ok({ deckIds, mappings, estimatedCards: decks.reduce((n, d) => n + d.cardCount, 0) });
+  return ok({ deckIds, mappings, estimatedCards: decks.reduce((n, d) => n + d.noteCount, 0) });
 };
 
 export const toDrafts: Api.ToDrafts = async () =>
@@ -383,10 +413,136 @@ export const toDrafts: Api.ToDrafts = async () =>
       title: c.title,
       front: c.front,
       back: c.back,
-      source: 'Anki',
+      source: 'Anki · Clínica Médica › Sepse',
       payload: {},
+      deckId: '1',
+      deckName: 'Clínica Médica::Sepse',
+      media: [],
+      backMedia: null,
+      tags: ['Sepse'],
+      empty: false,
     })),
   );
+
+export const signImportUpload: Api.SignImportUpload = async (userId) =>
+  ok({ url: 'https://r2.mock.local/put', key: `imports/${userId}/${fid(701)}.apkg` });
+export const inspectImport: Api.InspectImport = async (_userId, { key }) =>
+  key.endsWith('.apkg') ? ok(apkgSummaryFixture) : err('validation', 'not an .apkg upload');
+export const startImport: Api.StartImport = async (_userId, input) => {
+  const parsed = parseWith(startImportInputSchema, input);
+  return parsed.ok ? ok({ importId: fid(700) }) : parsed;
+};
+export const findExistingBoard: Api.FindExistingBoard = async (userId, title) => {
+  const b = boards.find((x) => x.userId === userId && !x.archivedAt && normalizeBoardTitle(x.title) === normalizeBoardTitle(title));
+  return ok({ board: b ? { id: b.id, title: b.title } : null });
+};
+
+// --- F17 sharing ---------------------------------------------------------------
+const shareUrlOf = (token: string) => `${MOCK_APP_URL}/m/${token}`;
+const grantOf = (boardId: string, version: number) => `mock-grant:${boardId}:${version}`;
+const notActive = () => err<never>('not_found', 'link not active');
+
+/** Enters or stays in a link access; a new token on first share or `rotate`. Bumps the version (old grants stop working). */
+function setShareMock(boardId: string, access: 'password' | 'public', password?: string, rotate = false) {
+  const cur = shares.get(boardId);
+  const row: ShareRow = {
+    token: cur?.token && !rotate ? cur.token : mockShareToken(1000 + seq++),
+    password: access === 'password' ? (password ?? cur?.password ?? null) : null,
+    version: (cur?.version ?? 0) + 1,
+    copies: cur?.copies ?? 0,
+  };
+  shares.set(boardId, row);
+  return { url: shareUrlOf(row.token!) };
+}
+const ownBoard = (userId: string, boardId: string) => {
+  const b = findBoard(boardId);
+  return b && b.userId === userId ? b : null;
+};
+const shareStateOf = (b: Board): ShareState => {
+  const r = shares.get(b.id);
+  return { access: b.access, url: b.access !== 'owner' && r?.token ? shareUrlOf(r.token) : null, copies: r?.copies ?? 0 };
+};
+const byToken = (token: string) => {
+  for (const [id, r] of shares) {
+    const b = findBoard(id);
+    if (r.token === token && b && !b.archivedAt && b.access !== 'owner') return { b, r };
+  }
+  return null;
+};
+
+export const getShare: Api.GetShare = async (userId, boardId) => {
+  const b = ownBoard(userId, boardId);
+  return b ? ok(shareStateOf(b)) : err('not_found', 'board not found');
+};
+
+export const updateShare: Api.UpdateShare = async (userId, boardId, input) => {
+  const parsed = parseWith(updateShareInputSchema, input);
+  if (!parsed.ok) return parsed;
+  const b = ownBoard(userId, boardId);
+  if (!b) return err('not_found', 'board not found');
+  const { access, password, rotate } = parsed.data;
+  if (access === 'password' && password === undefined && b.access !== 'password') return err('validation', 'password: required for access=password');
+  if (access === 'owner') {
+    const r = shares.get(b.id);
+    if (r) shares.set(b.id, { ...r, token: null, password: null, version: r.version + 1 });
+    b.shareUrl = null;
+  } else b.shareUrl = setShareMock(b.id, access, password, rotate).url;
+  b.access = access;
+  b.updatedAt = new Date();
+  return ok(shareStateOf(b));
+};
+
+export const getSharedBoard: Api.GetSharedBoard = async (token, { grant, viewerId }) => {
+  const hit = byToken(token);
+  if (!hit) return notActive();
+  const { b, r } = hit;
+  const isOwner = viewerId === b.userId;
+  if (b.access === 'password' && !isOwner && grant !== grantOf(b.id, r.version)) return ok({ locked: true });
+  const own = cards.filter((c) => c.boardId === b.id);
+  const assetIds = [...new Set(own.flatMap((c) => [c.frontAssetId, c.backAssetId, c.type === 'image' ? c.payload.assetId : null]))].filter((x): x is string => !!x);
+  const assets = Object.fromEntries(
+    assetIds.map((id) => [id, { width: 1600, height: 1200, attribution: null, urls: { w800: `https://r2.mock.local/${id}-800.webp`, w1600: `https://r2.mock.local/${id}-1600.webp` } }]),
+  );
+  return ok(
+    sharedBoardSchema.parse({
+      locked: false, access: b.access, title: b.title, area: b.area, matrixItems: [], cards: own, edges: edges.filter((e) => e.boardId === b.id),
+      assets, cardCount: own.length, updatedAt: b.updatedAt, ownBoardId: isOwner ? b.id : null,
+    }),
+  );
+};
+
+export const unlockShared: Api.UnlockShared = async (token, { password }, { ip }) => {
+  const hit = byToken(token);
+  if (!hit || hit.b.access !== 'password') return notActive();
+  const key = `${token}|${ip}`;
+  const fails = unlockFails.get(key) ?? 0;
+  if (fails >= SHARE_LIMITS.unlockAttempts) return err('rate_limited', 'too many attempts');
+  if (password !== hit.r.password) {
+    unlockFails.set(key, fails + 1);
+    return err('unauthorized', 'wrong password');
+  }
+  unlockFails.delete(key);
+  return ok({ value: grantOf(hit.b.id, hit.r.version), expiresAt: new Date(Date.now() + SHARE_LIMITS.accessTtlSeconds * 1000) });
+};
+
+/** `forbidden` = private board without a valid grant. Own board = plain duplicate. */
+export const copySharedBoard: Api.CopySharedBoard = async (userId, { token }, { grant }) => {
+  const view = await getSharedBoard(token, { grant, viewerId: userId });
+  if (!view.ok) return view;
+  if (view.data.locked) return err('forbidden', 'unlock first');
+  const { b, r } = byToken(token)!;
+  if (b.userId === userId) return duplicateBoard(userId, b.id, `${b.title} (cópia)`);
+  const q = await assertQuota(userId, 'boards');
+  if (!q.ok) return q;
+  const created = await createBoard(userId, { title: b.title, area: b.area, matrixItemId: b.matrixItemId });
+  if (!created.ok) return created;
+  const copy = findBoard(created.data.id)!;
+  copy.sourceBoardId = b.id;
+  copy.copiedFrom = { at: new Date() };
+  copyGraph(b.id, copy.id, { tags: false });
+  r.copies++;
+  return ok(clone(copy));
+};
 
 export const getImportProgress: Api.GetImportProgress = async (_userId, importId) =>
   ok({ importId, status: 'done', processed: 2, total: 2, error: null });
@@ -573,9 +729,18 @@ export const mocks = {
   getGenerationProgress: ai.getGenerationProgress,
   inspect,
   planImport,
+  signImportUpload,
+  inspectImport,
+  startImport,
   toDrafts,
   getImportProgress,
   getImportReport,
+  findExistingBoard,
+  getShare,
+  updateShare,
+  getSharedBoard,
+  unlockShared,
+  copySharedBoard,
   getCoverage,
   getEntitlements,
   assertQuota,
@@ -624,9 +789,18 @@ export const mocks = {
   getGenerationProgress: Api.GetGenerationProgress;
   inspect: Api.Inspect;
   planImport: Api.PlanImport;
+  signImportUpload: Api.SignImportUpload;
+  inspectImport: Api.InspectImport;
+  startImport: Api.StartImport;
   toDrafts: Api.ToDrafts;
   getImportProgress: Api.GetImportProgress;
   getImportReport: Api.GetImportReport;
+  findExistingBoard: Api.FindExistingBoard;
+  getShare: Api.GetShare;
+  updateShare: Api.UpdateShare;
+  getSharedBoard: Api.GetSharedBoard;
+  unlockShared: Api.UnlockShared;
+  copySharedBoard: Api.CopySharedBoard;
   getCoverage: Api.GetCoverage;
   getEntitlements: Api.GetEntitlements;
   assertQuota: Api.AssertQuota;

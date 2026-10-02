@@ -48,7 +48,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
     it('no subscription row -> free with free limits and zero usage', async () => {
       const e = await plan(await newUser());
       expect(e).toMatchObject({ plan: 'free', status: null, newCardsPerDay: 10, ankiImportMaxCards: 5000, graceUntil: null, usage: { ai_grades: 0, ai_generations: 0, boards: 0, cards: 0 } });
-      expect(e.limits).toEqual({ ai_grades: 20, ai_generations: 1, boards: 3, cards: 200 });
+      expect(e.limits).toEqual({ ai_grades: 20, ai_generations: 1, boards: 2, cards: 50 });
     });
 
     it('pro active / trialing -> pro; free plan row stays free', async () => {
@@ -148,7 +148,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
       expect((await q.assertQuota(u, 'boards')).ok).toBe(true);
       expect((await q.assertQuota(u, 'boards')).ok).toBe(true);
       const b = (await board(u)).json.data!.id;
-      await bulkCards(b, 199);
+      await bulkCards(b, 49);
       expect((await q.assertQuota(u, 'cards')).ok).toBe(true);
       await bulkCards(b, 1);
       expect(await q.assertQuota(u, 'cards')).toEqual({ ok: false, error: { code: 'quota_exceeded', message: 'cards' } });
@@ -156,11 +156,11 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
   });
 
   describe('enforcement', () => {
-    it('create board: 4th is 402 "boards" for free; pro is unlimited; archiving frees a slot', async () => {
+    it('create board: 3rd is 402 "boards" for free; pro is unlimited; archiving frees a slot', async () => {
       const [f, p] = [await newUser(), await newUser()];
       await sub(p, {});
       const ids: string[] = [];
-      for (let i = 0; i < 3; i++) ids.push((await board(f)).json.data!.id);
+      for (let i = 0; i < 2; i++) ids.push((await board(f)).json.data!.id);
       const over = await board(f);
       expect(over.status).toBe(402);
       expect(over.json.error).toEqual({ code: 'quota_exceeded', message: 'boards' });
@@ -168,10 +168,29 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
       for (let i = 0; i < 5; i++) expect((await board(p)).status).toBe(201);
     });
 
+    it('FR-22 legacy free account with 3 live boards: reads, edits and ops still work; create/duplicate are 402 "boards"', async () => {
+      const f = await newUser();
+      const rows = await dbm.db.insert(dbm.boards).values([1, 2, 3].map((i) => ({ userId: f, title: `Legado ${i}` }))).returning();
+      const e = await plan(f);
+      expect(e.usage.boards).toBe(3);
+      expect(e.limits.boards).toBe(2);
+      const auth = { authorization: `Bearer ${f}`, 'content-type': 'application/json' };
+      for (const [i, b] of rows.entries()) {
+        expect((await app.request(`/v1/boards/${b.id}`, { headers: auth })).status).toBe(200);
+        const patch = await app.request(`/v1/boards/${b.id}`, { method: 'PATCH', headers: auth, body: JSON.stringify({ title: `Novo ${i}` }) });
+        expect(patch.status).toBe(200);
+        expect((await call(f, '/ops', { ops: [createCardOp(b.id)] })).status).toBe(200);
+      }
+      for (const r of [await board(f), await call(f, `/${rows[0]!.id}/duplicate`, { title: 'Copia' })]) {
+        expect(r.status).toBe(402);
+        expect(r.json.error).toEqual({ code: 'quota_exceeded', message: 'boards' });
+      }
+    });
+
     it('unarchive counts as a new live board: archive -> create -> unarchive cannot exceed the limit', async () => {
       const f = await newUser();
       const ids: string[] = [];
-      for (let i = 0; i < 3; i++) ids.push((await board(f)).json.data!.id);
+      for (let i = 0; i < 2; i++) ids.push((await board(f)).json.data!.id);
       const patch = (id: string, archived: boolean) => app.request(`/v1/boards/${id}`, { method: 'PATCH', headers: { authorization: `Bearer ${f}`, 'content-type': 'application/json' }, body: JSON.stringify({ archived }) });
       expect((await patch(ids[0]!, true)).status).toBe(200);
       expect((await board(f)).status).toBe(201);
@@ -179,27 +198,56 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
       expect((await patch(ids[1]!, false)).status).toBe(200); // already live: not a new board
     });
 
-    it('createCard op: 200th card ok, 201st is 402 "cards" and nothing is applied; replay of a live card is not a new card; pro unlimited', async () => {
+    it('createCard op: 50th card ok, 51st is 402 "cards" and nothing is applied; replay of a live card is not a new card; pro unlimited', async () => {
       const [f, p] = [await newUser(), await newUser()];
       await sub(p, {});
       const b = (await board(f)).json.data!.id;
-      await bulkCards(b, 199);
+      await bulkCards(b, 49);
       const ok1 = createCardOp(b);
       expect((await call(f, '/ops', { ops: [ok1] })).status).toBe(200);
       expect((await call(f, '/ops', { ops: [ok1] })).status).toBe(200); // replay, same id
       const over = await call(f, '/ops', { ops: [createCardOp(b)] });
       expect(over.status).toBe(402);
       expect(over.json.error).toEqual({ code: 'quota_exceeded', message: 'cards' });
-      expect((await plan(f)).usage.cards).toBe(200);
+      expect((await plan(f)).usage.cards).toBe(50);
       const pb = (await board(p)).json.data!.id;
-      await bulkCards(pb, 200);
+      await bulkCards(pb, 50);
       expect((await call(p, '/ops', { ops: [createCardOp(pb)] })).status).toBe(200);
+    });
+
+    it('D-167: cards of archived maps do not count; unarchiving is a boards matter, but the next card then hits the cards cap', async () => {
+      const f = await newUser();
+      const a = (await board(f)).json.data!.id;
+      const live = (await board(f)).json.data!.id;
+      await bulkCards(a, 50);
+      const patch = (id: string, archived: boolean) => app.request(`/v1/boards/${id}`, { method: 'PATCH', headers: { authorization: `Bearer ${f}`, 'content-type': 'application/json' }, body: JSON.stringify({ archived }) });
+      expect((await patch(a, true)).status).toBe(200);
+      expect((await plan(f)).usage.cards).toBe(0);
+      expect((await call(f, '/ops', { ops: [createCardOp(live)] })).status).toBe(200);
+      expect((await patch(a, true)).status).toBe(200);
+      expect((await patch(live, true)).status).toBe(200);
+      expect((await patch(a, false)).status).toBe(200);
+      expect((await plan(f)).usage.cards).toBe(50);
+      const over = await call(f, '/ops', { ops: [createCardOp(a)] });
+      expect(over.status).toBe(402);
+      expect(over.json.error?.message).toBe('cards');
+    });
+
+    it('legacy free account with 120 live cards keeps reading/editing; only creation blocks', async () => {
+      const f = await newUser();
+      const b = (await board(f)).json.data!.id;
+      await bulkCards(b, 120);
+      const auth = { authorization: `Bearer ${f}`, 'content-type': 'application/json' };
+      expect((await app.request(`/v1/boards/${b}`, { headers: auth })).status).toBe(200);
+      expect((await app.request(`/v1/boards/${b}`, { method: 'PATCH', headers: auth, body: JSON.stringify({ title: 'Editado' }) })).status).toBe(200);
+      expect((await plan(f)).usage.cards).toBe(120);
+      expect((await call(f, '/ops', { ops: [createCardOp(b)] })).status).toBe(402);
     });
 
     it('duplicate board is blocked when the copy would exceed the card limit, with no half-created board', async () => {
       const u = await newUser();
       const b = (await board(u)).json.data!.id;
-      await bulkCards(b, 120);
+      await bulkCards(b, 30);
       const r = await call(u, `/${b}/duplicate`, { title: 'Copia' });
       expect(r.status).toBe(402);
       expect(r.json.error?.message).toBe('cards');

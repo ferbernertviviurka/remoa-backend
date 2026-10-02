@@ -22,11 +22,26 @@ export const stripeRoutes = ({ stripe, mock, webOrigin }: { stripe?: StripePort;
     return c.json({ ok: true, data: { result: r } });
   });
   if (!mock || !stripe) return app;
-  const replay = (kind: 'checkout' | 'portal') => async (c: import('hono').Context<Env>) => {
-    const event = mock.mockEvent(kind, c.req.query('session') ?? '');
-    if (!event) return fail({ code: 'not_found', message: 'unknown session' });
-    await applyStripeEvent(event, stripe);
-    return c.redirect(`${webOrigin}/conta?${kind}=ok`, 302);
-  };
-  return app.get('/mock/checkout', replay('checkout')).get('/mock/portal', replay('portal'));
+  const sid = (c: import('hono').Context<Env>) => c.req.query('session') ?? '';
+  // F15: the checkout returns like Stripe's success_url/cancel_url; `&pix=pending` completes a Pix unpaid (FR-8) until /mock/pix-confirm.
+  const back = (id: string) => `${webOrigin}/planos/sucesso?session_id=${encodeURIComponent(id)}`;
+  return app
+    .get('/mock/checkout', async (c) => {
+      const event = mock.mockEvent('checkout', sid(c), { pending: c.req.query('pix') === 'pending' });
+      if (!event) return fail({ code: 'not_found', message: 'unknown session' });
+      if (event !== 'pending') await applyStripeEvent(event, stripe);
+      return c.redirect(back(sid(c)), 302);
+    })
+    .get('/mock/checkout/cancel', (c) => (mock.isOpen(sid(c)) ? c.redirect(`${webOrigin}/planos?cancelado=1`, 302) : fail({ code: 'not_found', message: 'unknown session' })))
+    .get('/mock/pix-confirm', async (c) => {
+      const event = mock.mockPixConfirm(sid(c));
+      if (!event) return fail({ code: 'not_found', message: 'unknown session' });
+      return c.json({ ok: true, data: { result: await applyStripeEvent(event, stripe) } });
+    })
+    .get('/mock/portal', async (c) => {
+      const event = mock.mockEvent('portal', sid(c));
+      if (!event || event === 'pending') return fail({ code: 'not_found', message: 'unknown session' });
+      await applyStripeEvent(event, stripe);
+      return c.redirect(`${webOrigin}/conta?portal=ok`, 302);
+    });
 };

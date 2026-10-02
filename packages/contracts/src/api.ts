@@ -3,7 +3,7 @@
 import type { Grade, MapState } from './enums';
 import type { Result } from './errors';
 import type { Board, BoardGraph, BoardSummary, CreateBoardInput, MapOp, UpdateBoardInput } from './board';
-import type { AssetRef, AssetView, CardDetail, CardDraft, Rubric, SaveCardInput, UploadCompleteInput, UploadSignInput, UploadSignOutput } from './card';
+import type { AssetRef, AssetView, CardDetail, Rubric, SaveCardInput, UploadCompleteInput, UploadSignInput, UploadSignOutput } from './card';
 import type { Attempt, FsrsMemory, IntervalPreview, QueueItem, RecordAttemptOutput, RetrievabilityMap } from './review';
 import type {
   AnswerInput,
@@ -15,10 +15,24 @@ import type {
   StartSessionOutput,
 } from './challenge';
 import type { BoardGenerationProgress, GenerateBoardInput, GraderInput, GraderVerdict } from './ai';
-import type { AccountExport, CheckoutInput, Entitlements, PortalInput, QuotaKey, RedirectUrl } from './billing';
+import type {
+  AccountExport,
+  CheckoutInput,
+  CheckoutSessionStatus,
+  CouponInput,
+  CouponValidation,
+  Entitlements,
+  PortalInput,
+  PriceBook,
+  QuotaKey,
+  RedirectUrl,
+  SubscriptionSummary,
+  SwitchToAnnualResult,
+} from './billing';
 import type { BoardMatrixLink, CoverageRow, MatrixItem, MatrixArea } from './matrix';
 import type { BoardVersion, PublishVersionInput, ResolveDisputeInput, ReviewDecision, ReviewItem } from './editorial';
-import type { ApkgSummary, FieldMapping, ImportPlan, ImportProgress, ImportReport } from './import';
+import type { AnkiDraft, ApkgSummary, ExistingBoard, FieldMapping, ImportPlan, ImportProgress, ImportReport, ImportKeyInput, ImportUploadSignInput, StartImportInput } from './import';
+import type { CopyBoardInput, ShareState, SharedAccessGrant, SharedBoardResponse, UnlockInput, UpdateShareInput } from './share';
 import type { HomeSummary, ProgressSummary } from './reports';
 import type { OnboardingAnswers, WaitlistEntry } from './onboarding';
 import type {
@@ -88,9 +102,30 @@ export type GetGenerationProgress = (userId: string, jobId: string) => Async<Boa
 export type Inspect = (file: Uint8Array) => Async<ApkgSummary>;
 export type PlanImport = (summary: ApkgSummary, mappings: FieldMapping[], deckIds: string[]) => Result<ImportPlan>;
 /** Needs the file again: plans are plain data, the parsed sqlite is not kept. */
-export type ToDrafts = (file: Uint8Array, plan: ImportPlan) => Async<CardDraft[]>;
+export type ToDrafts = (file: Uint8Array, plan: ImportPlan) => Async<AnkiDraft[]>;
+/** F06 HTTP flow (D-115). */
+export type SignImportUpload = (userId: string, input: ImportUploadSignInput) => Async<UploadSignOutput>;
+export type InspectImport = (userId: string, input: ImportKeyInput) => Async<ApkgSummary>;
+export type StartImport = (userId: string, input: StartImportInput) => Async<{ importId: string }>;
 export type GetImportProgress = (userId: string, importId: string) => Async<ImportProgress>;
 export type GetImportReport = (userId: string, importId: string) => Async<ImportReport>;
+/** F17 FR-11: GET /v1/imports/anki/existing?title= */
+export type FindExistingBoard = (userId: string, title: string) => Async<ExistingBoard>;
+
+// F17 sharing. Share state is written only by the server connection after an ownership check (D-288).
+/** GET /v1/boards/:id/share — owner only, else not_found. */
+export type GetShare = (userId: string, boardId: string) => Async<ShareState>;
+/** PUT /v1/boards/:id/share — every change bumps share_secret_version; `validation` when entering `password` without one. */
+export type UpdateShare = (userId: string, boardId: string, input: UpdateShareInput) => Async<ShareState>;
+/**
+ * GET /v1/public/shared/:token (no auth). `grant` = SHARE_ACCESS_HEADER value; `viewerId` = optional session (owner → ownBoardId).
+ * not_found for unknown/rotated/owner-only/archived tokens, without telling which.
+ */
+export type GetSharedBoard = (token: string, ctx: { grant: string | null; viewerId: string | null }) => Async<SharedBoardResponse>;
+/** POST /v1/public/shared/:token/unlock — `unauthorized` (generic) on a wrong password; `rate_limited` after SHARE_LIMITS.unlockAttempts. */
+export type UnlockShared = (token: string, input: UnlockInput, ctx: { ip: string }) => Async<SharedAccessGrant>;
+/** POST /v1/boards/copy — FR-15: fresh assets/R2 objects, access owner, FSRS from zero; `quota_exceeded` creates nothing. */
+export type CopySharedBoard = (userId: string, input: CopyBoardInput, ctx: { grant: string | null }) => Async<Board>;
 
 // F07 matrix
 export type GetCoverage = (userId: string) => Async<CoverageRow[]>;
@@ -113,6 +148,18 @@ export type CreateCheckout = (userId: string, input: CheckoutInput) => Async<Red
 export type OpenPortal = (userId: string, input: PortalInput) => Async<RedirectUrl>;
 export type ExportAccount = (userId: string) => Async<AccountExport>;
 export type DeleteAccount = (userId: string) => Async<{ hardDeleteAt: Date }>;
+
+// F15 planos e checkout. All under /v1/billing (requireUser). POST /checkout and POST /portal are the F08 ones above.
+/** GET /v1/billing/prices — Stripe Prices (cached; PRICES_BRL with STRIPE=mock) + nextChargeOn in the user's timezone. */
+export type GetPriceBook = (userId: string, now: Date) => Async<PriceBook>;
+/** POST /v1/billing/coupon {code} — `{ valid: false }` for any bad code; 429 rate_limited when guessed too often. */
+export type ValidateCoupon = (userId: string, input: CouponInput) => Async<CouponValidation>;
+/** GET /v1/billing/checkout/:sessionId — `not_found` unless the session's client_reference_id is the caller. */
+export type GetCheckoutSession = (userId: string, sessionId: string) => Async<CheckoutSessionStatus>;
+/** GET /v1/billing/subscription — null when there is no paid period (Free, never subscribed or lapsed). */
+export type GetSubscription = (userId: string) => Async<SubscriptionSummary | null>;
+/** POST /v1/billing/switch-annual — `conflict` when not on a monthly Pro period. */
+export type SwitchToAnnual = (userId: string) => Async<SwitchToAnnualResult>;
 
 // F10 editorial (reviewerId from session; approveCard/requestChange/rejectCard = decideReviewItem)
 export type ListReviewQueue = (reviewerId: string) => Async<ReviewItem[]>;

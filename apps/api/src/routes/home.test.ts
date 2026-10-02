@@ -107,4 +107,12 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/home', () => {
     }
     expect([...ms].sort((x, y) => x - y)[2]!).toBeLessThan(100);
   });
+  it('D-200: a note card is not due, not planned, not in the week', async () => {
+    const u = await newUser();
+    const [b] = await dbm.db.insert(dbm.boards).values({ userId: u, title: 'Mapa' }).returning();
+    const [note] = await dbm.db.insert(dbm.cards).values({ boardId: b!.id, type: 'note', title: 'n' }).returning();
+    await putState(u, note!.id, new Date(Date.now() - HOUR)); // crafted state
+    const r = await home.getHomeSummary(u, new Date());
+    expect(r.ok && [r.data.dueToday, r.data.week.reduce((a, d) => a + d.planned, 0), r.data.upcoming.reduce((a, d) => a + d.count, 0)]).toEqual([0, 0, 0]);
+  });
 });

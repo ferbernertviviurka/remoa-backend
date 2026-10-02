@@ -1,7 +1,7 @@
 // F13 Minha conta: profile, security, preferences, account snapshot. Pure helpers live here so UI and server agree.
 import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
-import { entitlementsSchema, quotaKeySchema, type Entitlements } from './billing';
+import { entitlementsSchema, planDefinition, planFeatureKeys, quotaKeySchema, type Entitlements, type PlanFeatureKey } from './billing';
 import { goalSchema, segmentSchema } from './onboarding';
 
 /** FR-1: /conta/[secao]. */
@@ -28,7 +28,7 @@ export const ACCOUNT_LIMITS = {
 } as const;
 
 // --- profile -----------------------------------------------------------------
-export const stageSchema = segmentSchema; // same values as onboarding: y3_4 | y5_6 | graduated
+export const stageSchema = segmentSchema; // same values as onboarding: see `segments`
 export type Stage = z.infer<typeof stageSchema>;
 export const AVATAR_COLOR_COUNT = 5;
 export const avatarColorSchema = z.number().int().min(0).max(AVATAR_COLOR_COUNT - 1);
@@ -227,6 +227,8 @@ export const accountSnapshotSchema = z.object({
   joinedAt: timestampSchema,
   /** Hard-delete instant (deleted_at + RETENTION.deletionGraceDays); null = not scheduled. */
   deletionScheduledFor: timestampSchema.nullable(),
+  /** Last `password_changed` in account_events; null = never changed in Remoa (line hidden). */
+  passwordChangedAt: timestampSchema.nullable(),
   avatarUrls: avatarVariantsSchema.nullable(),
 });
 export type AccountSnapshot = z.infer<typeof accountSnapshotSchema>;
@@ -250,3 +252,23 @@ export const accountEventTypes = [
   'reminder_unsubscribed',
 ] as const;
 export type AccountEventType = (typeof accountEventTypes)[number];
+
+// --- F15 matrix (lives here, not in billing.ts: billing → account would be an import cycle; D-183) ---
+export type ComparisonRow = {
+  key: PlanFeatureKey;
+  free: number | null;
+  pro: number | null;
+  /** Student usage in the current plan's column; null = not metered (Anki, new cards/day) or entitlements failed to load (FR-12). */
+  usage: { used: number; limit: number | null; tone: UsageTone } | null;
+};
+const meteredKeys: readonly string[] = quotaKeySchema.options;
+/** FR-4: matrix rows with the student's usage in the current plan column. */
+export const comparisonRows = (e: Pick<Entitlements, 'usage' | 'limits'> | null): ComparisonRow[] => {
+  const free = planDefinition('free');
+  const pro = planDefinition('pro');
+  return planFeatureKeys.map((key) => {
+    if (!e || !meteredKeys.includes(key)) return { key, free: free[key], pro: pro[key], usage: null };
+    const q = key as keyof Entitlements['usage'];
+    return { key, free: free[key], pro: pro[key], usage: { used: e.usage[q], limit: e.limits[q], tone: usageTone(e.usage[q], e.limits[q]) } };
+  });
+};

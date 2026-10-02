@@ -13,7 +13,8 @@ const session = z.object({
   client_reference_id: z.string().uuid(),
   customer: z.string(),
   subscription: z.string().nullish(),
-  metadata: z.object({ period: z.enum(['monthly', 'annual']) }).partial().optional(),
+  // `metadata.userId` is set only by our checkout (stripe.ts); a Payment Link can put ?client_reference_id= in its URL but cannot set metadata (G05 A1).
+  metadata: z.object({ period: z.enum(['monthly', 'annual']), userId: z.string().uuid() }).partial().optional(),
 });
 // API >= 2025-03-31 (basil; SDK pins 2026-09-30) moved invoice.subscription to parent.subscription_details.subscription.
 const invoice = z.object({ subscription: z.string().nullish(), parent: z.object({ subscription_details: z.object({ subscription: z.string().nullish() }).nullish() }).nullish(), lines: z.object({ data: z.array(z.object({ period: z.object({ end: z.number() }) })).min(1) }).optional() });
@@ -36,7 +37,9 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
       // Not one of ours (no user reference, e.g. a dashboard payment link): ignore instead of a 500 retry loop.
       if (!parsed.success) { log.warn('checkout session without a valid user reference ignored'); break; }
       const s = parsed.data;
-      if (s.payment_status && s.payment_status !== 'paid') break;
+      if (s.metadata?.userId !== s.client_reference_id) { log.warn('checkout session not created by our checkout ignored', { sessionUser: s.client_reference_id }); break; }
+      // `no_payment_required` = fully covered by a coupon (G05 M1); `unpaid` = Pix still pending.
+      if (s.payment_status && s.payment_status !== 'paid' && s.payment_status !== 'no_payment_required') break;
       const info = s.mode === 'subscription' ? await stripe.subscription(s.subscription!) : null;
       const period: CheckoutInput['period'] = s.metadata?.period ?? 'monthly';
       // Pix: Pro until expiry, no auto-renew (D-101). Buying again while a Pix period runs extends it instead of losing the remaining days.
@@ -51,7 +54,8 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
     case 'invoice.paid': {
       const i = invoice.parse(o);
       const id = i.subscription ?? i.parent?.subscription_details?.subscription;
-      const end = i.lines?.data[0]?.period.end;
+      // Proration invoices (switch to annual) list the old period's credit first: the newest period end wins (G05 M2).
+      const end = i.lines?.data.length ? Math.max(...i.lines.data.map((l) => l.period.end)) : undefined;
       if (id && end) write = (tx) => tx.update(subscriptions).set({ status: 'active', renewsAt: new Date(end * 1000), updatedAt: new Date() }).where(bySub(id));
       break;
     }

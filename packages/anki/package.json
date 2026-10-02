@@ -3,8 +3,23 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests" },
-  "dependencies": { "@remoa/contracts": "workspace:*", "sql.js": "^1.14.2" },
-  "devDependencies": { "@types/sql.js": "^1.4.9" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:cov": "vitest run --coverage --coverage.include=src/** --coverage.exclude=src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@remoa/contracts": "workspace:*",
+    "fflate": "^0.8.3",
+    "fzstd": "^0.1.1",
+    "sql.js": "^1.14.2"
+  },
+  "devDependencies": {
+    "@types/sql.js": "^1.4.9",
+    "@vitest/coverage-v8": "^3.2.7"
+  }
 }

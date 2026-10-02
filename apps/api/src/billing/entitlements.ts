@@ -4,7 +4,7 @@ import { ok, PLAN_LIMITS, type GetEntitlements } from '@remoa/contracts';
 import type { Env } from '../app';
 import { dbm } from '../db';
 import { planOf } from './plan';
-import { localDay } from './quota';
+import { liveCardsSql, localDay } from './quota';
 
 /** F08: plan, limits and current usage. Counters/totals are read with the server connection, always filtered by user. */
 export const getEntitlements = async (userId: string, now = new Date()): ReturnType<GetEntitlements> => {
@@ -15,7 +15,7 @@ export const getEntitlements = async (userId: string, now = new Date()): ReturnT
       (select coalesce(sum(ai_generations), 0)::int from usage_counters where user_id = ${userId}
         and period >= date_trunc('month', ${day}::date) and period < date_trunc('month', ${day}::date) + interval '1 month') as ai_generations,
       (select count(*)::int from boards where user_id = ${userId} and archived_at is null) as boards,
-      (select count(*)::int from cards c join boards b on b.id = c.board_id where b.user_id = ${userId} and c.deleted_at is null) as cards`);
+      (${liveCardsSql(userId)}) as cards`);
   const { limits, newCardsPerDay, ankiImportMaxCards } = PLAN_LIMITS[p.plan];
   return ok({ ...p, limits, usage: u!, newCardsPerDay, ankiImportMaxCards });
 };

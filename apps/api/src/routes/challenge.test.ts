@@ -51,7 +51,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     const raw = await res.text();
     return { status: res.status, raw, json: JSON.parse(raw) as J };
   };
-  const card = async (boardId: string, o: { type?: 'concept' | 'flow' | 'image' | 'case'; title?: string; front?: string; back?: string; payload?: unknown; rubric?: unknown; order?: number }) => {
+  const card = async (boardId: string, o: { type?: 'concept' | 'flow' | 'image' | 'case' | 'note'; title?: string; front?: string; back?: string; payload?: unknown; rubric?: unknown; order?: number }) => {
     const [c] = await dbm.db.insert(dbm.cards).values({ boardId, type: o.type ?? 'concept', title: o.title ?? 'c', front: o.front, back: o.back, payload: o.payload ?? {}, rubric: o.rubric, order: o.order ?? 0 }).returning();
     return c!.id;
   };
@@ -476,5 +476,16 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     expect((await post(b, '/finish', { sessionId: s.sessionId })).status).toBe(404);
     expect((await post(b, '/start', { kind: 'board', boardId: w.b })).status).toBe(404);
     expect((await post(b, '/finish', { sessionId: 'not-a-uuid' })).status).toBe(422);
+  });
+  it('D-200: a note is neither an item nor an edge neighbour / distractor source', async () => {
+    const u = await newUser();
+    const b = await board(u);
+    const x = await card(b, { title: 'X', front: 'Pergunta X', back: 'Resposta X' });
+    const n = await card(b, { type: 'note', title: 'Conteudo' });
+    await edge(b, x, n, 'ilustra');
+    const s = await start(u, { kind: 'board', boardId: b });
+    expect(s.items.map((i) => i.cardId)).toEqual([x]);
+    expect(s.items[0].mode).not.toBe('edge'); // its only connection ends in a note
+    expect(s.raw).not.toContain('Conteudo');
   });
 });

@@ -10,7 +10,7 @@ import { planOf } from '../billing/plan';
 
 const ROLLOVER_HOUR = 4; // FRD: the study day rolls over at 04:00 local
 const DEFAULT_TZ = 'America/Sao_Paulo';
-const MODE: Record<CardType, ChallengeMode> = { concept: 'hidden_card', case: 'case', flow: 'next_step', image: 'occlusion' };
+const MODE: Record<CardType, ChallengeMode> = { concept: 'hidden_card', case: 'case', flow: 'next_step', image: 'occlusion', note: 'hidden_card' /* never used: D-200 notes are filtered out in loadCards */ };
 
 type CardRow = { id: string; boardId: string; type: CardType; order: number; boardMs: number; own: boolean; subs: string[]; x: number; y: number };
 type StateRow = FsrsMemory & { cardId: string; subId: string; createdMs: number };
@@ -35,7 +35,7 @@ async function loadCards(tx: Tx, userId: string, boardId: string | null): Promis
     select c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
       case c.type when 'flow' then ${subIds('steps')} when 'image' then ${subIds('masks')} else '[""]'::jsonb end as subs
     from cards c join boards b on b.id = c.board_id
-    where c.deleted_at is null and ${scope}`);
+    where c.deleted_at is null and c.type <> 'note' and ${scope}`); // D-200: notes are never scheduled, counted, or in the recall map (absent = no state)
   return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y }));
 }
 

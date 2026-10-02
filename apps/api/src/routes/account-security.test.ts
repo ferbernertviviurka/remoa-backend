@@ -102,6 +102,7 @@ describe.skipIf(!live)('/v1/account password, sessions, D-123, export limit', ()
     const a = await signIn(u.email);
     const b = await signIn(u.email);
     const sent = mailer.sentEmails().length;
+    expect((await call(a.token, 'GET', '/account/me')).json.data.passwordChangedAt).toBeNull();
     const r = await call(a.token, 'POST', '/account/password', { currentPassword: PW, newPassword: 'senha-nova-123' });
     expect(r.status).toBe(200);
     expect(r.json.data).toEqual({ revokedSessions: 1 }); // b only: the reauth session was already deleted
@@ -113,6 +114,7 @@ describe.skipIf(!live)('/v1/account password, sessions, D-123, export limit', ()
     const mail = mailer.sentEmails().slice(sent).find((m) => m.to === u.email);
     expect(mail?.subject).toBe('Sua senha do Remoa foi alterada');
     expect(await events(u.id, 'password_changed')).toBe(1);
+    expect((await call(a.token, 'GET', '/account/me')).json.data.passwordChangedAt).toEqual(expect.any(String)); // "Última alteração" (F13 FR-9)
     expect(await events(u.id, 'password_change_failed')).toBe(0); // success gives the slot back
     await expect(signIn(u.email, 'senha-nova-123')).resolves.toBeTruthy();
   }, 30_000);

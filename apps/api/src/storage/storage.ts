@@ -1,5 +1,5 @@
 import {
-  CreateBucketCommand, DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
+  CopyObjectCommand, CreateBucketCommand, DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -56,6 +56,10 @@ export const putBytes = (Key: string, Body: Buffer, ContentType: string) =>
   client().send(new PutObjectCommand({ Bucket: Bucket(), Key, Body, ContentType }));
 
 export const deleteObject = (Key: string) => client().send(new DeleteObjectCommand({ Bucket: Bucket(), Key }));
+
+/** Server-side copy inside the bucket (F17 copy from a shared link: the new owner gets independent objects). */
+export const copyObject = (from: string, Key: string) =>
+  client().send(new CopyObjectCommand({ Bucket: Bucket(), Key, CopySource: `${Bucket()}/${from.split('/').map(encodeURIComponent).join('/')}` }));
 
 /** Deletes every object under `Prefix` (account purge, F08). Returns how many were removed. */
 export async function deletePrefix(Prefix: string) {

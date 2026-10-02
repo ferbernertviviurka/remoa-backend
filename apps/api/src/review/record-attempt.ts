@@ -20,6 +20,7 @@ export const recordAttempt: RecordAttempt = async (a) => {
         .from(s.cards)
         .where(and(eq(s.cards.id, a.cardId), isNull(s.cards.deletedAt))); // RLS: readable boards only
       if (!card) throw new Abort({ code: 'not_found', message: 'card not found' });
+      if (card.type === 'note') throw bad('note cards are not reviewable');
       const subId = a.subId ?? '';
       const valid = card.type === 'flow' ? payloadIds(card.payload, 'steps') : card.type === 'image' ? payloadIds(card.payload, 'masks') : null;
       if (valid ? !valid.includes(subId) : subId !== '') throw bad('subId does not belong to the card');

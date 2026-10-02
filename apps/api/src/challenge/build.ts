@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
   challengeItemSchema, ok, type CardType, type CaseStage, type ChallengeItem, type ChallengeMode, type FsrsMemory, type QueueItem, type Result,
 } from '@remoa/contracts';
@@ -174,7 +174,7 @@ export async function loadCtx(tx: Tx, userId: string, queue: QueueItem[]): Promi
   if (!boardIds.length) return ctx;
   const s = await import('@remoa/db');
   const [cards, edges, boards] = await Promise.all([
-    tx.select().from(s.cards).where(and(inArray(s.cards.boardId, boardIds), isNull(s.cards.deletedAt))),
+    tx.select().from(s.cards).where(and(inArray(s.cards.boardId, boardIds), isNull(s.cards.deletedAt), ne(s.cards.type, 'note'))),
     tx.select().from(s.edges).where(inArray(s.edges.boardId, boardIds)),
     tx.select({ id: s.boards.id, status: s.boards.status, userId: s.boards.userId }).from(s.boards).where(inArray(s.boards.id, boardIds)),
   ]);
