@@ -57,6 +57,11 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ role: 'admin' }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
   });
 
+  it('student cannot soft-delete or undelete their own account directly (F08: deleted_at is server-owned)', async () => {
+    await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ deletedAt: new Date(0) }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
+    await m.withUser(b, (tx) => tx.update(s.profiles).set({ name: 'ok' }).where(eq(s.profiles.userId, b)));
+  });
+
   it('edge cannot point at a card from another board (P-004)', async () => {
     const [b1] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'b1' }).returning());
     const [b2] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'b2' }).returning());
@@ -83,5 +88,33 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await m.withUser(b, (tx) => tx.insert(s.attempts).values(at(b, sc!.id)));
     expect(await m.withUser(a, (tx) => tx.select().from(s.fsrsState).where(eq(s.fsrsState.cardId, sc!.id)))).toHaveLength(0); // A cannot read B's state
     expect(await m.withUser(a, (tx) => tx.select().from(s.attempts).where(eq(s.attempts.cardId, sc!.id)))).toHaveLength(0);
+  });
+
+  it('F13: user_preferences own row only; reminder_last_sent_on server-owned', async () => {
+    await m.withUser(a, (tx) => tx.insert(s.userPreferences).values({ userId: a, reminderEnabled: true, newCardsPerDay: 15 }));
+    await m.withUser(a, (tx) => tx.update(s.userPreferences).set({ theme: 'system', reduceMotion: true }).where(eq(s.userPreferences.userId, a)));
+    await expect(m.withUser(b, (tx) => tx.insert(s.userPreferences).values({ userId: a }))).rejects.toThrow();
+    expect(await m.withUser(b, (tx) => tx.select().from(s.userPreferences).where(eq(s.userPreferences.userId, a)))).toHaveLength(0);
+    const changed = await m.withUser(b, (tx) => tx.update(s.userPreferences).set({ theme: 'dark' }).where(eq(s.userPreferences.userId, a)).returning());
+    expect(changed).toHaveLength(0);
+    await expect(m.withUser(a, (tx) => tx.update(s.userPreferences).set({ reminderLastSentOn: '2026-10-02' }).where(eq(s.userPreferences.userId, a)))).rejects.toThrow();
+    await expect(m.withUser(a, (tx) => tx.update(s.userPreferences).set({ reminderHour: 9 }).where(eq(s.userPreferences.userId, a)))).rejects.toThrow(); // check
+    const [row] = await m.db.select().from(s.userPreferences).where(eq(s.userPreferences.userId, a));
+    expect(row).toMatchObject({ theme: 'system', reduceMotion: true, reminderEnabled: true, newCardsPerDay: 15, reminderHour: 19 });
+  });
+
+  it('F13: account_events readable by owner, never written by the client', async () => {
+    await m.db.insert(s.accountEvents).values({ userId: a, type: 'password_changed' }); // server connection
+    await expect(m.withUser(a, (tx) => tx.insert(s.accountEvents).values({ userId: a, type: 'export_requested' }))).rejects.toThrow();
+    expect(await m.withUser(a, (tx) => tx.select().from(s.accountEvents).where(eq(s.accountEvents.userId, a)))).toHaveLength(1);
+    expect(await m.withUser(b, (tx) => tx.select().from(s.accountEvents).where(eq(s.accountEvents.userId, a)))).toHaveLength(0);
+    expect(await m.withUser(a, (tx) => tx.delete(s.accountEvents).where(eq(s.accountEvents.userId, a)).returning()).catch(() => 'denied')).toBe('denied');
+  });
+
+  it('F13: profile avatar_color/stage self-editable, avatar_key and deleted_at server-owned', async () => {
+    await m.withUser(b, (tx) => tx.update(s.profiles).set({ avatarColor: 3, stage: 'y5_6', goal: 'undecided' }).where(eq(s.profiles.userId, b)));
+    await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ avatarKey: `avatars/${a}/x.webp` }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ avatarColor: 7 }).where(eq(s.profiles.userId, b)))).rejects.toThrow(); // check
+    await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ deletedAt: new Date() }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
   });
 });

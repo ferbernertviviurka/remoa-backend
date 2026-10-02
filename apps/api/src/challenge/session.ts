@@ -105,7 +105,7 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
       const rubric = rubricSchema.safeParse(card?.rubric);
       if (item.grading === 'none' || !rubric.success) a.fallback = 'no_rubric';
       else if (!grade) a.fallback = 'grader_error'; // no grader wired (prod before F05): do not burn quota
-      else if (!(await assertQuota(userId)).ok) a.fallback = 'quota';
+      else if (!(await assertQuota(userId, 'ai_grades')).ok) a.fallback = 'quota';
       else {
         const g = await withTimeout(
           Promise.resolve().then(() => grade({ prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text })),

@@ -3,7 +3,7 @@ import { pgEnum, timestamp, uuid } from 'drizzle-orm/pg-core';
 // Supabase-managed table: drizzle-orm marks it as existing, so drizzle-kit never creates it.
 import { authUsers } from 'drizzle-orm/supabase';
 import {
-  areas, assetLicenses, boardStatuses, cardStatuses, cardTypes, challengeModes, editorialStatuses,
+  areas, assetLicenses, boardStatuses, cardShapes, cardStatuses, cardTypes, challengeModes, editorialStatuses,
   flagSources, fsrsCardStates, importKinds, inputKinds, jobStatuses, plans, profileRoles,
   sessionKinds, subscriptionStatuses,
 } from '@remoa/contracts';
@@ -21,6 +21,7 @@ export const roleEnum = pgEnum('profile_role', profileRoles);
 export const areaEnum = pgEnum('area', areas);
 export const boardStatusEnum = pgEnum('board_status', boardStatuses);
 export const cardTypeEnum = pgEnum('card_type', cardTypes);
+export const cardShapeEnum = pgEnum('card_shape', cardShapes);
 export const cardStatusEnum = pgEnum('card_status', cardStatuses);
 export const licenseEnum = pgEnum('asset_license', assetLicenses);
 export const fsrsStateEnum = pgEnum('fsrs_card_state', fsrsCardStates);

@@ -1,11 +1,12 @@
 import { sql } from 'drizzle-orm';
 import {
-  DEFAULT_NEW_PER_DAY, PREVIEW_MAX_NODES, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
+  PLAN_LIMITS, PREVIEW_MAX_NODES, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
   type BoardSummary, type GetDailyQueue, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
 } from '@remoa/contracts';
 import { aggregate, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
 import { run } from '../db';
+import { planOf } from '../billing/plan';
 
 const ROLLOVER_HOUR = 4; // FRD: the study day rolls over at 04:00 local
 const DEFAULT_TZ = 'America/Sao_Paulo';
@@ -118,13 +119,16 @@ export function buildQueue(
 }
 
 const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number }) => {
-  const [cards, states, win] = await Promise.all([loadCards(tx, userId, boardId), loadStates(tx, userId, null), dayWindow(tx, userId, opts.now)]);
+  const [cards, states, win, plan, [pref]] = await Promise.all([
+    loadCards(tx, userId, boardId), loadStates(tx, userId, null), dayWindow(tx, userId, opts.now), planOf(userId, opts.now), // F08: newCardsPerDay by plan (P-027)
+    tx.execute<{ n: number | null }>(sql`select new_cards_per_day as n from user_preferences where user_id = ${userId}`), // F13 D-122: the user's choice, capped by the plan
+  ]);
   // the daily limit is global, also for a board queue: count states first attempted today across all boards
   let introduced = 0;
   for (const s of states.values()) if (s.createdMs >= win.startMs) introduced++;
   const ids = boardId ? new Set(cards.map((c) => c.id)) : null;
   const scoped = ids ? new Map([...states].filter(([, s]) => ids.has(s.cardId))) : states;
-  return buildQueue(itemsOf(cards, boardId !== null), scoped, { now: opts.now, endMs: win.endMs, newBudget: DEFAULT_NEW_PER_DAY - introduced, limit: opts.limit });
+  return buildQueue(itemsOf(cards, boardId !== null), scoped, { now: opts.now, endMs: win.endMs, newBudget: effectiveNewCardsPerDay(pref?.n ?? null, PLAN_LIMITS[plan.plan].newCardsPerDay) - introduced, limit: opts.limit });
 };
 
 export const getDailyQueue: GetDailyQueue = async (userId, opts) => ok(await run(userId, (tx) => queueFor(tx, userId, null, opts)));

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assetLicenses, cardStatuses, cardTypes } from './enums';
+import { assetLicenses, cardShapes, cardStatuses, cardTypes } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
 
 // --- Payload parts ---------------------------------------------------------
@@ -79,8 +79,12 @@ export const cardSchema = z.object({
   id: idSchema,
   boardId: idSchema,
   type: z.enum(cardTypes),
+  /** D-095: outline on the map; `rect` for flow, image and case. */
+  shape: z.enum(cardShapes).default('rect'),
   title: z.string().min(1),
   front: z.string().nullable(),
+  /** D-096: optional image on the question side (front); must be an asset the user can read. */
+  frontAssetId: idSchema.nullable().default(null),
   back: z.string().nullable(),
   source: z.string().nullable(),
   position: positionSchema.nullable(), // null = not laid out yet (imports)
@@ -117,7 +121,11 @@ export type CardDetail = z.infer<typeof cardDetailSchema>;
  */
 const editable = z.object({
   title: z.string().trim().min(1).max(200),
+  /** D-095: only `concept` may use a shape other than `rect` (the API rejects otherwise). */
+  shape: z.enum(cardShapes).default('rect'),
   front: z.string().max(5000).nullable(),
+  /** D-096: question image (front side). */
+  frontAssetId: idSchema.nullable().default(null),
   back: z.string().max(5000).nullable(),
   source: z.string().max(1000).nullable(),
 });
@@ -156,7 +164,12 @@ export const edgeDraftSchema = z.object({ fromRef: z.string().min(1), toRef: z.s
 export type EdgeDraft = z.infer<typeof edgeDraftSchema>;
 
 // --- Uploads (F02 routes) ----------------------------------------------------
-export const uploadSignInputSchema = z.object({ mime: z.enum(imageMimes), sizeBytes: z.number().int().positive().max(10 * 1024 * 1024) });
+/** F13: `avatar` uploads are capped at AVATAR_MAX_BYTES; omitted kind = card image (F02). */
+export const uploadKinds = ['card_image', 'avatar'] as const;
+export const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+export const uploadSignInputSchema = z
+  .object({ mime: z.enum(imageMimes), sizeBytes: z.number().int().positive().max(10 * 1024 * 1024), kind: z.enum(uploadKinds).optional() })
+  .refine((v) => v.kind !== 'avatar' || v.sizeBytes <= AVATAR_MAX_BYTES, { message: 'avatar too large', path: ['sizeBytes'] });
 export type UploadSignInput = z.infer<typeof uploadSignInputSchema>;
 /** `url` is a presigned PUT: send the file with the same Content-Type and Content-Length. */
 export const uploadSignOutputSchema = z.object({ url: z.string().url(), key: z.string().min(1) });

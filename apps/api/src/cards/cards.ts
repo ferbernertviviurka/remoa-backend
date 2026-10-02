@@ -30,7 +30,7 @@ export const getCard: GetCard = async (userId, cardId) => {
     if (!r) return notFound();
     // payload is returned as stored: an unedited card may still hold `{}` for its type.
     return ok({
-      id: r.id, boardId: r.boardId, type: r.type, title: r.title, front: r.front, back: r.back, source: r.source,
+      id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, source: r.source,
       position: { x: r.x, y: r.y }, status: r.status, order: r.order, reviewerId: r.reviewerId, updatedAt: r.updatedAt,
       rubric: r.rubric, payload: r.payload, preview: cardPreview(r.type, r.payload),
     } as unknown as CardDetail);
@@ -49,6 +49,12 @@ export const saveCard: SaveCard = async (userId, cardId, input) => {
         .where(and(eq(s.cards.id, cardId), isNull(s.cards.deletedAt), eq(s.boards.userId, userId)));
       if (!row) throw new Abort({ code: 'not_found', message: 'card not found' });
 
+      if (input.shape !== 'rect' && input.type !== 'concept') throw new Abort({ code: 'validation', message: 'shape other than rect is only for concept cards' });
+      if (input.frontAssetId) {
+        const [fa] = await tx.select({ id: s.assets.id }).from(s.assets).where(eq(s.assets.id, input.frontAssetId));
+        if (!fa) throw new Abort({ code: 'validation', message: 'frontAssetId is not an asset you can read' });
+      }
+
       const maskRows: (typeof s.masks.$inferInsert)[] = [];
       if (input.type === 'image') {
         const { assetId, masks } = input.payload;
@@ -60,7 +66,7 @@ export const saveCard: SaveCard = async (userId, cardId, input) => {
 
       await tx
         .update(s.cards)
-        .set({ type: input.type, title: input.title, front: input.front, back: input.back, source: input.source, payload: input.payload, updatedAt: new Date() })
+        .set({ type: input.type, shape: input.shape, title: input.title, front: input.front, frontAssetId: input.frontAssetId, back: input.back, source: input.source, payload: input.payload, updatedAt: new Date() })
         .where(eq(s.cards.id, cardId));
 
       // mirror inline masks into `masks`: drop removed, upsert the rest

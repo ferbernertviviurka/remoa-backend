@@ -1,8 +1,9 @@
 import { serve } from '@hono/node-server';
 import { createClient } from '@supabase/supabase-js';
-import { createApp } from './app';
+import { createApp, supabaseVerifier } from './app';
 import { ensureBucket } from './storage/storage';
 import { createLogger } from '@remoa/log';
+import { createMockStripe, createStripe } from './billing/stripe';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
 
 const env = (k: string) => {
@@ -16,10 +17,17 @@ const supabase = createClient(env('NEXT_PUBLIC_SUPABASE_URL'), env('NEXT_PUBLIC_
 // ponytail: one Auth round-trip per request; switch to local JWKS verification (jose) when latency matters.
 // D-061: no real grader until F05. GRADER=mock (dev/e2e only, ignored in production) injects the contracts mock grader.
 const grade = process.env.GRADER === 'mock' && process.env.NODE_ENV !== 'production' ? mockGrader : undefined;
+// D-100: STRIPE=mock (dev/e2e only, refused in production) swaps the SDK for a fake with dev-only /v1/stripe/mock/* endpoints.
+const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
+if (process.env.STRIPE === 'mock' && process.env.NODE_ENV === 'production') throw new Error('STRIPE=mock is not allowed in production');
+const mockStripe = process.env.STRIPE === 'mock' ? createMockStripe({ apiOrigin: `http://localhost:${process.env.PORT ?? 4000}` }) : undefined;
+const stripe = mockStripe?.port ?? (process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin }) : undefined);
 const app = createApp({
   grade,
-  webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',
-  verifyToken: async (token) => (await supabase.auth.getUser(token)).data.user?.id ?? null,
+  stripe,
+  mockStripe,
+  webOrigin,
+  verifyToken: supabaseVerifier(supabase),
 });
 
 ensureBucket().catch((e) => createLogger({ requestId: 'boot' }).error('storage bucket unavailable', { error: String(e) }));

@@ -15,12 +15,25 @@ import type {
   StartSessionOutput,
 } from './challenge';
 import type { BoardGenerationProgress, GenerateBoardInput, GraderInput, GraderVerdict } from './ai';
-import type { CheckoutInput, Entitlements, QuotaKey, RedirectUrl } from './billing';
-import type { CoverageRow, MatrixItem, MatrixArea } from './matrix';
+import type { AccountExport, CheckoutInput, Entitlements, PortalInput, QuotaKey, RedirectUrl } from './billing';
+import type { BoardMatrixLink, CoverageRow, MatrixItem, MatrixArea } from './matrix';
 import type { BoardVersion, PublishVersionInput, ResolveDisputeInput, ReviewDecision, ReviewItem } from './editorial';
 import type { ApkgSummary, FieldMapping, ImportPlan, ImportProgress, ImportReport } from './import';
 import type { HomeSummary, ProgressSummary } from './reports';
 import type { OnboardingAnswers, WaitlistEntry } from './onboarding';
+import type {
+  AccountSnapshot,
+  AvatarVariants,
+  ChangePasswordInput,
+  ConfirmAvatarInput,
+  LinkedIdentity,
+  Preferences,
+  Profile,
+  RequestEmailChangeInput,
+  SessionInfo,
+  UpdatePreferencesInput,
+  UpdateProfileInput,
+} from './account';
 
 type Async<T> = Promise<Result<T>>;
 
@@ -83,6 +96,12 @@ export type GetImportReport = (userId: string, importId: string) => Async<Import
 export type GetCoverage = (userId: string) => Async<CoverageRow[]>;
 /** G01 v2 "Novo mapa": items of an area (public reference data). */
 export type ListMatrixItems = (area: MatrixArea) => Async<MatrixItem[]>;
+/** F07 FR-2: up to 3 items by trigram similarity to a board title (GET /v1/matrix/suggest?title=). */
+export type SuggestMatrixItems = (title: string) => Async<MatrixItem[]>;
+/** F07: link an own board to an item (POST /v1/matrix/links); idempotent; sets boards.matrix_item_id when null. */
+export type LinkBoardMatrix = (userId: string, link: BoardMatrixLink) => Async<BoardMatrixLink>;
+/** F07: unlink (DELETE /v1/matrix/links); clears boards.matrix_item_id when it pointed at the item. */
+export type UnlinkBoardMatrix = (userId: string, link: BoardMatrixLink) => Async<null>;
 /** G01 v2 "Hoje" (GET /v1/home). */
 export type GetHomeSummary = (userId: string, now: Date) => Async<HomeSummary>;
 
@@ -91,8 +110,8 @@ export type GetEntitlements = (userId: string) => Async<Entitlements>;
 /** Fails with `quota_exceeded` when the key is at its limit. */
 export type AssertQuota = (userId: string, key: QuotaKey) => Async<null>;
 export type CreateCheckout = (userId: string, input: CheckoutInput) => Async<RedirectUrl>;
-export type OpenPortal = (userId: string) => Async<RedirectUrl>;
-export type ExportAccount = (userId: string) => Async<RedirectUrl>;
+export type OpenPortal = (userId: string, input: PortalInput) => Async<RedirectUrl>;
+export type ExportAccount = (userId: string) => Async<AccountExport>;
 export type DeleteAccount = (userId: string) => Async<{ hardDeleteAt: Date }>;
 
 // F10 editorial (reviewerId from session; approveCard/requestChange/rejectCard = decideReviewItem)
@@ -109,3 +128,36 @@ export type GetProgress = (userId: string, now: Date) => Async<ProgressSummary>;
 // F12 onboarding
 export type JoinWaitlist = (entry: WaitlistEntry) => Async<null>;
 export type SaveOnboarding = (userId: string, answers: OnboardingAnswers) => Async<null>;
+
+// F13 account. All under /v1/account (requireUser) except unsubscribe. `sessionId` = JWT `session_id` claim (D-124).
+// During scheduled deletion only GET /me, POST /deletion/cancel and POST /export pass; the rest is 403 account_deleted (D-123).
+/** GET /v1/account/me */
+export type GetAccount = (userId: string) => Async<AccountSnapshot>;
+/** PATCH /v1/account/profile */
+export type UpdateProfile = (userId: string, input: UpdateProfileInput) => Async<Profile>;
+/** POST /v1/account/avatar — after PUT to the URL from POST /v1/uploads/sign {kind:'avatar'}; re-encodes, strips EXIF, deletes the previous object. */
+export type ConfirmAvatar = (userId: string, input: ConfirmAvatarInput) => Async<AvatarVariants>;
+/** DELETE /v1/account/avatar */
+export type RemoveAvatar = (userId: string) => Async<null>;
+/** POST /v1/account/email — generic error when the address is taken (never reveals it); 403 during scheduled deletion. */
+export type RequestEmailChange = (userId: string, input: RequestEmailChangeInput) => Async<{ pendingEmail: string }>;
+/** POST /v1/account/email/resend — 429 rate_limited within ACCOUNT_LIMITS.emailResendSeconds. */
+export type ResendEmailChange = (userId: string) => Async<{ pendingEmail: string }>;
+/** DELETE /v1/account/email */
+export type CancelEmailChange = (userId: string) => Async<null>;
+/** POST /v1/account/password — revokes every other session; 429 after ACCOUNT_LIMITS.passwordAttemptsPerHour failures. */
+export type ChangePassword = (userId: string, sessionId: string, input: ChangePasswordInput) => Async<{ revokedSessions: number }>;
+/** GET /v1/account/sessions */
+export type ListSessions = (userId: string, sessionId: string) => Async<SessionInfo[]>;
+/** DELETE /v1/account/sessions/:id — the current session is `validation` (use sign out). */
+export type RevokeSession = (userId: string, sessionId: string, targetId: string) => Async<null>;
+/** DELETE /v1/account/sessions — all but the current one. */
+export type RevokeOtherSessions = (userId: string, sessionId: string) => Async<{ count: number }>;
+/** DELETE /v1/account/identities/:provider — `conflict` when it is the last sign-in method. Linking Google is client-side OAuth. */
+export type UnlinkIdentity = (userId: string, provider: LinkedIdentity['provider']) => Async<LinkedIdentity[]>;
+/** PATCH /v1/account/preferences — Free above PLAN_LIMITS.free.newCardsPerDay = `forbidden` 'pro_required' (D-122). */
+export type UpdatePreferences = (userId: string, input: UpdatePreferencesInput) => Async<Preferences>;
+/** POST /v1/account/deletion/cancel — clears profiles.deleted_at. The Stripe subscription canceled at DELETE stays canceled. */
+export type CancelDeletion = (userId: string) => Async<null>;
+/** GET /v1/public/unsubscribe?token= (no auth) — turns the daily reminder off. */
+export type UnsubscribeReminder = (token: string) => Async<null>;

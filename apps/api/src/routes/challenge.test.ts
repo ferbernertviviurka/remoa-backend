@@ -394,7 +394,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     const s = await start(u, { kind: 'board', boardId: w.b });
     const id = s.items[0]!.id;
     const r1 = await post(u, '/skip', { sessionId: s.sessionId, itemId: id });
-    expect(r1.json.data).toEqual({ remaining: 11 });
+    expect(r1.json.data).toEqual({ remaining: 10 }); // F08: free plan, 10 new cards per day
     expect((await post(u, '/skip', { sessionId: s.sessionId, itemId: id })).status).toBe(200);
     expect((await post(u, '/skip', { sessionId: s.sessionId, itemId: id })).status).toBe(409);
     expect((await post(u, '/skip', { sessionId: s.sessionId, itemId: 'nope' })).status).toBe(404);

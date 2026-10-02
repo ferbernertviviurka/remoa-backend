@@ -6,12 +6,17 @@ export const segments = ['y3_4', 'y5_6', 'graduated'] as const;
 export const segmentSchema = z.enum(segments);
 export type Segment = z.infer<typeof segmentSchema>;
 
+/** F13: exam goal (profiles.goal). */
+export const goals = ['enamed_2027_1', 'enamed_2027_2', 'undecided'] as const;
+export const goalSchema = z.enum(goals);
+export type Goal = z.infer<typeof goalSchema>;
+
 export const startPaths = ['pdf', 'anki', 'seed'] as const;
 export type StartPath = (typeof startPaths)[number];
 
 export const onboardingAnswersSchema = z.object({
   segment: segmentSchema,
-  goal: z.string().regex(/^[a-z0-9_]+$/), // e.g. enamed_2027_1 (profiles.goal)
+  goal: z.string().regex(/^[a-z0-9_]+$/), // e.g. enamed_2027_1 (profiles.goal); F13 reads it through goalSchema
   area: z.enum(areas),
   startPath: z.enum(startPaths),
 });

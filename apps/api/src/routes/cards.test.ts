@@ -76,6 +76,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('cards, u
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => tokens[t] ?? null });
     for (const id of [a, b]) {
       await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+      await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan: 'pro', status: 'active' }); // F08: these tests are not about plan limits
     }
   }, 30_000);
   afterAll(async () => {
@@ -284,5 +285,44 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('cards, u
     expect((await put('ta', c1, { ...base, type: 'image', payload: { assetId: asset, masks: [m] } })).status).toBe(200);
     expect((await put('ta', c2, { ...base, title: 'novo', type: 'image', payload: { assetId: asset, masks: [m] } })).status).toBe(422);
     expect((await call('ta', 'GET', `/v1/cards/${c2}`)).json.data.title).not.toBe('novo');
+  });
+  it('D-095/D-096: shape and frontAssetId default, persist, validate, copy, and gate the asset', async () => {
+    const board = await newBoard();
+    const c = await newCard(board);
+    const got = (t: string, id: string) => call(t, 'GET', `/v1/cards/${id}`);
+    expect((await got('ta', c)).json.data).toMatchObject({ shape: 'rect', frontAssetId: null });
+    const graph = async () => (await call('ta', 'GET', `/v1/boards/${board}`)).json.data as BoardGraph;
+    expect((await graph()).cards[0]).toMatchObject({ shape: 'rect', frontAssetId: null });
+
+    const asset = await mkAsset('ta');
+    const body = { ...base, type: 'concept', payload: {}, shape: 'hexagon', frontAssetId: asset };
+    expect((await put('ta', c, body)).json.data).toMatchObject({ shape: 'hexagon', frontAssetId: asset });
+    expect((await got('ta', c)).json.data).toMatchObject({ shape: 'hexagon', frontAssetId: asset });
+    expect((await graph()).cards[0]).toMatchObject({ shape: 'hexagon', frontAssetId: asset });
+    expect((await put('ta', c, { ...base, type: 'concept', payload: {} })).json.data).toMatchObject({ shape: 'rect', frontAssetId: null }); // defaults
+
+    // shape other than rect only for concept
+    const flow = await newCard(board, 'flow');
+    const r = await put('ta', flow, { ...base, type: 'flow', payload: { steps: [] }, shape: 'circle' });
+    expect([r.status, r.json.error?.code]).toEqual([422, 'validation']);
+
+    // asset the user cannot read
+    const foreign = await mkAsset('tb');
+    const r2 = await put('ta', c, { ...body, frontAssetId: foreign });
+    expect([r2.status, r2.json.error?.code]).toEqual([422, 'validation']);
+    expect((await put('ta', c, { ...body, frontAssetId: uuid() })).status).toBe(422);
+
+    // RLS: question image readable by others only through a live card, like payload assets
+    await put('ta', c, body);
+    expect((await call('tb', 'GET', `/v1/assets/${asset}`)).status).toBe(404);
+    await dbm.db.execute(sql`update boards set status = 'seed_approved' where id = ${board}`);
+    expect((await call('tb', 'GET', `/v1/assets/${asset}`)).status).toBe(200);
+    await dbm.db.execute(sql`update boards set status = 'private' where id = ${board}`);
+
+    // duplicate copies both
+    const dup = await call('ta', 'POST', `/v1/boards/${board}/duplicate`, { title: 'Cópia' });
+    expect(dup.status).toBe(201);
+    const copy = (await call('ta', 'GET', `/v1/boards/${dup.json.data.id}`)).json.data as BoardGraph;
+    expect(copy.cards.find((x) => x.type === 'concept')).toMatchObject({ shape: 'hexagon', frontAssetId: asset });
   });
 });

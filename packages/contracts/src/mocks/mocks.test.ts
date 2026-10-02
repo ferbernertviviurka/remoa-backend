@@ -148,7 +148,7 @@ describe('board + card mocks', () => {
     expect(card.type).toBe('flow');
     expect(code(await m.getCard(user, fid(9)))).toBe('not_found');
     const { title, front, back, source } = sepseCards[0]!;
-    const input = { type: 'concept' as const, title, front, back, source, payload: {} };
+    const input = { type: 'concept' as const, shape: 'rect' as const, frontAssetId: null, title, front, back, source, payload: {} };
     expect(data(await m.saveCard(user, sepseCardIds.sepse, { ...input, title: 'Sepse (def.)' })).title).toBe('Sepse (def.)');
     expect(code(await m.saveCard(user, sepseCardIds.sepse, { ...input, title: ' ' }))).toBe('validation');
     expect(code(await m.saveCard(user, fid(9), input))).toBe('not_found');
@@ -222,8 +222,8 @@ describe('other lanes', () => {
     setUsage('boards', 3);
     expect(code(await m.assertQuota(user, 'boards'))).toBe('quota_exceeded');
     expect(data(await m.createCheckout(user, { period: 'annual', method: 'pix' })).url).toContain('annual/pix');
-    expect(data(await m.openPortal(user)).url).toBeTruthy();
-    expect(data(await m.exportAccount(user)).url).toContain(user);
+    expect(data(await m.openPortal(user, {})).url).toBeTruthy();
+    expect(data(await m.exportAccount(user)).userId).toBe(user);
     expect(data(await m.deleteAccount(user)).hardDeleteAt.getTime()).toBeGreaterThan(Date.now());
     progressSummarySchema.parse(data(await m.getProgress(user, now)));
     expect(data(await m.joinWaitlist({ email: 'a@b.co', segment: 'y5_6', variant: '29', origin: null }))).toBeNull();

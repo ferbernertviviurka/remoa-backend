@@ -5,7 +5,7 @@ import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, mapOpSchema } from '../board';
 import { cardDetailSchema, cardSchema, saveCardInputSchema, type Card, type CardDetail } from '../card';
 import { challengeItemPublicSchema, type ChallengeItem } from '../challenge';
 import type { Grade } from '../enums';
-import type { Entitlements } from '../billing';
+import { PLAN_LIMITS, type Entitlements } from '../billing';
 import type { ReviewItem } from '../editorial';
 import type { ApkgSummary, ImportReport } from '../import';
 import { onboardingAnswersSchema, waitlistEntrySchema } from '../onboarding';
@@ -17,6 +17,7 @@ import * as ai from './ai';
 export * from './fixtures';
 export * from './review';
 export * from './ai';
+export * from './account';
 
 // --- store -------------------------------------------------------------------
 const clone = <T>(v: T): T => structuredClone(v);
@@ -420,6 +421,16 @@ export const listMatrixItems: Api.ListMatrixItems = async (area) =>
       : [],
   );
 
+export const suggestMatrixItems: Api.SuggestMatrixItems = async (title) => {
+  const r = await listMatrixItems('CM');
+  const all = r.ok ? r.data : [];
+  const q = title.trim().toLowerCase();
+  return ok(q ? all.filter((i) => i.title.toLowerCase().split(/\s+/).some((w) => w.length > 3 && q.includes(w.slice(0, 4)))).slice(0, 3) : []);
+};
+
+export const linkBoardMatrix: Api.LinkBoardMatrix = async (_userId, link) => ok(link);
+export const unlinkBoardMatrix: Api.UnlinkBoardMatrix = async () => ok(null);
+
 // --- G01 v2 home -------------------------------------------------------------
 export const getHomeSummary: Api.GetHomeSummary = async (_userId, now) => {
   const day = (offset: number) => new Date(now.getTime() + offset * 86_400_000).toISOString().slice(0, 10);
@@ -436,10 +447,10 @@ export const getHomeSummary: Api.GetHomeSummary = async (_userId, now) => {
 };
 
 // --- F08 billing -------------------------------------------------------------
-const FREE_LIMITS: Entitlements['limits'] = { ai_grades: 20, ai_generations: 1, boards: 3, cards: 300 };
+const FREE_LIMITS: Entitlements['limits'] = PLAN_LIMITS.free.limits;
 
 export const getEntitlements: Api.GetEntitlements = async () =>
-  ok({ plan: 'free', status: null, limits: FREE_LIMITS, usage: { ...usage }, newCardsPerDay: 10, ankiImportMaxCards: 5000, renewsAt: null });
+  ok({ plan: 'free', status: null, ...PLAN_LIMITS.free, limits: FREE_LIMITS, usage: { ...usage }, renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null });
 
 export const assertQuota: Api.AssertQuota = async (_userId, key) => {
   const limit = FREE_LIMITS[key];
@@ -454,7 +465,8 @@ export const setUsage = (key: keyof Entitlements['usage'], value: number) => {
 export const createCheckout: Api.CreateCheckout = async (_userId, { period, method }) =>
   ok({ url: `https://checkout.stripe.mock/${period}/${method}` });
 export const openPortal: Api.OpenPortal = async () => ok({ url: 'https://billing.stripe.mock/portal' });
-export const exportAccount: Api.ExportAccount = async (userId) => ok({ url: `https://r2.mock.local/exports/${userId}.json` });
+export const exportAccount: Api.ExportAccount = async (userId) =>
+  ok({ version: 1, exportedAt: new Date(), userId, profile: null, boards: [], cards: [], edges: [], attempts: [] });
 export const deleteAccount: Api.DeleteAccount = async () => ok({ hardDeleteAt: new Date(Date.now() + 7 * 86_400_000) });
 
 // --- F10 editorial -----------------------------------------------------------
