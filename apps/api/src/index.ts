@@ -15,11 +15,13 @@ const env = (k: string) => {
 const supabase = createClient(env('NEXT_PUBLIC_SUPABASE_URL'), env('NEXT_PUBLIC_SUPABASE_ANON_KEY'), { auth: { persistSession: false } });
 
 // ponytail: one Auth round-trip per request; switch to local JWKS verification (jose) when latency matters.
-// D-061: no real grader until F05. GRADER=mock (dev/e2e only, ignored in production) injects the contracts mock grader.
-const grade = process.env.GRADER === 'mock' && process.env.NODE_ENV !== 'production' ? mockGrader : undefined;
-// D-100: STRIPE=mock (dev/e2e only, refused in production) swaps the SDK for a fake with dev-only /v1/stripe/mock/* endpoints.
+// Mocks are fail-closed (G05 M3): only with NODE_ENV=development|test (the `dev` script sets it); an unset NODE_ENV counts as production.
+const devLike = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+for (const k of ['GRADER', 'STRIPE'] as const) if (process.env[k] === 'mock' && !devLike) throw new Error(`${k}=mock requires NODE_ENV=development or test`);
+// D-061: no real grader until F05. GRADER=mock injects the contracts mock grader.
+const grade = process.env.GRADER === 'mock' ? mockGrader : undefined;
+// D-100: STRIPE=mock swaps the SDK for a fake with dev-only /v1/stripe/mock/* endpoints.
 const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
-if (process.env.STRIPE === 'mock' && process.env.NODE_ENV === 'production') throw new Error('STRIPE=mock is not allowed in production');
 const mockStripe = process.env.STRIPE === 'mock' ? createMockStripe({ apiOrigin: `http://localhost:${process.env.PORT ?? 4000}` }) : undefined;
 const stripe = mockStripe?.port ?? (process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin }) : undefined);
 const app = createApp({

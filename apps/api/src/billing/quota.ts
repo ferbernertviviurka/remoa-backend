@@ -14,13 +14,17 @@ const COUNTER = {
   ai_generations: { col: sql.identifier('ai_generations'), period: (d: string) => sql`date_trunc('month', ${d}::date)::date` }, // per calendar month
 } as const;
 
+/** D-167: one rule for display and blocking: live cards of non-archived boards. */
+export const liveCardsSql = (userId: string) =>
+  sql`select count(*)::int from cards c join boards b on b.id = c.board_id where b.user_id = ${userId} and b.archived_at is null and c.deleted_at is null`;
+
 /** Live totals. `exec` = the caller's tx (sees its own uncommitted rows) or the server connection. */
 export async function overTotal(exec: Pick<Tx, 'execute'>, userId: string, key: 'boards' | 'cards', limit: number | null, add = 1) {
   if (limit === null) return false;
   const [r] = await exec.execute<{ n: number }>(
     key === 'boards'
       ? sql`select count(*)::int as n from boards where user_id = ${userId} and archived_at is null`
-      : sql`select count(*)::int as n from cards c join boards b on b.id = c.board_id where b.user_id = ${userId} and c.deleted_at is null`,
+      : sql`select (${liveCardsSql(userId)}) as n`,
   );
   return r!.n + add > limit;
 }

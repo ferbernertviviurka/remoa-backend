@@ -24,7 +24,8 @@ export const exportAccount: ExportAccount = async (userId) =>
         exportedAt: new Date(),
         userId,
         profile: profile ?? null,
-        boards: await tx.select().from(s.boards).where(eq(s.boards.userId, userId)),
+        // F17: the share token and password hash are credentials, not exported data
+        boards: (await tx.select().from(s.boards).where(eq(s.boards.userId, userId))).map((b) => ({ ...b, shareToken: null, sharePasswordHash: null })),
         cards: await tx.select().from(s.cards).where(inArray(s.cards.boardId, mine)),
         edges: await tx.select().from(s.edges).where(inArray(s.edges.boardId, mine)),
         attempts: await tx.select().from(s.attempts).where(eq(s.attempts.userId, userId)),

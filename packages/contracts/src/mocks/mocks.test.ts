@@ -1,7 +1,19 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   boardGraphSchema,
+  boardMatrixItemIds,
+  boardSchema,
   coverageRowSchema,
+  createBoardInputSchema,
+  eventSchemas,
+  importBoardInputSchema,
+  normalizeBoardTitle,
+  shareStateSchema,
+  sharedBoardResponseSchema,
+  sharedLockedSchema,
+  startImportInputSchema,
+  updateShareInputSchema,
+  type SharedBoardResponse,
   entitlementsSchema,
   intervalPreviewSchema,
   progressSummarySchema,
@@ -23,6 +35,11 @@ import {
   sepseRubric,
   setCardStatusMock,
   setUsage,
+  shareStateFixture,
+  sharedBoardFixture,
+  sharedLockedFixture,
+  sharedSepseBoard,
+  startImportInputFixture,
 } from './index';
 
 const data = <T>(r: Result<T>): T => {
@@ -148,7 +165,7 @@ describe('board + card mocks', () => {
     expect(card.type).toBe('flow');
     expect(code(await m.getCard(user, fid(9)))).toBe('not_found');
     const { title, front, back, source } = sepseCards[0]!;
-    const input = { type: 'concept' as const, shape: 'rect' as const, frontAssetId: null, title, front, back, source, payload: {} };
+    const input = { type: 'concept' as const, shape: 'rect' as const, frontAssetId: null, backAssetId: null, title, front, back, source, payload: {} };
     expect(data(await m.saveCard(user, sepseCardIds.sepse, { ...input, title: 'Sepse (def.)' })).title).toBe('Sepse (def.)');
     expect(code(await m.saveCard(user, sepseCardIds.sepse, { ...input, title: ' ' }))).toBe('validation');
     expect(code(await m.saveCard(user, fid(9), input))).toBe('not_found');
@@ -248,6 +265,83 @@ describe('other lanes', () => {
     const { boardId } = data(await m.copySeedBoard(user, sepseBoardId));
     expect(data(await m.getBoard(user, boardId)).board.sourceBoardId).toBe(sepseBoardId);
     expect(code(await m.copySeedBoard(user, fid(9)))).toBe('not_found');
+  });
+});
+
+describe('F17 contracts + mocks', () => {
+  const pick = (r: SharedBoardResponse) => (r.locked ? null : r);
+
+  it('fixtures parse against their schemas; the public card has no FSRS/tags/status/rubric/owner keys', () => {
+    expect(boardSchema.parse(sharedSepseBoard)).toMatchObject({ access: 'public', shareUrl: shareStateFixture.url });
+    shareStateSchema.parse(shareStateFixture);
+    expect(sharedBoardResponseSchema.parse(sharedLockedFixture)).toEqual({ locked: true });
+    expect(() => sharedLockedSchema.parse({ locked: true, title: 'x' })).toThrow(); // nothing else, ever
+    const pub = sharedBoardResponseSchema.parse(sharedBoardFixture);
+    for (const c of pick(pub)!.cards) for (const k of ['boardId', 'tags', 'status', 'reviewerId', 'rubric', 'preview', 'userId']) expect(c).not.toHaveProperty(k);
+    expect(startImportInputSchema.parse(startImportInputFixture).board).toMatchObject({ access: 'password', target: 'new' });
+  });
+
+  it('password rule: required with password, rejected with the others; ≤ 10 matrix items, deduped', () => {
+    const ok_ = (v: unknown) => createBoardInputSchema.safeParse(v).success;
+    expect(ok_({ title: 'T', access: 'password' })).toBe(false);
+    expect(ok_({ title: 'T', access: 'password', password: '12345' })).toBe(false);
+    expect(ok_({ title: 'T', access: 'password', password: '123456' })).toBe(true);
+    expect(ok_({ title: 'T', access: 'public', password: '123456' })).toBe(false);
+    expect(ok_({ title: 'T', matrixItemIds: Array.from({ length: 11 }, (_, i) => fid(i + 1)) })).toBe(false);
+    const parsed = createBoardInputSchema.parse({ title: 'T', matrixItemIds: [fid(1), fid(1), fid(2)] });
+    expect(parsed).toMatchObject({ access: 'owner', area: 'CM', matrixItemIds: [fid(1), fid(2)] });
+    expect(boardMatrixItemIds({ matrixItemIds: [], matrixItemId: fid(3) })).toEqual([fid(3)]); // deprecated alias
+    expect(boardMatrixItemIds(parsed)).toEqual([fid(1), fid(2)]);
+    const board = { title: 'T', area: 'PED', matrixItemIds: [], access: 'password' };
+    expect(importBoardInputSchema.safeParse(board).success).toBe(false);
+    expect(importBoardInputSchema.safeParse({ ...board, target: { boardId: fid(1) } }).success).toBe(true); // existing: access unchanged
+    expect(updateShareInputSchema.safeParse({ access: 'password' }).success).toBe(true); // keep current password
+    expect(updateShareInputSchema.safeParse({ access: 'owner', rotate: true }).success).toBe(false);
+    expect(normalizeBoardTitle('  Sépse ')).toBe(normalizeBoardTitle('SEPSE'));
+  });
+
+  it('events: new shapes are strict', () => {
+    expect(eventSchemas.board_linked_to_matrix.safeParse({ suggested: true }).success).toBe(false);
+    expect(eventSchemas.board_linked_to_matrix.safeParse({ count: 2, suggestedCount: 1 }).success).toBe(true);
+    expect(eventSchemas.anki_imported.safeParse({ decks: 1, cards: 2, media: 0, durationMs: 1, skipped: 0, area: 'GO', matrixItems: 0, access: 'public', adjusted: false, target: 'new' }).success).toBe(true);
+    expect(eventSchemas.shared_board_viewed.safeParse({ access: 'public', cards: 3, title: 'x' }).success).toBe(false);
+    expect(eventSchemas.board_copied_from_link.safeParse({ access: 'password', cards: 3, blockedByQuota: true }).success).toBe(true);
+  });
+
+  it('share lifecycle: public → private (grant) → rotate → owner, copy and existing title', async () => {
+    const b = data(await m.createBoard(user, { title: 'Pneumonia', access: 'public' }));
+    expect(b.shareUrl).toMatch(/\/m\/[A-Za-z0-9_-]{43}$/);
+    const tokenOf = async () => data(await m.getShare(user, b.id)).url!.split('/m/')[1]!;
+    const t1 = await tokenOf();
+    expect(pick(data(await m.getSharedBoard(t1, { grant: null, viewerId: null })))!.ownBoardId).toBeNull();
+    expect(pick(data(await m.getSharedBoard(t1, { grant: null, viewerId: user })))!.ownBoardId).toBe(b.id);
+
+    expect(code(await m.updateShare(user, b.id, { access: 'password' }))).toBe('validation'); // entering private needs a password
+    data(await m.updateShare(user, b.id, { access: 'password', password: 'turma-2026' }));
+    expect(data(await m.getSharedBoard(t1, { grant: null, viewerId: null }))).toEqual({ locked: true }); // same link, now locked
+    for (let i = 0; i < 5; i++) expect(code(await m.unlockShared(t1, { password: 'errada' }, { ip: '1.1.1.1' }))).toBe('unauthorized');
+    expect(code(await m.unlockShared(t1, { password: 'turma-2026' }, { ip: '1.1.1.1' }))).toBe('rate_limited');
+    const grant = data(await m.unlockShared(t1, { password: 'turma-2026' }, { ip: '2.2.2.2' })).value;
+    expect(data(await m.getSharedBoard(t1, { grant, viewerId: null })).locked).toBe(false);
+
+    const other = fid(2);
+    expect(code(await m.copySharedBoard(other, { token: t1 }, { grant: null }))).toBe('forbidden');
+    const copy = data(await m.copySharedBoard(other, { token: t1 }, { grant }));
+    expect(copy).toMatchObject({ userId: other, access: 'owner', sourceBoardId: b.id, copiedFrom: { at: expect.any(Date) } });
+    expect(data(await m.getShare(user, b.id)).copies).toBe(1);
+
+    data(await m.updateShare(user, b.id, { access: 'password', rotate: true }));
+    expect(code(await m.getSharedBoard(t1, { grant, viewerId: null }))).toBe('not_found'); // old link dead
+    const t2 = await tokenOf();
+    expect(data(await m.getSharedBoard(t2, { grant, viewerId: null }))).toEqual({ locked: true }); // old grant dead
+    expect(data(await m.updateShare(user, b.id, { access: 'owner' }))).toMatchObject({ access: 'owner', url: null });
+    expect(code(await m.getSharedBoard(t2, { grant: null, viewerId: null }))).toBe('not_found');
+    expect(code(await m.getShare(other, b.id))).toBe('not_found');
+
+    expect(data(await m.findExistingBoard(user, ' pneumônia '))).toEqual({ board: { id: b.id, title: 'Pneumonia' } });
+    expect(data(await m.findExistingBoard(user, 'Asma')).board).toBeNull();
+    expect(data(await m.startImport(user, startImportInputFixture)).importId).toBeTruthy();
+    expect(code(await m.startImport(user, { ...startImportInputFixture, board: { ...startImportInputFixture.board!, password: undefined } }))).toBe('validation');
   });
 });
 

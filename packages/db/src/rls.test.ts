@@ -117,4 +117,54 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ avatarColor: 7 }).where(eq(s.profiles.userId, b)))).rejects.toThrow(); // check
     await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ deletedAt: new Date() }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
   });
+  it('G06: back_asset_id and step/stage assetId assets follow card visibility (D-201)', async () => {
+    const mk = async () => (await m.db.insert(s.assets).values({ userId: a, key: `t/${randomUUID()}`, mime: 'image/webp' }).returning())[0]!.id;
+    const [back, step, stage, loose] = [await mk(), await mk(), await mk(), await mk()];
+    const [priv] = await m.db.insert(s.boards).values({ userId: a, title: 'g06 priv' }).returning();
+    const [seed] = await m.db.insert(s.boards).values({ userId: a, title: 'g06 seed', status: 'seed_approved' }).returning();
+    const cardsOf = (boardId: string) => [
+      { boardId, title: 'qa', backAssetId: back },
+      { boardId, title: 'flow', type: 'flow' as const, payload: { steps: [{ id: 's1', text: 'x', assetId: step }] } },
+      { boardId, title: 'case', type: 'case' as const, payload: { caseSteps: [{ stage: 'presentation', text: 'x', assetId: stage }] } },
+    ];
+    const ids = [back, step, stage, loose].sort();
+    const seen = (u: string) => m.withUser(u, (tx) => tx.select({ id: s.assets.id }).from(s.assets).where(sql`${s.assets.id} in ${ids}`)).then((r) => r.map((x) => x.id).sort());
+    await m.db.insert(s.cards).values(cardsOf(priv!.id));
+    expect(await seen(a)).toEqual(ids); // owner
+    expect(await seen(b)).toEqual([]); // other user: card not readable, so neither is its asset
+    await m.db.insert(s.cards).values(cardsOf(seed!.id));
+    expect(await seen(b)).toEqual([back, step, stage].sort()); // readable card => its assets, never the loose one
+  });
+
+  it('F17: share token/hash of another user board are unreadable; share state is server-owned; checks hold (D-288)', async () => {
+    const token = () => randomUUID().replace(/-/g, '').padEnd(43, 'x');
+    const [pub] = await m.db.insert(s.boards).values({ userId: a, title: 'f17 pub', access: 'public', shareToken: token(), sharedAt: new Date() }).returning();
+    const [pwd] = await m.db.insert(s.boards).values({ userId: a, title: 'f17 pwd', access: 'password', shareToken: token(), sharePasswordHash: 'scrypt$v1$s$k' }).returning();
+    const leaked = await m.withUser(b, (tx) => tx.select({ t: s.boards.shareToken, h: s.boards.sharePasswordHash }).from(s.boards).where(sql`${s.boards.id} in ${[pub!.id, pwd!.id]}`));
+    expect(leaked).toHaveLength(0);
+    expect(await m.withUser(b, (tx) => tx.select().from(s.boards).where(sql`${s.boards.shareToken} is not null and ${s.boards.userId} = ${a}`))).toHaveLength(0);
+
+    // owner: may rename, may not touch access/token/hash/version/counters
+    await m.withUser(a, (tx) => tx.update(s.boards).set({ title: 'f17 pub 2' }).where(eq(s.boards.id, pub!.id)));
+    for (const set of [{ access: 'public' as const, sharePasswordHash: null }, { shareToken: token() }, { sharePasswordHash: 'x' }, { shareSecretVersion: 1 }, { copyCount: 9 }, { copiedFromLinkAt: new Date() }])
+      await expect(m.withUser(a, (tx) => tx.update(s.boards).set(set).where(eq(s.boards.id, pwd!.id)))).rejects.toThrow();
+
+    // checks: link iff access ≠ owner; hash iff password; never on seeds
+    await expect(m.db.insert(s.boards).values({ userId: a, title: 'x', access: 'public' })).rejects.toThrow();
+    await expect(m.db.insert(s.boards).values({ userId: a, title: 'x', shareToken: token() })).rejects.toThrow();
+    await expect(m.db.insert(s.boards).values({ userId: a, title: 'x', access: 'password', shareToken: token() })).rejects.toThrow();
+    await expect(m.db.insert(s.boards).values({ userId: a, title: 'x', access: 'public', shareToken: token(), sharePasswordHash: 'h' })).rejects.toThrow();
+    await expect(m.db.insert(s.boards).values({ userId: a, title: 'x', status: 'seed_approved', access: 'public', shareToken: token() })).rejects.toThrow();
+    await expect(m.db.insert(s.boards).values({ userId: a, title: 'x', access: 'public', shareToken: pub!.shareToken })).rejects.toThrow(); // unique
+
+    // the 5 areas are valid board labels
+    for (const area of ['CIR', 'GO', 'PED', 'MP'] as const) await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: `f17 ${area}`, area }));
+  });
+
+  it('F17: share_attempts is server-only', async () => {
+    await m.db.insert(s.shareAttempts).values({ tokenHash: 't', ipHash: 'i' });
+    expect(await m.withUser(a, (tx) => tx.select().from(s.shareAttempts)).catch(() => 'denied')).toBe('denied');
+    await expect(m.withUser(a, (tx) => tx.insert(s.shareAttempts).values({ tokenHash: 't', ipHash: 'i' }))).rejects.toThrow();
+    await m.db.delete(s.shareAttempts).where(eq(s.shareAttempts.tokenHash, 't'));
+  });
 });

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { areas, cardTypes, challengeModes, grades, inputKinds, plans, sessionKinds, verdicts } from './enums';
+import { areas, boardAccess, cardTypes, challengeModes, grades, inputKinds, plans, sessionKinds, verdicts } from './enums';
 import { paywallReasons, billingPeriods, paymentMethods } from './billing';
 import { disputeOutcomes } from './editorial';
 import { segments, startPaths } from './onboarding';
@@ -11,6 +11,9 @@ const none = z.object({}).strict();
 const count = z.number().int().nonnegative();
 const ms = z.number().nonnegative();
 const authMethod = z.enum(['password', 'magic_link', 'google']);
+const upgradeSources = ['account_plan', 'usage_nudge', 'navbar_upgrade', 'plan_popover', 'map_slider_lock', 'library_lock', 'header_new_map_lock'] as const;
+/** F15 `/planos?de=`: an upgrade_clicked source, a paywall reason, or 'direct' (missing or unknown `de`). */
+export const plansFromSources = [...upgradeSources, ...paywallReasons, 'direct'] as const;
 
 export const eventSchemas = {
   // F00
@@ -48,12 +51,28 @@ export const eventSchemas = {
   board_generated_from_pdf: z.object({ pages: count, cards: count, edges: count, durationMs: ms }).strict(),
   rubric_generated: none,
   // F06
-  anki_imported: z.object({ decks: count, cards: count, media: count, durationMs: ms, skipped: count }).strict(),
-  // F07
+  // F17 adds area, matrixItems (count), access, adjusted ("Ajustar importação" opened) and target.
+  anki_imported: z
+    .object({
+      decks: count, cards: count, media: count, durationMs: ms, skipped: count,
+      area: z.enum(areas), matrixItems: count, access: z.enum(boardAccess), adjusted: z.boolean(), target: z.enum(['new', 'existing']),
+    })
+    .strict(),
+  anki_import_adjust_opened: none,
+  // F07 (F17: counts, since a board takes up to 10 items)
   coverage_viewed: none,
-  board_linked_to_matrix: z.object({ suggested: z.boolean() }).strict(),
+  board_linked_to_matrix: z.object({ count, suggestedCount: count }).strict(),
+  // F17 sharing (never title, token, password, IP or owner id)
+  board_access_changed: z.object({ from: z.enum(boardAccess), to: z.enum(boardAccess), source: z.enum(['create', 'editor']) }).strict(),
+  board_share_rotated: none,
+  board_share_password_changed: none,
+  shared_board_viewed: z.object({ access: z.enum(['password', 'public']), cards: count }).strict(),
+  shared_board_unlock_failed: none,
+  shared_board_unlocked: none,
+  board_copied_from_link: z.object({ access: z.enum(['password', 'public']), cards: count, blockedByQuota: z.boolean() }).strict(),
   // F08 (`plan` is a standard prop, so the checkout interval is `period`)
-  checkout_started: z.object({ period: z.enum(billingPeriods), method: z.enum(paymentMethods) }).strict(),
+  // F15 adds `coupon` (optional so F08 callers stay valid; F15 always sends it). checkout_completed = subscription_started (server, from the webhook).
+  checkout_started: z.object({ period: z.enum(billingPeriods), method: z.enum(paymentMethods), coupon: z.boolean().optional() }).strict(),
   subscription_started: none,
   subscription_canceled: none,
   account_exported: none,
@@ -92,8 +111,43 @@ export const eventSchemas = {
   export_downloaded: none,
   deletion_requested: none,
   deletion_canceled: none,
-  upgrade_clicked: z.object({ source: z.enum(['account_plan', 'usage_nudge']) }).strict(),
+  upgrade_clicked: z.object({ source: z.enum(upgradeSources) }).strict(),
+  // F14
+  plan_popover_opened: z.object({ trigger: z.enum(['hover', 'click', 'keyboard']) }).strict(),
+  map_slider_navigated: z.object({ direction: z.enum(['prev', 'next']), index: z.number().int().nonnegative() }).strict(),
+  map_slide_clicked: z.object({ kind: z.enum(['map', 'new', 'locked']) }).strict(),
   completeness_chip_clicked: z.object({ item: z.enum(completenessItems) }).strict(),
+  // F15 (`plan` is a base prop; never the coupon code)
+  plans_viewed: z.object({ from: z.enum(plansFromSources) }).strict(),
+  plans_period_changed: z.object({ period: z.enum(billingPeriods) }).strict(),
+  plans_method_selected: z.object({ method: z.enum(paymentMethods) }).strict(),
+  coupon_applied: none,
+  coupon_failed: none,
+  checkout_redirected: z.object({ period: z.enum(billingPeriods), method: z.enum(paymentMethods) }).strict(),
+  checkout_canceled: none,
+  checkout_pending_pix: none,
+  faq_opened: z.object({ index: z.number().int().min(0).max(9) }).strict(),
+  plans_manage_clicked: none,
+  plans_annual_switch_clicked: none,
+  // F16 landing (no personal data: referrer is a hostname, utm values are campaign labels)
+  landing_viewed: z
+    .object({
+      variant: z.enum(['29', '49']).nullable(),
+      h1: z.enum(['a', 'b', 'c']),
+      utm_source: z.string().max(80).nullable(),
+      utm_medium: z.string().max(80).nullable(),
+      utm_campaign: z.string().max(120).nullable(),
+      referrer: z.string().max(120).nullable(),
+    })
+    .strict(),
+  hero_cta_clicked: z.object({ cta: z.enum(['create', 'demo']) }).strict(),
+  hero_replayed: none,
+  feature_tab_selected: z.object({ feature: z.enum(['map', 'cards', 'challenge', 'grading', 'fsrs', 'enamed']) }).strict(),
+  demo_answered: z.object({ correct: z.boolean() }).strict(),
+  demo_completed: none,
+  pricing_toggled: z.object({ period: z.enum(['monthly', 'annual']) }).strict(),
+  pricing_viewed: none,
+  scroll_depth: z.object({ depth: z.union([z.literal(25), z.literal(50), z.literal(75), z.literal(100)]) }).strict(),
 } as const;
 
 export type EventName = keyof typeof eventSchemas;

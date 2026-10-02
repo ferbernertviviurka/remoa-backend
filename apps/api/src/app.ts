@@ -17,6 +17,9 @@ import { cardsRoutes } from './routes/cards';
 import { challengeRoutes } from './routes/challenge';
 import { coverageRoutes } from './routes/coverage';
 import { homeRoutes } from './routes/home';
+import { importsRoutes } from './routes/imports';
+import { createImports, type AnkiPort } from './imports/imports';
+import { ankiPort } from './imports/anki';
 import { matrixRoutes } from './routes/matrix';
 import { reviewRoutes } from './routes/review';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
@@ -44,7 +47,7 @@ export type Env = { Variables: { requestId: string; log: Logger; userId: string;
 
 export const fail = (error: AppError) => Response.json({ error } satisfies HttpErrorBody, { status: errorHttpStatus[error.code] });
 
-export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe }: { verifyToken: VerifyToken; webOrigin: string; grade?: GradeAnswer; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe> }) {
+export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, anki }: { verifyToken: VerifyToken; webOrigin: string; grade?: GradeAnswer; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe>; anki?: AnkiPort }) {
   const app = new Hono<Env>();
 
   app.use('*', async (c, next) => {
@@ -55,7 +58,8 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe }:
     c.header('x-request-id', requestId);
     const start = Date.now();
     await next();
-    log.info('request', { method: c.req.method, path: c.req.path, status: c.res.status, ms: Date.now() - start });
+    // F17: the share token is a credential; it never reaches the logs
+    log.info('request', { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/shared\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start });
   });
   app.use('/v1/*', cors({ origin: webOrigin, credentials: true }));
 
@@ -77,7 +81,12 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe }:
 
   app.use('/v1/account', requireUser).use('/v1/account/*', requireUser).route('/v1/account', accountRoutes({ stripe })).route('/v1/account', accountSecurityRoutes).route('/v1/account', accountAvatarRoutes);
   app.route('/v1/account', accountProfileRoutes()); // F13 profile/email/identities/preferences (requireUser applied above)
-  app.route('/v1/public', publicRoutes()); // F13 unsubscribe: no auth, signed token
+  const viewer = async (authorization: string | undefined) => {
+    const token = authorization?.replace(/^Bearer /, '');
+    const v = token ? await verifyToken(token).catch(() => null) : null;
+    return typeof v === 'string' ? v : (v?.userId ?? null);
+  };
+  app.route('/v1/public', publicRoutes({ stripe, viewer })); // F13 unsubscribe: no auth, signed token; F17 shared links: optional session
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 
   app.use('/v1/cards', requireUser).use('/v1/cards/*', requireUser).route('/v1/cards', cardsRoutes);
@@ -87,6 +96,7 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe }:
   app.use('/v1/review', requireUser).use('/v1/review/*', requireUser).route('/v1/review', reviewRoutes);
   app.use('/v1/challenge', requireUser).use('/v1/challenge/*', requireUser).route('/v1/challenge', challengeRoutes({ grade }));
   app.use('/v1/uploads', requireUser).use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
+  app.use('/v1/imports/*', requireUser).route('/v1/imports', importsRoutes(createImports({ anki: anki ?? ankiPort }))); // F06 Anki import
   app.use('/v1/assets', requireUser).use('/v1/assets/*', requireUser).route('/v1/assets', assetsRoutes);
 
   app.use('/v1/billing/*', requireUser).route('/v1/billing', billingRoutes({ stripe }));

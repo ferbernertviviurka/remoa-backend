@@ -1,7 +1,33 @@
 import { z } from 'zod';
-import { areas, boardStatuses, cardTypes, mapStates } from './enums';
+import { areas, boardAccess, boardStatuses, cardTypes, mapStates } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
-import { cardSchema } from './card';
+import { cardSchema, cardSizeSchema } from './card';
+
+// --- F17 access and matrix items (D-281, D-285–D-289) ---------------------------
+export const boardAccessSchema = z.enum(boardAccess);
+/** F17 FR-5: at most 10 matrix items per board (leaf items of the board's area; the API answers 422 otherwise). */
+export const MAX_MATRIX_ITEMS_PER_BOARD = 10;
+/** Duplicates collapse; order is kept (the first one also goes to boards.matrix_item_id). */
+export const matrixItemIdsSchema = z
+  .array(idSchema)
+  .max(MAX_MATRIX_ITEMS_PER_BOARD)
+  .transform((ids) => [...new Set(ids)]);
+/** Q-034: 6..64 characters, no other rule (attempt limit + slow hash do the rest). Never trimmed, never logged. */
+export const SHARE_PASSWORD_MIN = 6;
+export const SHARE_PASSWORD_MAX = 64;
+export const sharePasswordSchema = z.string().min(SHARE_PASSWORD_MIN).max(SHARE_PASSWORD_MAX);
+/**
+ * Password rule shared by every input that sets an access level: required with `password`, rejected with the others
+ * (a stale password from the form must not travel). `requirePassword: false` = keep the current one (UpdateShareInput).
+ */
+export const refineSharePassword =
+  ({ requirePassword }: { requirePassword: boolean }) =>
+  (v: { access?: (typeof boardAccess)[number]; password?: string }, ctx: z.RefinementCtx) => {
+    if (v.access === 'password' && requirePassword && v.password === undefined)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['password'], message: 'password required for access=password' });
+    if (v.access !== 'password' && v.password !== undefined)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['password'], message: 'password only with access=password' });
+  };
 
 export const boardSchema = z.object({
   id: idSchema,
@@ -15,6 +41,12 @@ export const boardSchema = z.object({
   reviewerId: idSchema.nullable(),
   sourceBoardId: idSchema.nullable(),
   archivedAt: timestampSchema.nullable(), // archived = hidden from "Meus mapas"
+  /** F17: who can open the board by link. The token, hash and version never leave the server (see ShareState). */
+  access: boardAccessSchema.default('owner'),
+  /** F17: `${APP_URL}/m/<token>` while access ≠ owner; owner-only responses. Optional until every route fills it. */
+  shareUrl: z.string().url().nullable().optional(),
+  /** F17 FR-16: set when the board is a copy made from a shared link (never the original's id or owner). */
+  copiedFrom: z.object({ at: timestampSchema }).nullable().optional(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 });
@@ -24,13 +56,24 @@ export type Board = z.infer<typeof boardSchema>;
 export const MAX_CARDS_PER_BOARD = 500;
 
 export const boardTitleSchema = z.string().trim().min(1).max(120);
-export const createBoardInputSchema = z.object({
-  title: boardTitleSchema,
-  area: z.enum(areas).default('CM'),
-  /** G01 v2 "Novo mapa" › Detalhes: item da matriz Enamed (também grava `board_matrix_items`). */
-  matrixItemId: idSchema.nullable().optional(),
-});
+export const createBoardInputSchema = z
+  .object({
+    title: boardTitleSchema,
+    area: z.enum(areas).default('CM'),
+    /** F17 FR-17: matrix items (→ `board_matrix_items`; the first also → boards.matrix_item_id). */
+    matrixItemIds: matrixItemIdsSchema.default([]),
+    /** @deprecated G01 single item; read through `boardMatrixItemIds(input)`. */
+    matrixItemId: idSchema.nullable().optional(),
+    access: boardAccessSchema.default('owner'),
+    password: sharePasswordSchema.optional(),
+  })
+  .superRefine(refineSharePassword({ requirePassword: true }));
 export type CreateBoardInput = z.input<typeof createBoardInputSchema>;
+/** Effective item list: `matrixItemIds` when non-empty, else the deprecated `matrixItemId`. */
+export const boardMatrixItemIds = (input: { matrixItemIds?: string[]; matrixItemId?: string | null }): string[] =>
+  input.matrixItemIds?.length ? input.matrixItemIds : input.matrixItemId ? [input.matrixItemId] : [];
+/** F17 FR-11 "mapa com o mesmo nome": trim, case and accents ignored. */
+export const normalizeBoardTitle = (title: string) => title.normalize('NFD').replace(/\p{M}/gu, '').trim().toLowerCase();
 /** PATCH /v1/boards/:id — rename and/or archive (`archived: false` restores). */
 export const updateBoardInputSchema = z
   .object({ title: boardTitleSchema, archived: z.boolean() })
@@ -46,6 +89,8 @@ export const boardSummarySchema = boardSchema
     edgeCount: z.number().int().nonnegative(),
     /** G01 v2: item da matriz do mapa (D-081). */
     matrixItemId: idSchema.nullable().default(null),
+    /** F17 FR-19: badge on the card when ≠ owner. */
+    access: boardAccessSchema.default('owner'),
     dueCount: z.number().int().nonnegative().default(0), // F03 FR-8: sidebar badge, items due today
     /** G01: state bar and the sidebar dot (dominant state). Card-level states (D-057 aggregate). */
     stateCounts: z
@@ -85,6 +130,8 @@ const op = <T extends string, S extends z.ZodRawShape>(name: T, shape: S) =>
 
 export const mapOpSchema = z.discriminatedUnion('op', [
   op('moveCards', { moves: z.array(z.object({ cardId: idSchema, position: positionSchema })).min(1).max(500) }),
+  /** D-202: user resizes cards; `size: null` restores the default for the type/shape. */
+  op('resizeCards', { sizes: z.array(z.object({ cardId: idSchema, size: cardSizeSchema.nullable() })).min(1).max(500) }),
   op('createCard', { card: z.object({ id: idSchema, type: z.enum(cardTypes), title: z.string().min(1).max(200), position: positionSchema }) }),
   op('createEdge', { edge: edgeSchema.pick({ id: true, fromCardId: true, toCardId: true }).extend({ label: edgeLabelSchema }) }),
   op('updateEdgeLabel', { edgeId: idSchema, label: edgeLabelSchema }),

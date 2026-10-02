@@ -3,6 +3,8 @@ import type { Board, Edge } from '../board';
 import type { CardDetail, Rubric } from '../card';
 import type { QueueItem, RetrievabilityMap } from '../review';
 import type { GraderVerdict } from '../ai';
+import type { StartImportInput } from '../import';
+import { sharedCardSchema, sharedEdgeSchema, type ShareState, type SharedBoard, type SharedLocked } from '../share';
 
 /** Deterministic valid v4-shaped uuid: fid(1) = 00000000-0000-4000-8000-000000000001. */
 export const fid = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
@@ -23,6 +25,9 @@ export const sepseBoard: Board = {
   reviewerId: null,
   sourceBoardId: null,
   archivedAt: null,
+  access: 'owner',
+  shareUrl: null,
+  copiedFrom: null,
   createdAt: FIXTURE_NOW,
   updatedAt: FIXTURE_NOW,
 };
@@ -67,6 +72,9 @@ export const sepseCards: CardDetail[] = [
     front: 'Qual a definição atual de sepse?',
     shape: 'rect',
     frontAssetId: null,
+    backAssetId: null,
+    size: null,
+    tags: [],
     back: 'Disfunção orgânica com risco de vida causada por resposta desregulada do hospedeiro à infecção.',
     payload: {},
     rubric: sepseRubric,
@@ -78,6 +86,9 @@ export const sepseCards: CardDetail[] = [
     front: 'Quais critérios compõem o qSOFA?',
     shape: 'rect',
     frontAssetId: null,
+    backAssetId: null,
+    size: null,
+    tags: [],
     back: 'Frequência respiratória aumentada, alteração do estado mental e pressão sistólica baixa. Triagem, não diagnóstico.',
     payload: {},
     rubric: null,
@@ -89,6 +100,9 @@ export const sepseCards: CardDetail[] = [
     front: 'Para que serve o lactato na suspeita de sepse?',
     shape: 'rect',
     frontAssetId: null,
+    backAssetId: null,
+    size: null,
+    tags: [],
     back: 'Marcador de hipoperfusão tecidual; dosar na suspeita e repetir se elevado.',
     payload: {},
     rubric: null,
@@ -100,6 +114,9 @@ export const sepseCards: CardDetail[] = [
     front: null,
     shape: 'rect',
     frontAssetId: null,
+    backAssetId: null,
+    size: null,
+    tags: [],
     back: null,
     payload: {
       steps: [
@@ -119,6 +136,9 @@ export const sepseCards: CardDetail[] = [
     front: 'O que caracteriza o choque séptico?',
     shape: 'rect',
     frontAssetId: null,
+    backAssetId: null,
+    size: null,
+    tags: [],
     back: 'Sepse com necessidade de vasopressor para manter a pressão arterial média e lactato elevado apesar de volume adequado.',
     payload: {},
     rubric: null,
@@ -130,6 +150,9 @@ export const sepseCards: CardDetail[] = [
     front: null,
     shape: 'rect',
     frontAssetId: null,
+    backAssetId: null,
+    size: null,
+    tags: [],
     back: null,
     payload: {
       caseSteps: [
@@ -199,4 +222,44 @@ export const retrievabilityFixture: RetrievabilityMap = {
   },
   [c.choque]: { r: 0.55, state: 'review' },
   [c.caso]: { r: 0.91, state: 'steady' },
+};
+
+// --- F17 sharing / import v2 ----------------------------------------------------
+/** Deterministic 43-char base64url token (the real one is 32 random bytes). */
+export const mockShareToken = (n: number) => n.toString().padStart(43, 'A');
+export const MOCK_APP_URL = 'https://app.remoa.mock';
+export const sharedBoardToken = mockShareToken(1);
+
+/** "Sepse" shared as Público, as the owner sees it. */
+export const sharedSepseBoard: Board = {
+  ...sepseBoard,
+  status: 'private',
+  temporalMark: null,
+  access: 'public',
+  shareUrl: `${MOCK_APP_URL}/m/${sharedBoardToken}`,
+};
+
+export const shareStateFixture: ShareState = { access: 'public', url: `${MOCK_APP_URL}/m/${sharedBoardToken}`, copies: 2 };
+
+/** GET /v1/public/shared/:token for a public board: content only, no FSRS, tags, status, rubric or owner data. */
+export const sharedBoardFixture: SharedBoard = {
+  locked: false,
+  access: 'public',
+  title: 'Sepse',
+  area: 'CM',
+  matrixItems: [{ code: 'CM-INF-01', title: 'Sepse e choque séptico' }],
+  cards: sepseCards.map((card) => sharedCardSchema.parse(card)), // parse = allowlist (unknown keys stripped)
+  edges: sepseEdges.map((e) => sharedEdgeSchema.parse(e)),
+  assets: {},
+  cardCount: sepseCards.length,
+  updatedAt: FIXTURE_NOW,
+  ownBoardId: null,
+};
+export const sharedLockedFixture: SharedLocked = { locked: true };
+
+/** POST /v1/imports/anki with the F17 "Sobre o mapa" block. */
+export const startImportInputFixture: StartImportInput = {
+  key: `imports/${fixtureUserId}/${fid(701)}.apkg`,
+  plan: { deckIds: ['1'], mappings: [{ noteTypeId: '10', cardType: 'concept', title: null, front: 'Front', back: 'Back' }], estimatedCards: 2 },
+  board: { title: 'Clínica Médica', area: 'CM', matrixItemIds: [fid(800)], access: 'password', password: 'turma-2026', target: 'new' },
 };

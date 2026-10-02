@@ -32,7 +32,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
     const [b] = await dbm.db.insert(dbm.boards).values({ userId, title: 'Mapa', updatedAt }).returning();
     return b!.id;
   };
-  const mkCard = async (boardId: string, o: { type?: 'concept' | 'flow' | 'image' | 'case'; order?: number; payload?: unknown } = {}) => {
+  const mkCard = async (boardId: string, o: { type?: 'concept' | 'flow' | 'image' | 'case' | 'note'; order?: number; payload?: unknown } = {}) => {
     const [c] = await dbm.db.insert(dbm.cards).values({ boardId, type: o.type ?? 'concept', title: 'c', order: o.order ?? 0, payload: o.payload ?? {} }).returning();
     return c!.id;
   };
@@ -412,6 +412,25 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
       }
       expect(list.find((x) => x.id === b1)!.dueCount).toBe(3);
       expect(list.find((x) => x.id === b2)!.dueCount).toBe(0);
+    });
+  });
+  describe('D-200 note cards', () => {
+    it('never queued, counted, mapped or attemptable; the other cards are unaffected', async () => {
+      const u = await newUser();
+      const board = await mkBoard(u);
+      const note = await mkCard(board, { type: 'note' });
+      const concept = await mkCard(board);
+      await putState(u, note, { lastReview: new Date(Date.now() - 30 * DAY), stability: 1, due: new Date(Date.now() - 20 * DAY) }); // crafted: even with a due state
+      await putState(u, concept, { lastReview: new Date(Date.now() - 30 * DAY), stability: 1, due: new Date(Date.now() - 20 * DAY) });
+      for (const path of ['/review/queue', `/review/queue?boardId=${board}`]) {
+        expect(((await call(u, path)).json.data as QueueItem[]).map((i) => i.cardId)).toEqual([concept]);
+      }
+      expect(Object.keys((await call(u, `/review/retrievability?boardId=${board}`)).json.data)).toEqual([concept]);
+      const listed = ((await call(u, '/boards')).json.data as { id: string; dueCount: number; stateCounts: Record<string, number>; preview: { nodes: unknown[] } }[]).find((b) => b.id === board)!;
+      expect([listed.dueCount, Object.values(listed.stateCounts).reduce((a, b) => a + b, 0), listed.preview.nodes.length]).toEqual([1, 1, 1]);
+      const r = await ra.recordAttempt(attempt(u, note));
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.error.code).toBe('validation');
     });
   });
 });

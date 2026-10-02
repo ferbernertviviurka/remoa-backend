@@ -178,4 +178,47 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/boards', () => {
     expect(res.status).toBe(422);
     expect((await app.request('/v1/boards')).status).toBe(401);
   });
+
+  // ─── F17 / T2: matrixItemIds and access on POST /v1/boards ────────────────
+
+  it('F17: POST /v1/boards with 2 matrixItemIds stores 2 board_matrix_items rows and sets matrix_item_id to first', async () => {
+    // Insert 2 leaf CM matrix items with unique codes
+    const c1 = `T2B-${uuid().slice(0, 8)}-1`, c2 = `T2B-${uuid().slice(0, 8)}-2`;
+    const [i1] = await dbm.db.execute<{ id: string }>(sql`insert into matrix_items (area, code, title) values ('CM', ${c1}, 'Item B1') returning id`);
+    const [i2] = await dbm.db.execute<{ id: string }>(sql`insert into matrix_items (area, code, title) values ('CM', ${c2}, 'Item B2') returning id`);
+    const created = await call('ta', 'POST', '', { title: 'Dois Itens', matrixItemIds: [i1!.id, i2!.id] });
+    expect(created.status).toBe(201);
+    const boardId = created.json.data.id as string;
+    const links = await dbm.db.execute<{ matrix_item_id: string }>(sql`select matrix_item_id from board_matrix_items where board_id = ${boardId}`);
+    expect(links).toHaveLength(2);
+    expect(links.map((l) => l.matrix_item_id)).toEqual(expect.arrayContaining([i1!.id, i2!.id]));
+    // boards.matrix_item_id = first item
+    const [row] = await dbm.db.execute<{ matrix_item_id: string }>(sql`select matrix_item_id from boards where id = ${boardId}`);
+    expect(row!.matrix_item_id).toBe(i1!.id);
+    // Clear FK reference before deleting the test items (boards will be removed by afterAll via user cascade).
+    await dbm.db.execute(sql`update boards set matrix_item_id = null where id = ${boardId}`);
+    await dbm.db.execute(sql`delete from board_matrix_items where board_id = ${boardId}`);
+    await dbm.db.execute(sql`delete from matrix_items where id in (${i1!.id}, ${i2!.id})`);
+  });
+
+  it('F17: POST /v1/boards with access=password without password → 422; with password → ok', async () => {
+    expect((await call('ta', 'POST', '', { title: 'Privado sem senha', access: 'password' })).status).toBe(422);
+    const r = await call('ta', 'POST', '', { title: 'Privado com senha', access: 'password', password: 'senha123' });
+    expect(r.status).toBe(201);
+    const [row] = await dbm.db.execute<{ access: string; share_token: string | null; share_password_hash: string | null }>(
+      sql`select access, share_token, share_password_hash from boards where id = ${r.json.data.id}`,
+    );
+    expect(row).toMatchObject({ access: 'password' });
+    expect(row!.share_token).not.toBeNull();
+    expect(row!.share_password_hash).not.toBeNull();
+  });
+
+  it('F17: POST /v1/boards with matrixItemId from wrong area → 422', async () => {
+    const code = `T2B-${uuid().slice(0, 8)}-3`;
+    const [item] = await dbm.db.execute<{ id: string }>(sql`insert into matrix_items (area, code, title) values ('CM', ${code}, 'Item B3 CM') returning id`);
+    // Try to use a CM item on a CIR board
+    const r = await call('ta', 'POST', '', { title: 'Área Errada', area: 'CIR', matrixItemIds: [item!.id] });
+    expect(r.status).toBe(422);
+    await dbm.db.execute(sql`delete from matrix_items where id = ${item!.id}`);
+  });
 });

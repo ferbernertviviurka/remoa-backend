@@ -26,7 +26,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('cards, u
     return { status: res.status, json: (await res.json()) as J };
   };
   const newBoard = async (t = 'ta') => (await call(t, 'POST', '/v1/boards', { title: 'Mapa' })).json.data.id as string;
-  const newCard = async (boardId: string, type: 'concept' | 'flow' | 'image' | 'case' = 'concept', t = 'ta') => {
+  const newCard = async (boardId: string, type: 'concept' | 'flow' | 'image' | 'case' | 'note' = 'concept', t = 'ta') => {
     const id = uuid();
     const op: MapOp = { op: 'createCard', opId: uuid(), boardId, card: { id, type, title: 'Novo', position: { x: 0, y: 0 } } };
     await call(t, 'POST', '/v1/boards/ops', { ops: [op] });
@@ -324,5 +324,68 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('cards, u
     expect(dup.status).toBe(201);
     const copy = (await call('ta', 'GET', `/v1/boards/${dup.json.data.id}`)).json.data as BoardGraph;
     expect(copy.cards.find((x) => x.type === 'concept')).toMatchObject({ shape: 'hexagon', frontAssetId: asset });
+  });
+  it('G06 D-200/D-201/D-202/D-204: note, backAssetId, step/stage assets, size and tags', async () => {
+    const board = await newBoard();
+    const graph = async () => (await call('ta', 'GET', `/v1/boards/${board}`)).json.data as BoardGraph;
+    const got = (id: string) => call('ta', 'GET', `/v1/cards/${id}`);
+
+    // note via the map op createCard; back/backAssetId sent for a note are dropped
+    const n = await newCard(board, 'note');
+    expect((await got(n)).json.data).toMatchObject({ type: 'note', back: null, backAssetId: null, size: null, tags: [] });
+    const img = await mkAsset('ta');
+    const saved = await put('ta', n, { ...base, type: 'note', payload: {}, frontAssetId: img, backAssetId: img });
+    expect(saved.status).toBe(200);
+    expect(saved.json.data).toMatchObject({ type: 'note', back: null, backAssetId: null, frontAssetId: img });
+    expect((await put('ta', n, { ...base, type: 'note', payload: { x: 1 } })).status).toBe(422); // strict payload
+
+    // back image on a concept: persisted, listed, validated, copied
+    const c = await newCard(board);
+    const back = await mkAsset('ta');
+    expect((await put('ta', c, { ...base, type: 'concept', payload: {}, backAssetId: back })).json.data).toMatchObject({ backAssetId: back });
+    expect((await graph()).cards.find((x) => x.id === c)).toMatchObject({ backAssetId: back, size: null, tags: [] });
+    const foreign = await mkAsset('tb');
+    expect((await put('ta', c, { ...base, type: 'concept', payload: {}, backAssetId: foreign })).status).toBe(422);
+    expect((await put('ta', c, { ...base, type: 'concept', payload: {}, backAssetId: uuid() })).status).toBe(422);
+
+    // flow step and case stage images
+    const [s1, s2, k1] = [await mkAsset('ta'), await mkAsset('ta'), await mkAsset('ta')];
+    const flow = await newCard(board, 'flow');
+    const steps = (a2: string) => ({ ...base, type: 'flow', payload: { steps: [{ id: 'a', text: 'um', assetId: s1 }, { id: 'b', text: 'dois', assetId: a2 }] } });
+    expect((await put('ta', flow, steps(foreign))).status).toBe(422);
+    expect((await put('ta', flow, steps(s2))).status).toBe(200);
+    const cs = await newCard(board, 'case');
+    const caseBody = (id: string) => ({ ...base, type: 'case', payload: { caseSteps: [{ stage: 'presentation', text: 'x', assetId: id }, { stage: 'workup', text: 'y' }, { stage: 'diagnosis', text: 'z' }, { stage: 'management', text: 'w' }] } });
+    expect((await put('ta', cs, caseBody(foreign))).status).toBe(422);
+    expect((await put('ta', cs, caseBody(k1))).status).toBe(200);
+
+    // RLS: another user reads these assets only when the card is readable
+    for (const id of [back, s1, s2, k1]) expect((await call('tb', 'GET', `/v1/assets/${id}`)).status).toBe(404);
+    await dbm.db.execute(sql`update boards set status = 'seed_approved' where id = ${board}`);
+    for (const id of [back, s1, s2, k1]) expect((await call('tb', 'GET', `/v1/assets/${id}`)).status).toBe(200);
+    await dbm.db.execute(sql`update boards set status = 'private' where id = ${board}`);
+
+    // resizeCards: absolute, idempotent, bounded, owner-only, null restores
+    const resize = (t: string, bid: string, sizes: unknown[], opId = uuid()) => call(t, 'POST', '/v1/boards/ops', { ops: [{ op: 'resizeCards', opId, boardId: bid, sizes }] });
+    const op = uuid();
+    expect((await resize('ta', board, [{ cardId: c, size: { w: 300, h: 200 } }], op)).status).toBe(200);
+    expect((await resize('ta', board, [{ cardId: c, size: { w: 300, h: 200 } }], op)).status).toBe(200); // replay
+    expect((await got(c)).json.data.size).toEqual({ w: 300, h: 200 });
+    expect((await graph()).cards.find((x) => x.id === c)!.size).toEqual({ w: 300, h: 200 });
+    expect((await resize('ta', board, [{ cardId: c, size: { w: 10, h: 200 } }])).status).toBe(422);
+    expect((await resize('ta', board, [{ cardId: c, size: { w: 700, h: 200 } }])).status).toBe(422);
+    expect((await resize('tb', board, [{ cardId: c, size: { w: 200, h: 200 } }])).status).toBe(404);
+    const otherBoard = await newBoard();
+    await resize('ta', otherBoard, [{ cardId: c, size: { w: 500, h: 400 } }]); // card of another board: no effect
+    expect((await got(c)).json.data.size).toEqual({ w: 300, h: 200 });
+
+    // duplicate copies back image, size, tags
+    await dbm.db.execute(sql`update cards set tags = array['a','b'] where id = ${c}`);
+    const dup = await call('ta', 'POST', `/v1/boards/${board}/duplicate`, { title: 'Cópia' });
+    const copy = (await call('ta', 'GET', `/v1/boards/${dup.json.data.id}`)).json.data as BoardGraph;
+    expect(copy.cards.find((x) => x.type === 'concept')).toMatchObject({ backAssetId: back, size: { w: 300, h: 200 }, tags: ['a', 'b'] });
+    expect(copy.cards.find((x) => x.type === 'note')).toBeTruthy();
+    expect((await resize('ta', board, [{ cardId: c, size: null }])).status).toBe(200);
+    expect((await got(c)).json.data.size).toBeNull();
   });
 });

@@ -79,7 +79,7 @@ describe('usageTone', () => {
     [999, null, 'normal'],
   ] as const)('%d/%s -> %s', (used, limit, tone) => expect(usageTone(used, limit)).toBe(tone));
   it('usageRows covers every quota key', () => {
-    const rows = usageRows({ limits: PLAN_LIMITS.free.limits, usage: { ai_grades: 20, ai_generations: 0, boards: 3, cards: 170 } });
+    const rows = usageRows({ limits: PLAN_LIMITS.free.limits, usage: { ai_grades: 20, ai_generations: 0, boards: 2, cards: 42 } });
     expect(rows.map((r) => [r.key, r.tone])).toEqual([['ai_grades', 'full'], ['ai_generations', 'normal'], ['boards', 'full'], ['cards', 'warn']]);
   });
 });

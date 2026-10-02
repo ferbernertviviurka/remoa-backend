@@ -84,9 +84,9 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/matrix, /v1/coverage, createBoar
     const [i1, i2] = await items(u);
     expect((await call(u, 'GET', '/coverage')).json.data).toEqual([]);
     const b1 = (await call(u, 'POST', '/boards', { title: 'A', matrixItemId: i1!.id })).json.data.id as string;
-    const b2 = (await call(u, 'POST', '/boards', { title: 'B', matrixItemId: i1!.id })).json.data.id as string;
     const archived = (await call(u, 'POST', '/boards', { title: 'C', matrixItemId: i2!.id })).json.data.id as string;
     await call(u, 'PATCH', `/boards/${archived}`, { archived: true });
+    const b2 = (await call(u, 'POST', '/boards', { title: 'B', matrixItemId: i1!.id })).json.data.id as string;
     const [c1, c2, dead] = await mkCards(b1, 3);
     await mkCards(b2, 1);
     await mkCards(archived, 5);

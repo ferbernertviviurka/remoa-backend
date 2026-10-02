@@ -51,6 +51,7 @@ export const accountFreeFixture: AccountSnapshot = {
   streakDays: 4,
   joinedAt: at(-40),
   deletionScheduledFor: null,
+  passwordChangedAt: at(-90),
   avatarUrls: null,
 };
 

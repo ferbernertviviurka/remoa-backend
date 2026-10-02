@@ -1,5 +1,6 @@
 // Single source for enum values: used by zod schemas here and by pgEnum in @remoa/db.
-export const cardTypes = ['concept', 'flow', 'image', 'case'] as const;
+/** `concept` = "Pergunta e Resposta" na UI (frente/verso); `note` = "Conteúdo", só informativo, fora do FSRS e do desafio (D-200). */
+export const cardTypes = ['concept', 'flow', 'image', 'case', 'note'] as const;
 /** Card outline on the map (D-095). Flow, image and case cards are always `rect`. */
 export const cardShapes = ['rect', 'pill', 'circle', 'diamond', 'hexagon'] as const;
 export type CardShape = (typeof cardShapes)[number];
@@ -20,7 +21,12 @@ export const importKinds = ['anki', 'pdf'] as const;
 export const jobStatuses = ['queued', 'running', 'done', 'failed'] as const;
 export const editorialStatuses = ['pending', 'approved', 'changes_requested', 'rejected'] as const;
 export const flagSources = ['ai', 'user_disagree'] as const;
-export const areas = ['CM'] as const; // MVP: Clínica Médica only
+/** D-280/D-285: the 5 grandes áreas are a board label (Clínica Médica, Cirurgia, GO, Pediatria, Medicina Preventiva). */
+export const areas = ['CM', 'CIR', 'GO', 'PED', 'MP'] as const;
+/** Areas with an Enamed matrix, coverage and seeds (MVP: CM only). Lists that mean "the matrix" iterate this, not `areas`. */
+export const matrixAreas = ['CM'] as const satisfies readonly Area[];
+/** D-281/D-285: `owner` = Só eu (no link) · `password` = Privado (link + senha) · `public` = Público (link). */
+export const boardAccess = ['owner', 'password', 'public'] as const;
 
 export type CardType = (typeof cardTypes)[number];
 export type MapState = (typeof mapStates)[number];
@@ -41,3 +47,4 @@ export type JobStatus = (typeof jobStatuses)[number];
 export type EditorialStatus = (typeof editorialStatuses)[number];
 export type FlagSource = (typeof flagSources)[number];
 export type Area = (typeof areas)[number];
+export type BoardAccess = (typeof boardAccess)[number];

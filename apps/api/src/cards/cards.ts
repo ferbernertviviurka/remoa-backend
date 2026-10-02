@@ -1,4 +1,4 @@
-import { and, eq, isNull, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, notInArray } from 'drizzle-orm';
 import {
   type CardDetail, type CardPreview, type GetCard, type SaveCard,
   caseStages, err, idSchema, ok,
@@ -6,6 +6,16 @@ import {
 import { Abort, guard, run } from '../db';
 
 const isUuid = (v: string) => idSchema.safeParse(v).success;
+/** D-201: `{w,h}` or null from the two nullable columns (the CHECK keeps them together). */
+export const sizeOf = (r: { width: number | null; height: number | null }) => (r.width !== null && r.height !== null ? { w: r.width, h: r.height } : null);
+
+/** D-201: every image a card references (front, back, image-card asset, flow steps, case stages). */
+function assetIdsOf(input: { frontAssetId: string | null; backAssetId: string | null; type: string; payload: unknown }) {
+  const p = input.payload as { assetId?: string; steps?: { assetId?: string }[]; caseSteps?: { assetId?: string }[] };
+  const ids = [input.frontAssetId, input.backAssetId, p.assetId, ...(p.steps ?? []).map((x) => x.assetId), ...(p.caseSteps ?? []).map((x) => x.assetId)];
+  return [...new Set(ids.filter((x): x is string => !!x))];
+}
+
 const notFound = () => err<never>('not_found', 'card not found');
 
 /** What the map card shows without the payload. Tolerates empty/legacy payloads (cards born from map ops have `{}`). */
@@ -30,7 +40,7 @@ export const getCard: GetCard = async (userId, cardId) => {
     if (!r) return notFound();
     // payload is returned as stored: an unedited card may still hold `{}` for its type.
     return ok({
-      id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, source: r.source,
+      id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, backAssetId: r.backAssetId, size: sizeOf(r), tags: r.tags, source: r.source,
       position: { x: r.x, y: r.y }, status: r.status, order: r.order, reviewerId: r.reviewerId, updatedAt: r.updatedAt,
       rubric: r.rubric, payload: r.payload, preview: cardPreview(r.type, r.payload),
     } as unknown as CardDetail);
@@ -50,9 +60,14 @@ export const saveCard: SaveCard = async (userId, cardId, input) => {
       if (!row) throw new Abort({ code: 'not_found', message: 'card not found' });
 
       if (input.shape !== 'rect' && input.type !== 'concept') throw new Abort({ code: 'validation', message: 'shape other than rect is only for concept cards' });
-      if (input.frontAssetId) {
-        const [fa] = await tx.select({ id: s.assets.id }).from(s.assets).where(eq(s.assets.id, input.frontAssetId));
-        if (!fa) throw new Abort({ code: 'validation', message: 'frontAssetId is not an asset you can read' });
+      // D-200: a "Conteúdo" card has no back; any back/backAssetId sent is dropped (not an error: the editor may carry stale state when switching type).
+      const note = input.type === 'note';
+      const back = note ? null : input.back;
+      const backAssetId = note ? null : input.backAssetId;
+      const assetIds = assetIdsOf({ ...input, backAssetId });
+      if (assetIds.length) {
+        const found = await tx.select({ id: s.assets.id }).from(s.assets).where(inArray(s.assets.id, assetIds));
+        if (found.length !== assetIds.length) throw new Abort({ code: 'validation', message: 'an asset of this card is not one you can read' });
       }
 
       const maskRows: (typeof s.masks.$inferInsert)[] = [];
@@ -66,7 +81,7 @@ export const saveCard: SaveCard = async (userId, cardId, input) => {
 
       await tx
         .update(s.cards)
-        .set({ type: input.type, shape: input.shape, title: input.title, front: input.front, frontAssetId: input.frontAssetId, back: input.back, source: input.source, payload: input.payload, updatedAt: new Date() })
+        .set({ type: input.type, shape: input.shape, title: input.title, front: input.front, frontAssetId: input.frontAssetId, back, backAssetId, source: input.source, payload: input.payload, updatedAt: new Date() })
         .where(eq(s.cards.id, cardId));
 
       // mirror inline masks into `masks`: drop removed, upsert the rest

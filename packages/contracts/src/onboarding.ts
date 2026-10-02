@@ -1,13 +1,17 @@
 import { z } from 'zod';
 import { areas } from './enums';
 
-/** Year / situation: 3º–4º, 5º–6º, formado. */
-export const segments = ['y3_4', 'y5_6', 'graduated'] as const;
+/** Year / situation. Append-only (rows stored); UI order lives in the frontend. */
+export const segments = ['y3_4', 'y5_6', 'graduated', 'y1_2', 'cursinho', 'resident', 'working'] as const;
 export const segmentSchema = z.enum(segments);
 export type Segment = z.infer<typeof segmentSchema>;
 
 /** F13: exam goal (profiles.goal). */
-export const goals = ['enamed_2027_1', 'enamed_2027_2', 'undecided'] as const;
+export const goals = [
+  'enamed_2027_1', 'enamed_2027_2', 'undecided',
+  'enamed_2028_1', 'enamed_2028_2', 'residencia_enare', 'residencia_sus_sp', 'residencia_usp',
+  'residencia_unifesp', 'residencia_outras', 'provas_faculdade', 'manter_atualizado',
+] as const;
 export const goalSchema = z.enum(goals);
 export type Goal = z.infer<typeof goalSchema>;
 

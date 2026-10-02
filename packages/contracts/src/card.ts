@@ -3,13 +3,15 @@ import { assetLicenses, cardShapes, cardStatuses, cardTypes } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
 
 // --- Payload parts ---------------------------------------------------------
-export const flowStepSchema = z.object({ id: z.string().min(1).max(64), text: z.string().trim().min(1).max(500), note: z.string().max(1000).optional() });
+/** D-201: each step may carry an image (asset the user can read). */
+export const flowStepSchema = z.object({ id: z.string().min(1).max(64), text: z.string().trim().min(1).max(500), note: z.string().max(1000).optional(), assetId: idSchema.optional() });
 export type FlowStep = z.infer<typeof flowStepSchema>;
 
 export const caseStages = ['presentation', 'workup', 'diagnosis', 'management'] as const;
 export const caseStageSchema = z.enum(caseStages);
 export type CaseStage = z.infer<typeof caseStageSchema>;
-export const caseStepSchema = z.object({ stage: caseStageSchema, text: z.string().trim().min(1).max(2000) });
+/** D-201: each stage may carry an image. */
+export const caseStepSchema = z.object({ stage: caseStageSchema, text: z.string().trim().min(1).max(2000), assetId: idSchema.optional() });
 export type CaseStep = z.infer<typeof caseStepSchema>;
 
 /** Polygon vertex in image-relative coordinates (0..1), so masks render at any size. */
@@ -45,6 +47,17 @@ export const assetViewSchema = assetRefSchema.extend({ urls: z.object({ w800: z.
 export type AssetView = z.infer<typeof assetViewSchema>;
 
 export const conceptPayloadSchema = z.object({}).strict();
+/** D-200: "Conteúdo" — title/front (+ image) only; no back, no rubric, never scheduled. */
+export const notePayloadSchema = z.object({}).strict();
+
+/** D-202: user-chosen card size on the map (px at zoom 1); `null` = default for type/shape. */
+export const CARD_SIZE_MIN = { w: 140, h: 90 } as const;
+export const CARD_SIZE_MAX = { w: 640, h: 560 } as const;
+export const cardSizeSchema = z.object({
+  w: z.number().int().min(CARD_SIZE_MIN.w).max(CARD_SIZE_MAX.w),
+  h: z.number().int().min(CARD_SIZE_MIN.h).max(CARD_SIZE_MAX.h),
+});
+export type CardSize = z.infer<typeof cardSizeSchema>;
 const uniqueIds = (xs: { id: string }[]) => new Set(xs.map((x) => x.id)).size === xs.length;
 export const flowPayloadSchema = z.object({ steps: z.array(flowStepSchema).min(2).max(12).refine(uniqueIds, 'duplicate step id') });
 /** Masks live inline here (the API mirrors them into `masks`); never burned into the image. */
@@ -86,6 +99,12 @@ export const cardSchema = z.object({
   /** D-096: optional image on the question side (front); must be an asset the user can read. */
   frontAssetId: idSchema.nullable().default(null),
   back: z.string().nullable(),
+  /** D-201: optional image on the answer side (back). */
+  backAssetId: idSchema.nullable().default(null),
+  /** D-202: user-chosen size; null = default. Changed by the `resizeCards` map op. */
+  size: cardSizeSchema.nullable().default(null),
+  /** D-204: tags (F06 import keeps Anki tags and sub-deck; P-056). Read-only here for now. */
+  tags: z.array(z.string().min(1).max(64)).max(50).default([]),
   source: z.string().nullable(),
   position: positionSchema.nullable(), // null = not laid out yet (imports)
   status: z.enum(cardStatuses),
@@ -101,10 +120,12 @@ export const cardConceptSchema = withRubric.extend({ type: z.literal('concept'),
 export const cardFlowSchema = withRubric.extend({ type: z.literal('flow'), payload: flowPayloadSchema });
 export const cardImageSchema = withRubric.extend({ type: z.literal('image'), payload: imagePayloadSchema });
 export const cardCaseSchema = withRubric.extend({ type: z.literal('case'), payload: casePayloadSchema });
+export const cardNoteSchema = withRubric.extend({ type: z.literal('note'), payload: notePayloadSchema });
 export type CardConcept = z.infer<typeof cardConceptSchema>;
 export type CardFlow = z.infer<typeof cardFlowSchema>;
 export type CardImage = z.infer<typeof cardImageSchema>;
 export type CardCase = z.infer<typeof cardCaseSchema>;
+export type CardNote = z.infer<typeof cardNoteSchema>;
 
 /** Full card with typed payload, discriminated on `type`. */
 export const cardDetailSchema = z.discriminatedUnion('type', [
@@ -112,6 +133,7 @@ export const cardDetailSchema = z.discriminatedUnion('type', [
   cardFlowSchema,
   cardImageSchema,
   cardCaseSchema,
+  cardNoteSchema,
 ]);
 export type CardDetail = z.infer<typeof cardDetailSchema>;
 
@@ -126,6 +148,8 @@ const editable = z.object({
   front: z.string().max(5000).nullable(),
   /** D-096: question image (front side). */
   frontAssetId: idSchema.nullable().default(null),
+  /** D-201: answer image (back side); ignored for `note`. */
+  backAssetId: idSchema.nullable().default(null),
   back: z.string().max(5000).nullable(),
   source: z.string().max(1000).nullable(),
 });
@@ -134,6 +158,7 @@ export const saveCardInputSchema = z.discriminatedUnion('type', [
   editable.extend({ type: z.literal('flow'), payload: flowPayloadSchema }),
   editable.extend({ type: z.literal('image'), payload: imagePayloadSchema }),
   editable.extend({ type: z.literal('case'), payload: casePayloadSchema }),
+  editable.extend({ type: z.literal('note'), payload: notePayloadSchema }),
 ]);
 export type SaveCardInput = z.infer<typeof saveCardInputSchema>;
 
