@@ -13,6 +13,7 @@ export async function ocrPdf(bytes: Uint8Array, fetchImpl: typeof fetch = fetch)
     const res = await fetchImpl('https://api.mistral.ai/v1/ocr', {
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(10 * 60 * 1000),
       body: JSON.stringify({
         model: 'mistral-ocr-latest',
         document: { type: 'document_url', document_url: `data:application/pdf;base64,${document}` },

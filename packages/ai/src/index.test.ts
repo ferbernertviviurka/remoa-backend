@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { gradeOffline } from './offline';
 import { runOfflineEval } from './eval';
 import { graderCases } from './eval-cases';
-import { chunkText, extractOffline, extractWithMeta, mergeDrafts } from './extract';
-import { cachedRubric, rubricFromCard } from './grade';
+import { chunkText, extractOffline, extractWithMeta, layout, mergeDrafts } from './extract';
+import { cachedRubric, costCents, rubricFromCard } from './grade';
 import { graderUser, parseVerdict } from './openrouter';
-import { pdfText } from './pdf';
+import { pdfPageCount, pdfText } from './pdf';
 
 describe('offline grader', () => {
   it('scores the eval set at or above 90% and catches every critical error', () => {
@@ -15,6 +15,7 @@ describe('offline grader', () => {
     expect(report.criticalExpected).toBe(10);
     expect(report.criticalHits).toBe(10);
     expect(report.p95Ms).toBeLessThan(50);
+    expect(report.costCents).toBe(0);
   });
 
   it('treats "não sei" as incorrect', () => {
@@ -27,6 +28,32 @@ describe('offline grader', () => {
     const v = gradeOffline(graderCases.find((c) => c.id === 'out')!.input);
     expect(v.verdict).toBe('partial');
     expect(v.missing.length).toBeGreaterThan(0);
+  });
+
+  it('treats a route the rubric never states as a critical error', () => {
+    const sample = graderCases.find((c) => c.id === 'c0')!.input;
+    const wrongRoute = gradeOffline({
+      ...sample,
+      answer: 'Iniciar noradrenalina intramuscular para manter a pressão arterial média e reavaliar o lactato.',
+    });
+    expect(wrongRoute.criticalError).toBe(true);
+    expect(wrongRoute.verdict).toBe('incorrect');
+    const sameRoute = gradeOffline({
+      ...sample,
+      rubric: {
+        ...sample.rubric,
+        points: [...sample.rubric.points, { text: 'Preferir a via endovenosa', essential: false }],
+      },
+      answer: 'Iniciar noradrenalina intravenosa para manter a pressão arterial média e reavaliar o lactato.',
+    });
+    expect(sameRoute.criticalError).toBe(false);
+  });
+
+  it('does not count a shared verb as the drug the rubric asks for', () => {
+    const sample = graderCases.find((c) => c.id === 'c0')!.input;
+    const v = gradeOffline({ ...sample, answer: 'Iniciar antibiótico de amplo espectro na primeira hora.' });
+    expect(v.matched).not.toContain('Iniciar noradrenalina');
+    expect(v.verdict).not.toBe('correct');
   });
 });
 
@@ -47,12 +74,64 @@ describe('rubric and extract', () => {
     }
   });
 
+  it('reads a flowchart, a case and a labeled relation from an outline', () => {
+    const text = [
+      'Sepse.',
+      'Disfunção orgânica causada por infecção.',
+      '',
+      'Fluxo: Conduta de sepse',
+      '1. Reconhecer a disfunção',
+      '2. Reavaliar depois do pacote inicial',
+      '',
+      'Caso: Caso de sepse',
+      'Apresentação: febre e hipotensão',
+      'Conduta: pacote inicial e reavaliação',
+      '',
+      'Relação: Sepse -> Conduta de sepse: conduta',
+    ].join('\n');
+    const map = extractOffline(text, 'ILAS');
+    expect(map.cards.map((c) => c.type).sort()).toEqual(['case', 'concept', 'flow']);
+    expect(map.edges).toEqual([{ fromRef: 'c1', toRef: 'c2', label: 'conduta' }]);
+    const flow = map.cards.find((c) => c.type === 'flow');
+    expect(flow?.payload).toMatchObject({ steps: [{ id: 's1' }, { id: 's2' }] });
+  });
+
   it('merges duplicate titles across chunks', () => {
     const a = extractOffline('Sepse e choque.\n\nNoradrenalina é a droga.', 'fonte');
     const b = extractOffline('Sepse e choque.\n\nOutro parágrafo.', 'fonte');
     const merged = mergeDrafts([a, b]);
     const titles = merged.cards.map((c) => c.title);
     expect(new Set(titles).size).toBe(titles.length);
+  });
+
+  it('keeps the fuller card and the labeled edge when the same title is merged', () => {
+    const concept = (ref: string, title: string, back: string, front: string | null = null, source: string | null = null) => ({
+      ref, type: 'concept' as const, title, front, back, source, payload: {},
+    });
+    const merged = mergeDrafts([
+      {
+        cards: [concept('a', 'Sepse', 'Curta.'), concept('c', 'Choque', 'Hipotensão.')],
+        edges: [{ fromRef: 'a', toRef: 'c', label: null }],
+      },
+      {
+        cards: [concept('b', 'sépse', 'Disfunção orgânica causada por infecção.', 'O que define?', 'ILAS')],
+        edges: [{ fromRef: 'b', toRef: 'c', label: 'pode evoluir' }],
+      },
+    ]);
+    expect(merged.cards).toHaveLength(2);
+    expect(merged.cards[0]).toMatchObject({ ref: 'a', front: 'O que define?', source: 'ILAS', back: 'Disfunção orgânica causada por infecção.' });
+    expect(merged.edges).toEqual([{ fromRef: 'a', toRef: 'c', label: 'pode evoluir' }]);
+  });
+
+  it('lays a target to the right of its source and keeps loose cards apart', () => {
+    const concept = (ref: string) => ({ ref, type: 'concept' as const, title: ref, front: null, back: null, source: 's', payload: {} });
+    const linked = layout([concept('a'), concept('b')], [{ fromRef: 'a', toRef: 'b', label: 'leva a' }]);
+    const a = linked.find((p) => p.ref === 'a');
+    const b = linked.find((p) => p.ref === 'b');
+    expect(b!.x).toBeGreaterThan(a!.x);
+    const loose = layout([concept('a'), concept('b'), concept('c')], []);
+    expect(new Set(loose.map((p) => `${p.x},${p.y}`)).size).toBe(3);
+    expect(layout([concept('a'), concept('b')], [{ fromRef: 'a', toRef: 'b', label: null }, { fromRef: 'b', toRef: 'a', label: null }])).toHaveLength(2);
   });
 
   it('chunks long text', () => {
@@ -64,6 +143,7 @@ describe('openrouter parse', () => {
   it('reads text stored inside a PDF literal string', () => {
     const bytes = new TextEncoder().encode('BT (Sepse e choque septico exige noradrenalina) Tj ET');
     expect(pdfText(bytes)).toContain('noradrenalina');
+    expect(pdfPageCount(new TextEncoder().encode('/Type /Pages /Count 2 /Type /Page /Type /Page'))).toBe(2);
   });
 
   it('does not send the canonical answer to the model', () => {
@@ -71,6 +151,15 @@ describe('openrouter parse', () => {
     const body = graderUser({ ...graderCases[0]!.input, canonical: secret });
     expect(body).not.toContain(secret);
     expect(body).toContain(graderCases[0]!.input.answer);
+  });
+
+  it('prices a million tokens at the list price of the model', () => {
+    expect(costCents(1_000_000, 0, 'anthropic/claude-3.5-haiku')).toBe(80);
+    expect(costCents(0, 1_000_000, 'anthropic/claude-3.5-haiku')).toBe(400);
+    expect(costCents(1_000_000, 0, 'anthropic/claude-3.5-sonnet')).toBe(300);
+    expect(costCents(0, 1_000_000, 'anthropic/claude-3.5-sonnet')).toBe(1500);
+    expect(costCents(10, 10, 'anthropic/claude-3.5-haiku')).toBe(1);
+    expect(costCents(0, 0, 'anthropic/claude-3.5-sonnet')).toBe(0);
   });
 
   it('accepts a model verdict', () => {
@@ -94,6 +183,16 @@ describe('openrouter parse', () => {
     const bad = await extractWithMeta(text, 'fonte', badFetch);
     expect(bad.meta.model).toBe('offline-extract');
     expect(bad.extracted.cards.length).toBeGreaterThan(0);
+    if (prev === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = prev;
+  });
+
+  it('stops a generation that has already used the ten-minute budget', async () => {
+    const prev = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(extractWithMeta('Sepse exige noradrenalina na primeira hora.', 'fonte', fetchImpl, Date.now() - 1)).rejects.toThrow('generate_timeout');
+    expect(fetchImpl).not.toHaveBeenCalled();
     if (prev === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = prev;
   });

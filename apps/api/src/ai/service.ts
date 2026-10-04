@@ -1,9 +1,9 @@
 import { eq } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
-import { graderInputSchema, rubricSchema, err, ok, parseWith, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput } from '@remoa/contracts';
-import { cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf, pdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent } from '@remoa/ai';
+import { AI_DRAFT_SOURCE, graderInputSchema, rubricSchema, err, ok, parseWith, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput } from '@remoa/contracts';
+import { cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf, pdfPageCount, pdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent } from '@remoa/ai';
 import { dispatchBoardJob } from '../inngest/client';
-import { assertQuota, refundGeneration } from '../billing/quota';
+import { assertQuota, refundGeneration, refundQuota } from '../billing/quota';
 import { dbm } from '../db';
 import { getBytes } from '../storage/storage';
 import { caller } from './caller';
@@ -23,13 +23,13 @@ export function allowGrade(userId: string, now = Date.now()): boolean {
 
 const jobs = new Map<string, BoardGenerationProgress & { userId: string }>();
 const work = new Map<string, { userId: string; input: GenerateBoardInput; text: string; charged: boolean; refunded: boolean; logKind?: string }>();
-const counts = new Map<string, { cards: number; edges: number }>();
+const counts = new Map<string, { cards: number; edges: number; pages?: number }>();
 
 async function recordCall(userId: string, kind: string, meta: { model: string; tokensIn: number; tokensOut: number }) {
   if (!process.env.DATABASE_URL) return;
   const { db, aiCalls } = await dbm();
   await db.insert(aiCalls).values({
-    userId, kind, model: meta.model, promptVersion: EXTRACT_PROMPT_VERSION, inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut), latencyMs: 0,
+    userId, kind, model: meta.model, promptVersion: EXTRACT_PROMPT_VERSION, inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: 0,
   });
 }
 
@@ -42,13 +42,13 @@ export async function gradeAnswer(input: Parameters<typeof gradeWithMeta>[0]) {
       const { db, aiCalls } = await dbm();
       await db.insert(aiCalls).values({
         userId, kind: 'grade', model: verdict.model, promptVersion: meta.promptVersion,
-        inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut), latencyMs: meta.latencyMs,
+        inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model), latencyMs: meta.latencyMs,
       });
     } catch {
       /* the verdict still stands if the cost row cannot be written */
     }
   }
-  return ok({ ...verdict, costCents: costCents(meta.tokensIn, meta.tokensOut) });
+  return ok({ ...verdict, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model) });
 }
 
 /** Same grader as `gradeAnswer`, but feedback leaves as the model writes it. One `ai_calls` row when a verdict arrives. */
@@ -58,7 +58,7 @@ export async function* streamGradeAnswer(input: Parameters<typeof streamGrade>[0
       yield event;
       continue;
     }
-    const verdict = { ...event.verdict, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut) };
+    const verdict = { ...event.verdict, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut, event.verdict.model) };
     const priced: GradeEvent = { ...event, verdict };
     yield priced;
     const userId = caller.getStore();
@@ -67,7 +67,7 @@ export async function* streamGradeAnswer(input: Parameters<typeof streamGrade>[0
       const { db, aiCalls } = await dbm();
       await db.insert(aiCalls).values({
         userId, kind: 'grade', model: verdict.model, promptVersion: event.meta.promptVersion,
-        inputTokens: event.meta.tokensIn, outputTokens: event.meta.tokensOut, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut), latencyMs: event.meta.latencyMs,
+        inputTokens: event.meta.tokensIn, outputTokens: event.meta.tokensOut, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut, verdict.model), latencyMs: event.meta.latencyMs,
       });
     } catch {
       /* the streamed verdict still stands */
@@ -94,12 +94,13 @@ export async function gradeForUser(userId: string, body: unknown) {
         promptVersion: meta.promptVersion,
         inputTokens: meta.tokensIn,
         outputTokens: meta.tokensOut,
-        costCents: costCents(meta.tokensIn, meta.tokensOut),
+        costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model),
         latencyMs: meta.latencyMs,
       });
     }
-    return { ok: true as const, data: { ...verdict, costCents: costCents(meta.tokensIn, meta.tokensOut) } };
+    return { ok: true as const, data: { ...verdict, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model) } };
   } catch {
+    if (process.env.DATABASE_URL) await refundQuota(userId).catch(() => undefined);
     return { ok: false as const, error: { code: 'ai_unavailable' as const, message: 'não foi possível corrigir, revele e avalie' } };
   }
 }
@@ -122,7 +123,7 @@ async function* recordGradeStream(userId: string, input: Parameters<typeof strea
       yield event;
       continue;
     }
-    const priced: GradeEvent = { ...event, verdict: { ...event.verdict, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut) } };
+    const priced: GradeEvent = { ...event, verdict: { ...event.verdict, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut, event.verdict.model) } };
     last = priced;
     yield priced;
   }
@@ -133,7 +134,7 @@ async function* recordGradeStream(userId: string, input: Parameters<typeof strea
     const { db, aiCalls } = await dbm();
     await db.insert(aiCalls).values({
       userId, kind: 'grade', model: verdict.model, promptVersion: meta.promptVersion,
-      inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut), latencyMs: meta.latencyMs,
+      inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model), latencyMs: meta.latencyMs,
     });
   } catch {
     /* the streamed verdict still stands */
@@ -141,7 +142,20 @@ async function* recordGradeStream(userId: string, input: Parameters<typeof strea
 }
 
 export async function rubricForCard(title: string, back: string | null, source: string) {
-  return { ok: true as const, data: await rubricWithMeta(title, back, source), promptVersion: RUBRIC_PROMPT_VERSION };
+  const { rubric, meta } = await rubricWithMeta(title, back, source);
+  const userId = caller.getStore();
+  if (userId && process.env.DATABASE_URL) {
+    try {
+      const { db, aiCalls } = await dbm();
+      await db.insert(aiCalls).values({
+        userId, kind: 'rubric', model: meta.model, promptVersion: RUBRIC_PROMPT_VERSION,
+        inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: 0,
+      });
+    } catch {
+      /* the rubric still returns if the cost row cannot be written */
+    }
+  }
+  return { ok: true as const, data: rubric, promptVersion: RUBRIC_PROMPT_VERSION };
 }
 
 /** Writes a draft rubric on the user's card. An approved rubric stays as it is. */
@@ -153,7 +167,7 @@ export async function attachRubric(userId: string, cardId: string) {
   if (!board || board.userId !== userId) return err('not_found', 'not found');
   const existing = card.rubric && typeof card.rubric === 'object' ? card.rubric as { status?: string; inputHash?: string } : null;
   if (existing?.status === 'approved') return err('conflict', 'approved rubric');
-  const source = card.source?.trim() || 'Gerado por IA, não revisado';
+  const source = card.source?.trim() || AI_DRAFT_SOURCE;
   const hash = createHash('sha256').update(`${card.title}\n${card.back ?? ''}\n${source}`).digest('hex');
   if (existing?.status === 'draft' && existing.inputHash === hash) {
     const parsed = rubricSchema.safeParse(existing);
@@ -166,14 +180,22 @@ export async function attachRubric(userId: string, cardId: string) {
   }
   const charged = Boolean(process.env.DATABASE_URL && process.env.OPENROUTER_API_KEY);
   if (charged) {
-    const quota = await assertQuota(userId, 'ai_generations');
+    const quota = await assertQuota(userId, 'ai_grades');
     if (!quota.ok) return quota;
   }
-  const rubric = await rubricWithMeta(card.title, card.back, source);
+  let built: Awaited<ReturnType<typeof rubricWithMeta>>;
+  try {
+    built = await rubricWithMeta(card.title, card.back, source);
+  } catch (error) {
+    if (charged) await refundQuota(userId).catch(() => undefined);
+    throw error;
+  }
+  const { rubric, meta } = built;
   await db.update(cards).set({ rubric: { ...rubric, inputHash: hash }, updatedAt: new Date() }).where(eq(cards.id, card.id));
   if (process.env.DATABASE_URL) {
     await db.insert(aiCalls).values({
-      userId, kind: 'rubric', model: 'rubric', promptVersion: RUBRIC_PROMPT_VERSION, inputTokens: 0, outputTokens: 0, costCents: 0, latencyMs: 0,
+      userId, kind: 'rubric', model: meta.model, promptVersion: RUBRIC_PROMPT_VERSION,
+      inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: 0,
     });
   }
   return ok(rubric);
@@ -194,7 +216,7 @@ async function saveBoard(userId: string, input: GenerateBoardInput, cards: CardD
       title: card.title,
       front: card.front,
       back: card.back,
-      source: card.source ?? 'Gerado por IA, não revisado',
+      source: card.source ?? AI_DRAFT_SOURCE,
       payload: card.payload,
       status: 'draft',
       order,
@@ -235,6 +257,7 @@ function failJob(jobId: string, error: string) {
 export function startPdfGeneration(userId: string, title: string, bytes: Uint8Array) {
   const jobId = randomUUID();
   jobs.set(jobId, { jobId, userId, status: 'queued', progress: 0, stage: 'ocr', boardId: null, error: null });
+  counts.set(jobId, { cards: 0, edges: 0, pages: pdfPageCount(bytes) });
   void (async () => {
     const reading = jobs.get(jobId);
     if (reading) jobs.set(jobId, { ...reading, status: 'running', progress: 10, stage: 'ocr' });
@@ -308,8 +331,8 @@ async function executeGeneration(jobId: string) {
   if (!job || !item || job.status === 'done' || job.status === 'failed') return;
   jobs.set(jobId, { ...job, status: 'running', progress: Math.max(job.progress, 30), stage: 'extract' });
   try {
-    const { extracted, meta } = await extractWithMeta(item.text, 'Gerado por IA, não revisado');
-    counts.set(jobId, { cards: extracted.cards.length, edges: extracted.edges.length });
+    const { extracted, meta } = await extractWithMeta(item.text, AI_DRAFT_SOURCE);
+    counts.set(jobId, { cards: extracted.cards.length, edges: extracted.edges.length, pages: counts.get(jobId)?.pages });
     const current = jobs.get(jobId);
     if (current) jobs.set(jobId, { ...current, progress: 75, stage: 'layout' });
     const boardId = process.env.DATABASE_URL ? await saveBoard(item.userId, item.input, extracted.cards, extracted.edges) : null;
@@ -327,7 +350,7 @@ async function executeGeneration(jobId: string) {
   }
 }
 
-export function generationOf(userId: string, jobId: string): (BoardGenerationProgress & { cards?: number; edges?: number }) | null {
+export function generationOf(userId: string, jobId: string): (BoardGenerationProgress & { cards?: number; edges?: number; pages?: number }) | null {
   const job = jobs.get(jobId);
   if (!job || job.userId !== userId) return null;
   const n = counts.get(jobId);

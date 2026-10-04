@@ -1,8 +1,8 @@
 import { sql } from 'drizzle-orm';
-import { ok, type GetProgress } from '@remoa/contracts';
+import { ok, type FsrsCardState, type FsrsMemory, type GetProgress } from '@remoa/contracts';
 import { dayWindow } from '../review/queue';
 import { run } from '../db';
-import { summarizeBuckets, type AttemptBucket, type WeakFact } from './aggregate';
+import { summarizeBuckets, weakFromMemory, type AttemptBucket } from './aggregate';
 
 export const getProgress: GetProgress = async (userId, now) =>
   ok(
@@ -22,14 +22,17 @@ export const getProgress: GetProgress = async (userId, now) =>
         ) s
         group by day, area, matrix_item_id
       `);
-      const weak = await tx.execute<{ card_id: string; board_id: string; title: string; r: number }>(sql`
+      const weak = await tx.execute<{
+        card_id: string; board_id: string; title: string; stability: number; difficulty: number;
+        due: Date | string; reps: number; lapses: number; last_review: Date | string | null;
+        state: FsrsCardState; learning_steps: number; scheduled_days: number;
+      }>(sql`
         select f.card_id, c.board_id, c.title,
-               exp(- greatest(extract(epoch from (now() - coalesce(f.last_review, f.created_at))) / 86400, 0) / greatest(f.stability, 0.01))::float8 as r
+               f.stability, f.difficulty, f.due, f.reps, f.lapses, f.last_review, f.state::text as state,
+               f.learning_steps, f.scheduled_days
         from fsrs_state f
         join cards c on c.id = f.card_id
-        where f.user_id = ${userId} and f.sub_id = ''
-        order by r asc
-        limit 40
+        where f.user_id = ${userId} and f.sub_id = '' and f.reps > 0 and f.last_review is not null
       `);
       const studied = await tx.execute<{ day: string }>(sql`
         select distinct ((a.created_at at time zone ${win.tz}::text) - interval '4 hours')::date::text as day
@@ -40,7 +43,22 @@ export const getProgress: GetProgress = async (userId, now) =>
       const buckets: AttemptBucket[] = attempts.map((a) => ({
         day: a.day, attempts: Number(a.attempts), hits: Number(a.hits), area: 'CM', matrixItemId: a.matrix_item_id, matrixTitle: a.matrix_title,
       }));
-      const weaks: WeakFact[] = weak.map((w) => ({ cardId: w.card_id, boardId: w.board_id, title: w.title, r: Number(w.r) }));
+      const weaks = weakFromMemory(weak.map((w) => ({
+        cardId: w.card_id,
+        boardId: w.board_id,
+        title: w.title,
+        memory: {
+          stability: Number(w.stability),
+          difficulty: Number(w.difficulty),
+          due: new Date(w.due),
+          reps: Number(w.reps),
+          lapses: Number(w.lapses),
+          lastReview: w.last_review ? new Date(w.last_review) : null,
+          state: w.state,
+          learningSteps: Number(w.learning_steps),
+          scheduledDays: Number(w.scheduled_days),
+        } satisfies FsrsMemory,
+      })), now);
       return summarizeBuckets(buckets, weaks, win.day, studied.map((d) => d.day));
     }),
   );

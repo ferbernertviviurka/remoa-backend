@@ -28,6 +28,21 @@ function previousOf(rubric: unknown): { text: string; essential: boolean }[] {
   return pointsOf({ points: (rubric as { previousPoints?: unknown }).previousPoints });
 }
 
+const verdictNames = ['correct', 'partial', 'incorrect'] as const;
+
+/** The disputed attempt, when the queue row points at one. Rubric points stay on the card. */
+function disputeOf(answer: string | null, raw: unknown) {
+  const body = raw && typeof raw === 'object' ? raw as { verdict?: unknown; feedback?: unknown; criticalError?: unknown } : null;
+  const name = body && verdictNames.find((v) => v === body.verdict);
+  if (!answer && !name) return { answerText: null, verdict: null, feedback: null, criticalError: false };
+  return {
+    answerText: answer,
+    verdict: name ?? null,
+    feedback: body && typeof body.feedback === 'string' && body.feedback ? body.feedback : null,
+    criticalError: body?.criticalError === true,
+  };
+}
+
 export async function editorialQueue(userId: string, query: { boardId?: string; flag?: string } = {}) {
   const who = await reviewer(userId);
   if (!who) return err('not_found', 'not found');
@@ -43,12 +58,15 @@ export async function editorialQueue(userId: string, query: { boardId?: string; 
     id: string; card_id: string; board_id: string; board_title: string; title: string; front: string | null; back: string | null;
     source: string | null; rubric: unknown; status: string; reviewer_id: string | null;
     note: string | null; flag_source: string | null; attempt_id: string | null; created_at: string;
+    answer_text: string | null; attempt_verdict: unknown;
   }>(sql`
     select q.id, q.card_id, c.board_id, b.title as board_title, c.title, c.front, c.back, c.source, c.rubric,
-      q.status, q.reviewer_id, q.note, q.flag_source, q.attempt_id, q.created_at
+      q.status, q.reviewer_id, q.note, q.flag_source, q.attempt_id, q.created_at,
+      a.answer_text, a.verdict as attempt_verdict
     from review_queue q
     join cards c on c.id = q.card_id
     join boards b on b.id = c.board_id
+    left join attempts a on a.id = q.attempt_id
     where ${where}
     order by q.created_at asc
     limit 40
@@ -71,8 +89,24 @@ export async function editorialQueue(userId: string, query: { boardId?: string; 
       front: r.front, back: r.back, source: r.source, points: pointsOf(r.rubric), previousPoints: previousOf(r.rubric),
       status: r.status, reviewerId: r.reviewer_id,
       note: r.note, flagSource: r.flag_source, attemptId: r.attempt_id, createdAt: r.created_at,
+      ...disputeOf(r.answer_text, r.attempt_verdict),
     })),
   });
+}
+
+/** Approval always leaves a rubric the inspector can read: name and CRM, even when the card had none. */
+function stampedRubric(
+  card: { title: string; back: string | null; source: string | null; rubric: unknown },
+  who: { name: string | null; crm: string | null },
+  userId: string,
+  edited?: { text: string; essential: boolean }[],
+) {
+  const prev = card.rubric && typeof card.rubric === 'object' ? card.rubric as { source?: unknown; version?: unknown } : null;
+  const kept = pointsOf(card.rubric);
+  const points = edited?.length ? edited : kept.length ? kept : [{ text: (card.back?.trim() || card.title).trim() || card.title, essential: true }];
+  const source = (typeof prev?.source === 'string' && prev.source.trim()) || card.source?.trim() || card.title;
+  const version = typeof prev?.version === 'number' && prev.version > 0 ? prev.version : 1;
+  return { ...(prev ?? {}), points, source, version, status: 'approved' as const, reviewerId: userId, reviewerName: who.name, reviewerCrm: who.crm };
 }
 
 export async function decideReview(userId: string, body: unknown) {
@@ -96,10 +130,7 @@ export async function decideReview(userId: string, body: unknown) {
   }
   await db.update(reviewQueue).set({ status: input.data.decision, reviewerId: userId, note: input.data.note, updatedAt: new Date() }).where(eq(reviewQueue.id, item.id));
   if (input.data.decision === 'approved' && card) {
-    const edited = input.data.rubricPoints;
-    const rubric = card.rubric && typeof card.rubric === 'object'
-      ? { ...(card.rubric as object), ...(edited ? { points: edited } : {}), status: 'approved', reviewerId: userId, reviewerName: who.name, reviewerCrm: who.crm }
-      : card.rubric;
+    const rubric = stampedRubric(card, who, userId, input.data.rubricPoints);
     await db.update(cards).set({ status: 'approved', reviewerId: userId, rubric, updatedAt: new Date() }).where(eq(cards.id, card.id));
   }
   return ok({ id: item.id });
@@ -126,11 +157,14 @@ export async function resolveDispute(userId: string, body: unknown) {
   await db.update(reviewQueue).set({ status: 'approved', reviewerId: userId, note: input.data.note, updatedAt: new Date() }).where(eq(reviewQueue.id, item.id));
   if (input.data.outcome === 'rubric_adjusted') {
     const [card] = await db.select().from(cards).where(eq(cards.id, item.cardId));
-    if (card?.rubric && typeof card.rubric === 'object') {
-      const prev = card.rubric as { version?: number; points?: { text: string; essential: boolean }[]; source?: string };
-      const points = input.data.rubricPoints ?? prev.points ?? [];
+    if (card) {
+      const prev = card.rubric && typeof card.rubric === 'object' ? card.rubric as { version?: number; source?: string } : null;
+      const previousPoints = pointsOf(card.rubric);
+      const drafted = input.data.rubricPoints?.length ? input.data.rubricPoints : previousPoints;
+      const points = drafted.length ? drafted : [{ text: (card.back?.trim() || card.title).trim() || card.title, essential: true }];
+      const source = prev?.source?.trim() || card.source?.trim() || card.title;
       await db.update(cards).set({
-        rubric: { points, previousPoints: prev.points ?? [], source: prev.source ?? '', version: (prev.version ?? 1) + 1, status: 'draft', reviewerId: null },
+        rubric: { points, previousPoints, source, version: (prev?.version ?? 0) + 1, status: 'draft', reviewerId: null },
         status: 'draft',
         updatedAt: new Date(),
       }).where(eq(cards.id, card.id));
@@ -182,7 +216,7 @@ export async function listDrafts(userId: string) {
 
 export async function listSeeds() {
   const { db, boards } = await dbm();
-  const rows = await db.select().from(boards).where(eq(boards.status, 'seed_approved')).orderBy(asc(boards.title));
+  const rows = await db.select().from(boards).where(eq(boards.status, 'seed_approved')).orderBy(asc(boards.area), asc(boards.title));
   return ok(rows.map((b) => ({ id: b.id, title: b.title, area: b.area, temporalMark: b.temporalMark })));
 }
 

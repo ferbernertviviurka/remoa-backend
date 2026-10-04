@@ -1,7 +1,7 @@
 import { gradeOffline } from './offline';
 import { graderCases } from './eval-cases';
 
-export type EvalReport = { n: number; concordance: number; criticalHits: number; criticalExpected: number; p95Ms: number };
+export type EvalReport = { n: number; concordance: number; criticalHits: number; criticalExpected: number; p95Ms: number; costCents: number };
 
 export function runOfflineEval(): EvalReport {
   const times: number[] = [];
@@ -20,5 +20,5 @@ export function runOfflineEval(): EvalReport {
   }
   times.sort((a, b) => a - b);
   const p95 = times[Math.min(times.length - 1, Math.floor(times.length * 0.95))] ?? 0;
-  return { n: graderCases.length, concordance: hit / graderCases.length, criticalHits, criticalExpected, p95Ms: p95 };
+  return { n: graderCases.length, concordance: hit / graderCases.length, criticalHits, criticalExpected, p95Ms: p95, costCents: 0 };
 }

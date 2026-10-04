@@ -680,7 +680,11 @@ export const getProgress: Api.GetProgress = async () =>
   ok({
     retention7d: 0.72,
     retention30d: 0.68,
-    reviewsPerDay: [{ date: '2026-09-30', count: 18 }, { date: '2026-10-01', count: 7 }],
+    reviewsPerDay: Array.from({ length: 30 }, (_, i) => {
+      const date = new Date(Date.UTC(2026, 8, 2 + i)).toISOString().slice(0, 10);
+      const count = date === '2026-09-30' ? 18 : date === '2026-10-01' ? 7 : 0;
+      return { date, count };
+    }),
     streakDays: 2,
     weakCards: [{ cardId: sepseCards[4]!.id, boardId: sepseBoard.id, title: sepseCards[4]!.title, r: 0.55 }],
     accuracy: [{ area: 'CM', matrixItemId: null, attempts: 25, correct: 18, accuracy: 0.72 }],

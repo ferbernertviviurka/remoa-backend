@@ -6,7 +6,7 @@ import { gradeOffline } from './offline';
 import { GRADER_PROMPT_VERSION, completeJSON, feedbackSoFar, graderModel, rubricModel, graderUser, parseVerdict, streamJSON } from './openrouter';
 
 const dir = dirname(fileURLToPath(import.meta.url));
-const graderPrompt = readFileSync(join(dir, '../prompts/grader/v1.md'), 'utf8');
+const graderPrompt = readFileSync(join(dir, '../prompts/grader/v2.md'), 'utf8');
 const rubricPrompt = readFileSync(join(dir, '../prompts/rubric/v1.md'), 'utf8');
 
 export type GradeMeta = { promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number };
@@ -31,7 +31,7 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
   let tokensIn = 0;
   let tokensOut = 0;
   try {
-    for await (const part of streamJSON({ model: graderModel(), system: graderPrompt, user: graderUser(input), timeoutMs: 8_000, fetchImpl })) {
+    for await (const part of streamJSON({ model: graderModel(), system: graderPrompt, user: graderUser(input), timeoutMs: 8_000, fetchImpl, tool: 'grade' })) {
       acc += part.delta;
       model = part.model;
       tokensIn = part.tokensIn;
@@ -59,7 +59,7 @@ export async function gradeWithMeta(input: GraderInput, fetchImpl?: typeof fetch
     return { verdict: gradeOffline(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
   }
   try {
-    const done = await completeJSON({ model: graderModel(), system: graderPrompt, user: graderUser(input), timeoutMs: 8_000, fetchImpl });
+    const done = await completeJSON({ model: graderModel(), system: graderPrompt, user: graderUser(input), timeoutMs: 8_000, fetchImpl, tool: 'grade' });
     const verdict = parseVerdict(done.text, done.model);
     return { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: Date.now() - started } };
   } catch {
@@ -86,9 +86,12 @@ export function rubricFromCard(title: string, back: string | null, source: strin
   return rubric;
 }
 
+export type RubricMeta = { model: string; tokensIn: number; tokensOut: number };
+
 /** OpenRouter when the key exists; the cached offline rubric otherwise, or if the model reply is invalid. */
-export async function rubricWithMeta(title: string, back: string | null, source: string, fetchImpl?: typeof fetch): Promise<Rubric> {
-  if (!process.env.OPENROUTER_API_KEY) return rubricFromCard(title, back, source);
+export async function rubricWithMeta(title: string, back: string | null, source: string, fetchImpl?: typeof fetch): Promise<{ rubric: Rubric; meta: RubricMeta }> {
+  const offline = (): { rubric: Rubric; meta: RubricMeta } => ({ rubric: rubricFromCard(title, back, source), meta: { model: 'offline-rubric', tokensIn: 0, tokensOut: 0 } });
+  if (!process.env.OPENROUTER_API_KEY) return offline();
   try {
     const done = await completeJSON({
       model: rubricModel(),
@@ -98,12 +101,19 @@ export async function rubricWithMeta(title: string, back: string | null, source:
     });
     const raw = JSON.parse(done.text) as Record<string, unknown>;
     const parsed = rubricSchema.safeParse({ ...raw, source, version: raw.version ?? 1, status: 'draft', reviewerId: null });
-    if (!parsed.success) return rubricFromCard(title, back, source);
+    const meta = { model: done.model, tokensIn: done.tokensIn, tokensOut: done.tokensOut };
+    if (!parsed.success) return { ...offline(), meta };
     rubricCache.set(`${source}\n${title}\n${back ?? ''}`, parsed.data);
-    return parsed.data;
+    return { rubric: parsed.data, meta };
   } catch {
-    return rubricFromCard(title, back, source);
+    return offline();
   }
 }
 
-export const costCents = (tokensIn: number, tokensOut: number) => Math.round((tokensIn * 0.00008 + tokensOut * 0.0004) * 100);
+/** Integer cents at list price. Haiku 3.5 is $0.80 / $4 per million tokens; Sonnet 3.5 is $3 / $15. A call that used tokens but costs under half a cent is recorded as 1, because `ai_calls.cost_cents` is an integer. */
+export function costCents(tokensIn: number, tokensOut: number, model = ''): number {
+  if (tokensIn <= 0 && tokensOut <= 0) return 0;
+  const sonnet = model.includes('sonnet') || (model !== '' && !model.includes('haiku') && !model.startsWith('offline'));
+  const cents = (tokensIn * (sonnet ? 300 : 80) + tokensOut * (sonnet ? 1500 : 400)) / 1_000_000;
+  return Math.max(1, Math.round(cents));
+}

@@ -3,6 +3,9 @@ import { areas, jobStatuses, verdicts } from './enums';
 import { idSchema } from './common';
 import { rubricSchema } from './card';
 
+/** Stored as the card source until a person reviews an AI draft (F05). */
+export const AI_DRAFT_SOURCE = 'Gerado por IA, não revisado';
+
 export const graderInputSchema = z.object({
   prompt: z.string().min(1),
   canonical: z.string().min(1),

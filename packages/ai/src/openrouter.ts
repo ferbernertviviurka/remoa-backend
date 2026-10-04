@@ -1,6 +1,6 @@
 import { graderVerdictSchema, type GraderInput, type GraderVerdict } from '@remoa/contracts';
 
-export const GRADER_PROMPT_VERSION = 'grader/v1';
+export const GRADER_PROMPT_VERSION = 'grader/v2';
 export const RUBRIC_PROMPT_VERSION = 'rubric/v1';
 export const EXTRACT_PROMPT_VERSION = 'extract/v1';
 
@@ -10,32 +10,64 @@ export const extractModel = () => process.env.OPENROUTER_EXTRACT_MODEL ?? 'anthr
 
 export type Completion = { text: string; model: string; tokensIn: number; tokensOut: number };
 
-type Chat = { model: string; system: string; user: string; timeoutMs?: number; fetchImpl?: typeof fetch };
+type Chat = { model: string; system: string; user: string; timeoutMs?: number; fetchImpl?: typeof fetch; tool?: 'grade' };
 
-/** OpenRouter chat completions with JSON object mode. Throws when the key is missing or the call fails. */
+const gradeTool = {
+  type: 'function',
+  function: {
+    name: 'grade',
+    description: 'Veredito da resposta somente contra a rubrica.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        verdict: { type: 'string', enum: ['correct', 'partial', 'incorrect'] },
+        matched: { type: 'array', items: { type: 'string' } },
+        missing: { type: 'array', items: { type: 'string' } },
+        criticalError: { type: 'boolean' },
+        feedback: { type: 'string' },
+      },
+      required: ['verdict', 'matched', 'missing', 'criticalError', 'feedback'],
+    },
+  },
+};
+
+function requestBody(opts: Chat, stream: boolean) {
+  const messages = [
+    { role: 'system', content: opts.system },
+    { role: 'user', content: opts.user },
+  ];
+  const graded = opts.tool === 'grade';
+  return {
+    model: opts.model,
+    messages,
+    ...(stream ? { stream: true } : {}),
+    ...(graded
+      ? { tools: [gradeTool], tool_choice: { type: 'function', function: { name: 'grade' } } }
+      : { response_format: { type: 'json_object' } }),
+  };
+}
+
+type ModelMessage = { content?: string; tool_calls?: { function?: { arguments?: string } }[] };
+
+/** OpenRouter chat completions. The grader uses a tool; other calls use JSON object mode. Throws when the key is missing or the call fails. */
 export async function completeJSON(opts: Chat): Promise<Completion> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error('missing_openrouter_key');
   const res = await (opts.fetchImpl ?? fetch)('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model: opts.model,
-      messages: [
-        { role: 'system', content: opts.system },
-        { role: 'user', content: opts.user },
-      ],
-      response_format: { type: 'json_object' },
-    }),
+    body: JSON.stringify(requestBody(opts, false)),
     signal: AbortSignal.timeout(opts.timeoutMs ?? 8_000),
   });
   if (!res.ok) throw new Error(`openrouter_${res.status}`);
   const body = (await res.json()) as {
     model?: string;
-    choices?: { message?: { content?: string } }[];
+    choices?: { message?: ModelMessage }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
-  const text = body.choices?.[0]?.message?.content ?? '';
+  const message = body.choices?.[0]?.message;
+  const text = message?.tool_calls?.[0]?.function?.arguments || message?.content || '';
   return {
     text,
     model: body.model ?? opts.model,
@@ -79,15 +111,7 @@ export async function* streamJSON(opts: Chat): AsyncGenerator<StreamPart> {
   const res = await (opts.fetchImpl ?? fetch)('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model: opts.model,
-      messages: [
-        { role: 'system', content: opts.system },
-        { role: 'user', content: opts.user },
-      ],
-      response_format: { type: 'json_object' },
-      stream: true,
-    }),
+    body: JSON.stringify(requestBody(opts, true)),
     signal: AbortSignal.timeout(opts.timeoutMs ?? 8_000),
   });
   if (!res.ok || !res.body) throw new Error(`openrouter_${res.status}`);
@@ -110,7 +134,7 @@ export async function* streamJSON(opts: Chat): AsyncGenerator<StreamPart> {
       if (data === '[DONE]') return;
       const json = JSON.parse(data) as {
         model?: string;
-        choices?: { delta?: { content?: string } }[];
+        choices?: { delta?: { content?: string; tool_calls?: { function?: { arguments?: string } }[] } }[];
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
       if (json.model) model = json.model;
@@ -118,7 +142,8 @@ export async function* streamJSON(opts: Chat): AsyncGenerator<StreamPart> {
         tokensIn = json.usage.prompt_tokens ?? tokensIn;
         tokensOut = json.usage.completion_tokens ?? tokensOut;
       }
-      const delta = json.choices?.[0]?.delta?.content ?? '';
+      const piece = json.choices?.[0]?.delta;
+      const delta = piece?.tool_calls?.[0]?.function?.arguments ?? piece?.content ?? '';
       if (delta) yield { delta, model, tokensIn, tokensOut };
     }
   }

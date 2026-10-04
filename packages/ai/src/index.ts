@@ -2,7 +2,7 @@ export { completeJSON, feedbackSoFar, streamJSON, graderModel, rubricModel, extr
 export { gradeOffline } from './offline';
 export { gradeWithMeta, streamGrade, cachedRubric, rubricFromCard, rubricWithMeta, costCents, type GradeEvent } from './grade';
 export { chunkText, mergeDrafts, layout, extractOffline, extractWithMeta } from './extract';
-export { pdfText } from './pdf';
+export { pdfPageCount, pdfText } from './pdf';
 export { ocrPdf } from './ocr';
 export { runOfflineEval } from './eval';
 export { graderCases } from './eval-cases';

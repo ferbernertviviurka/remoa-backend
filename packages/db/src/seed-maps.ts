@@ -1,17 +1,17 @@
+import { extractOffline, layout, rubricFromCard } from '@remoa/ai';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from './client';
+import { isUntouchedStubSeed } from './seed/stub-board';
+import { studyOutlines } from './seed/study-outlines';
 import { boards, cards, edges, profiles, reviewQueue } from './schema';
 
 const PLACEHOLDER = 'Diretriz de estudo, rascunho sem revisão médica';
 const MARK = 'Enamed 2026.2';
 
-const maps: { title: string; source: string; points: string[] }[] = [
-  { title: 'Sepse e choque séptico', source: 'Instituto Latino-Americano de Sepse. Protocolo gerenciado de sepse, pacote da primeira hora.', points: ['Sepse', 'Choque séptico', 'Noradrenalina', 'PAM', 'Lactato', 'Hemocultura', 'Antibiótico', 'Cristaloide', 'qSOFA', 'SOFA', 'Foco infeccioso', 'Reavaliação'] },
-  { title: 'Insuficiência cardíaca descompensada', source: 'Sociedade Brasileira de Cardiologia. Diretriz de insuficiência cardíaca crônica e aguda.', points: ['Congestão', 'Perfil hemodinâmico', 'Furosemida', 'Nitroglicerina', 'Dobutamina', 'BNP', 'Restrição hídrica', 'Peso diário', 'IECA', 'Betabloqueador', 'Espironolactona', 'Choque cardiogênico'] },
-  { title: 'Pneumonia', source: 'Sociedade Brasileira de Pneumologia e Tisiologia. Diretriz de pneumonia adquirida na comunidade.', points: ['CURB-65', 'PAC', 'Antibiótico empírico', 'Oxigenoterapia', 'Hemocultura', 'Antígeno urinário', 'Derrame', 'Sepse', 'Vacina', 'Reavaliação 48h', 'Isolamento', 'Complicação'] },
-  { title: 'Cetoacidose diabética', source: 'Sociedade Brasileira de Diabetes. Diretriz de cetoacidose diabética.', points: ['Hiperglicemia', 'Cetonemia', 'Acidose', 'Insulina', 'Potássio', 'Hidratação', 'Gap aniônico', 'Glicose', 'Bicarbonato', 'Fósforo', 'Desencadeante', 'Resolução'] },
-  { title: 'Hipertensão arterial', source: 'Sociedade Brasileira de Cardiologia. Diretriz brasileira de hipertensão arterial.', points: ['Medida correta', 'MAPA', 'Lesão de órgão', 'IECA', 'BRA', 'Tiazídico', 'Bloqueador de canal', 'Urgência', 'Emergência', 'Meta pressórica', 'Adesão', 'Risco cardiovascular'] },
-];
+const maps = studyOutlines.map((map) => ({
+  ...map,
+  points: extractOffline(map.text, map.source).cards.filter((c) => c.type === 'concept').map((c) => c.title),
+}));
 
 const reviewer = '00000000-0000-4000-8000-0000000000f1';
 
@@ -53,7 +53,7 @@ async function ensureStructure(boardId: string, title: string, points: string[],
         payload: { steps: flow.steps }, status: 'draft', order, x: 360, y: 80 + order,
       }).returning();
       id = card!.id;
-      await db.insert(reviewQueue).values({ cardId: id, status: 'pending' });
+      await db.insert(reviewQueue).values({ cardId: id, status: 'pending', flagSource: 'ai' });
     }
     if (previous && previous !== id) await ensureConceptLink(boardId, previous, id, 'conduta');
     previous = id;
@@ -70,9 +70,33 @@ async function ensureStructure(boardId: string, title: string, points: string[],
       status: 'draft', order, x: 360, y: 260,
     }).returning();
     caseId = card!.id;
-    await db.insert(reviewQueue).values({ cardId: caseId, status: 'pending' });
+    await db.insert(reviewQueue).values({ cardId: caseId, status: 'pending', flagSource: 'ai' });
   }
   if (previous) await ensureConceptLink(boardId, previous, caseId, 'caso');
+}
+
+async function insertExtracted(boardId: string, map: { text: string; source: string }) {
+  const extracted = extractOffline(map.text, map.source);
+  const places = new Map(layout(extracted.cards, extracted.edges).map((p) => [p.ref, p]));
+  const ids = new Map<string, string>();
+  let order = 0;
+  for (const card of extracted.cards) {
+    const place = places.get(card.ref);
+    const back = card.back ?? card.title;
+    const [row] = await db.insert(cards).values({
+      boardId, type: card.type, title: card.title, back, source: map.source,
+      rubric: rubricFromCard(card.title, back, map.source), payload: card.payload,
+      status: 'draft', order, x: place?.x ?? 80, y: place?.y ?? 80,
+    }).returning();
+    ids.set(card.ref, row!.id);
+    await db.insert(reviewQueue).values({ cardId: row!.id, status: 'pending', flagSource: 'ai' });
+    order += 1;
+  }
+  for (const edge of extracted.edges) {
+    const from = ids.get(edge.fromRef);
+    const to = ids.get(edge.toRef);
+    if (from && to) await db.insert(edges).values({ boardId, fromCardId: from, toCardId: to, label: edge.label });
+  }
 }
 
 export async function seedStudyMaps() {
@@ -83,6 +107,14 @@ export async function seedStudyMaps() {
   for (const map of maps) {
     const existing = await db.select({ id: boards.id }).from(boards).where(sql`${boards.userId} = ${reviewer} and ${boards.title} = ${map.title}`).limit(1);
     if (existing[0]) {
+      const boardId = existing[0].id;
+      const rows = await db.select({ title: cards.title, status: cards.status }).from(cards).where(eq(cards.boardId, boardId));
+      const [used] = await db.execute<{ n: number }>(sql`select count(*)::int as n from attempts a join cards c on c.id = a.card_id where c.board_id = ${boardId}`);
+      if (isUntouchedStubSeed(map.title, rows) && (used?.n ?? 0) === 0) {
+        await db.delete(cards).where(eq(cards.boardId, boardId));
+        await insertExtracted(boardId, map);
+        continue;
+      }
       await db.execute(sql`
         update cards set rubric = jsonb_build_object(
           'points', jsonb_build_array(jsonb_build_object('text', coalesce(back, title), 'essential', true)),
@@ -104,20 +136,18 @@ export async function seedStudyMaps() {
       continue;
     }
     const [board] = await db.insert(boards).values({ userId: reviewer, title: map.title, area: 'CM', status: 'seed_draft', temporalMark: MARK }).returning();
-    const ids: string[] = [];
-    let order = 0;
-    for (const point of map.points) {
-      for (const angle of ['definição', 'conduta', 'o que não esquecer'] as const) {
-        const title = `${point}: ${angle}`;
-        const [card] = await db.insert(cards).values({
-          boardId: board!.id, type: 'concept', title, back: `${title}. ${map.source}.`, source: map.source, rubric: rubricFor(`${title}. ${map.source}.`, map.source), status: 'draft', order, x: 80 + (order % 6) * 40, y: 80 + Math.floor(order / 6) * 40,
-        }).returning();
-        ids.push(card!.id);
-        await db.insert(reviewQueue).values({ cardId: card!.id, status: 'pending' });
-        order += 1;
-      }
-    }
-    if (ids[0] && ids[1]) await db.insert(edges).values({ boardId: board!.id, fromCardId: ids[0], toCardId: ids[1], label: 'leva a' });
-    await ensureStructure(board!.id, map.title, map.points, map.source);
+    await insertExtracted(board!.id, map);
   }
+  const sources = [...new Set(maps.map((map) => map.source))];
+  await db.execute(sql`
+    update review_queue q
+    set flag_source = 'ai'
+    from cards c
+    join boards b on b.id = c.board_id
+    where q.card_id = c.id
+      and q.flag_source is null
+      and q.status = 'pending'
+      and b.status = 'seed_draft'
+      and c.source in (${sql.join(sources.map((source) => sql`${source}`), sql`, `)})
+  `);
 }

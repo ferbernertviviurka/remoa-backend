@@ -16,7 +16,7 @@ export type Answered = {
   verdict: import('@remoa/contracts').GraderVerdict | null;
   suggestedGrade: import('@remoa/contracts').Grade | null;
   gradeLocked: boolean;
-  fallback: 'no_rubric' | 'quota' | 'grader_error' | null;
+  fallback: 'no_rubric' | 'quota' | 'grader_error' | 'offline' | null;
 };
 /** Server-only per-item state, kept in `sessions.items` next to the public item (never serialised to the client). */
 export type Internal = {

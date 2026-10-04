@@ -20,7 +20,8 @@ export const progressSummarySchema = z.object({
   /** correct ÷ attempts; null without attempts in the window. */
   retention7d: probabilitySchema.nullable(),
   retention30d: probabilitySchema.nullable(),
-  reviewsPerDay: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), count: z.number().int().nonnegative() })),
+  /** Exactly 30 days, oldest first. Days without a review count as zero. */
+  reviewsPerDay: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), count: z.number().int().nonnegative() })).length(30),
   streakDays: z.number().int().nonnegative(),
   weakCards: z.array(weakCardSchema).max(20),
   accuracy: z.array(areaAccuracySchema),

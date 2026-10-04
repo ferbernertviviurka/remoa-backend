@@ -96,6 +96,9 @@ importers:
 
   packages/ai:
     dependencies:
+      '@dagrejs/dagre':
+        specifier: 1.1.4
+        version: 1.1.4
       '@remoa/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -137,6 +140,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@remoa/ai':
+        specifier: workspace:^
+        version: link:../ai
       '@remoa/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -323,6 +329,13 @@ packages:
 
   '@bufbuild/protobuf@2.16.0':
     resolution: {integrity: sha512-FWa0sPlqYGJgpTs6OxBRcL/AW4JT0OIO+W1ajerluoTVh8CV0B7XM1qsNCRgnkSCkRCgOICKHRQlY17jrsm0+Q==}
+
+  '@dagrejs/dagre@1.1.4':
+    resolution: {integrity: sha512-QUTc54Cg/wvmlEUxB+uvoPVKFazM1H18kVHBQNmK2NbrDR5ihOCR6CXLnDSZzMcSQKJtabPUWridBOlJM3WkDg==}
+
+  '@dagrejs/graphlib@2.2.4':
+    resolution: {integrity: sha512-mepCf/e9+SKYy1d02/UkvSy6+6MoyXhVxP8lLDfA7BPE1X1d4dR0sZznmbM8/XVJ1GPM+Svnx7Xj6ZweByWUkw==}
+    engines: {node: '>17.0.0'}
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
@@ -3470,6 +3483,12 @@ snapshots:
   '@bcoe/v8-coverage@1.0.2': {}
 
   '@bufbuild/protobuf@2.16.0': {}
+
+  '@dagrejs/dagre@1.1.4':
+    dependencies:
+      '@dagrejs/graphlib': 2.2.4
+
+  '@dagrejs/graphlib@2.2.4': {}
 
   '@drizzle-team/brocli@0.10.2': {}
 
