@@ -3,6 +3,7 @@ import { err, ok, parseWith, reviewDecisionSchema, resolveDisputeInputSchema, pu
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
 import { dbm } from '../db';
 import { sendEmail } from '../account/mailer';
+import { maybeQualifyReferral } from '../referral/qualify';
 
 async function reviewer(userId: string) {
   const { db, profiles } = await dbm();
@@ -280,6 +281,7 @@ export async function copySeed(userId: string, boardId: string) {
     const to = map.get(edge.toCardId);
     if (from && to) await db.insert(edges).values({ boardId: copy!.id, fromCardId: from, toCardId: to, label: edge.label, question: edge.question });
   }
+  await maybeQualifyReferral(userId); // F18 (D-485): a copied seed can be the first map; never throws
   return ok({ id: copy!.id });
 }
 

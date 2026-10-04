@@ -19,18 +19,19 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin/users', () => {
     k.call(`/v1/admin/users/${id}/${action}`, { method: 'POST', as, body });
 
   it('list: search, filters, summary, counts, origin; detail has facts and no secret', async () => {
-    const referrer = await k.newUser('student', 'Indicadora Zeta');
-    const u = await k.newUser('student', 'Zeta Estudante Unica');
+    const z = `Zeta${Math.random().toString(36).slice(2, 8)}`; // unique per run: leftover users from interrupted runs share the DB
+    const referrer = await k.newUser('student', `Indicadora ${z}`);
+    const u = await k.newUser('student', `${z} Estudante Unica`);
     await k.dbm.db.update(k.dbm.profiles).set({ referredBy: referrer.id }).where(eq(k.dbm.profiles.userId, u.id));
     await k.board(u.id, { cards: 3 });
-    const page = await k.call('/v1/admin/users?q=Zeta%20Estudante%20Unica', { as: adm.id });
+    const page = await k.call(`/v1/admin/users?q=${z}%20Estudante%20Unica`, { as: adm.id });
     expect(page.status).toBe(200);
     const d = adminUserPageSchema.parse(page.json.data);
     expect(d.items).toHaveLength(1);
     expect(d.items[0]).toMatchObject({ id: u.id, email: u.email, plan: 'free', maps: 1, cards: 3, status: 'active', origin: 'referral' });
     expect(d.summary).toMatchObject({ total: 1, active: 1, pending: 0, suspended: 0 });
     expect((await k.call(`/v1/admin/users?q=${u.email}&status=suspended`, { as: adm.id })).json.data).toMatchObject({ total: 0, items: [], summary: { total: 1, active: 1 } });
-    expect((await k.call('/v1/admin/users?q=Zeta&plan=pro', { as: adm.id })).json.data.items).toHaveLength(0);
+    expect((await k.call(`/v1/admin/users?q=${z}&plan=pro`, { as: adm.id })).json.data.items).toHaveLength(0);
     expect((await k.call('/v1/admin/users?pageSize=500', { as: adm.id })).status).toBe(422);
     const det = await k.call(`/v1/admin/users/${u.id}`, { as: adm.id });
     const parsed = adminUserDetailSchema.parse(det.json.data);

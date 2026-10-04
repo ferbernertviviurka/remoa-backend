@@ -5,6 +5,7 @@ import { cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, grade
 import { dispatchBoardJob } from '../inngest/client';
 import { assertQuota, refundGeneration, refundQuota } from '../billing/quota';
 import { dbm } from '../db';
+import { maybeQualifyReferral } from '../referral/qualify';
 import { getBytes } from '../storage/storage';
 import { caller } from './caller';
 
@@ -336,6 +337,7 @@ async function executeGeneration(jobId: string) {
     const current = jobs.get(jobId);
     if (current) jobs.set(jobId, { ...current, progress: 75, stage: 'layout' });
     const boardId = process.env.DATABASE_URL ? await saveBoard(item.userId, item.input, extracted.cards, extracted.edges) : null;
+    if (boardId) await maybeQualifyReferral(item.userId); // F18 (D-485): after saveBoard's writes; never throws. Draft cards count (D-402 does not filter status)
     await recordCall(item.userId, item.logKind ?? (item.input.kind === 'pdf' ? 'generate_pdf' : 'generate_text'), meta);
     const done = jobs.get(jobId);
     if (done) jobs.set(jobId, { ...done, status: 'done', progress: 100, stage: null, boardId });
