@@ -17,4 +17,6 @@ jobs:
       - run: supabase start
       - run: pnpm --silent db:env > .env && pnpm db:migrate
       - run: pnpm check # includes the RLS integration test (DATABASE_URL from .env)
+      - run: pnpm --filter @remoa/api test:perf # D-559: p95 checks run alone, not under the parallel suite
+      - run: pnpm coverage # D-511: domain packages (fsrs, ai grader, anki) >= 90% lines, 85% branches
       - run: pnpm ai:eval # F05: concordance must stay within 3 points of the baseline

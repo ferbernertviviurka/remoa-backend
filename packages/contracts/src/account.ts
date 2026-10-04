@@ -235,7 +235,11 @@ export const accountSnapshotSchema = z.object({
 });
 export type AccountSnapshot = z.infer<typeof accountSnapshotSchema>;
 
-/** GET /v1/public/unsubscribe?token= — opaque signed token from the reminder e-mail. */
+/**
+ * GET|POST /v1/public/unsubscribe?token= — opaque signed token `<subject>.<hmac>` (UNSUBSCRIBE_SECRET).
+ * Subject = user id (uuid): turns the review reminder off (F13). Subject = 64-hex D-386 e-mail hash (P-192, D-494): an invitee
+ * without an account; inserts into `email_suppressions`, and invites to that hash are no longer sent. Same page, same answer.
+ */
 export const unsubscribeQuerySchema = z.object({ token: z.string().min(16).max(512) });
 
 // --- audit log (account_events.type) -----------------------------------------

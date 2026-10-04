@@ -41,6 +41,12 @@ export const entitlementsSchema = z.object({
   graceUntil: timestampSchema.nullable(),
   /** F18 (D-381): Pro comes from referral grants (no paying subscription); end of the grant chain. Absent/null otherwise. */
   grantUntil: timestampSchema.nullable().optional(),
+  /**
+   * F18 P-194 (D-494): the user (as referrer) has a referral still `invited` or `signed_up`, so a reward may land soon.
+   * The shell polls the referral summary only while this is true (replaces the browser-local `remoa:referral-pending`, D-413).
+   * Optional for old mocks; the server always sends it.
+   */
+  referralPending: z.boolean().optional(),
 });
 
 /**

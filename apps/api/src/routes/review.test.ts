@@ -433,4 +433,80 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
       expect(!r.ok && r.error.code).toBe('validation');
     });
   });
+  describe('F03 FR-9 suspend / unsuspend / reset (D-522)', () => {
+    const post = async (user: string, path: string) => {
+      const res = await app.request(`/v1${path}`, { method: 'POST', headers: { authorization: `Bearer ${user}` } });
+      return { status: res.status, json: (await res.json()) as { data?: any; error?: { code: string } } }; // eslint-disable-line @typescript-eslint/no-explicit-any
+    };
+    const old = { lastReview: new Date(Date.now() - 30 * DAY), stability: 1, due: new Date(Date.now() - 20 * DAY) };
+
+    it('suspend is idempotent, keeps FSRS state, leaves queue/due counts/map-state intact; unsuspend restores', async () => {
+      const u = await newUser();
+      const board = await mkBoard(u);
+      const a = await mkCard(board);
+      const b = await mkCard(board, { order: 1 });
+      await putState(u, a, old);
+      await putState(u, b, old);
+      const first = await post(u, `/review/cards/${a}/suspend`);
+      expect([first.status, first.json.data.cardId]).toEqual([200, a]);
+      expect(first.json.data.suspendedAt).toBeTruthy();
+      expect((await post(u, `/review/cards/${a}/suspend`)).json.data.suspendedAt).toBe(first.json.data.suspendedAt);
+      for (const path of ['/review/queue', `/review/queue?boardId=${board}`]) {
+        expect(((await call(u, path)).json.data as QueueItem[]).map((i) => i.cardId)).toEqual([b]);
+      }
+      const listed = ((await call(u, '/boards')).json.data as { id: string; dueCount: number }[]).find((x) => x.id === board)!;
+      expect(listed.dueCount).toBe(1);
+      expect((await call(u, `/review/retrievability?boardId=${board}`)).json.data[a].state).not.toBe('unknown'); // still on the map
+      expect(await dbm.db.select().from(dbm.fsrsState).where(eq(dbm.fsrsState.cardId, a))).toHaveLength(1);
+      const card = (await call(u, `/cards/${a}`)).json.data;
+      expect(card.suspendedAt).toBe(first.json.data.suspendedAt);
+      const un = await post(u, `/review/cards/${a}/unsuspend`);
+      expect(un.json.data).toEqual({ cardId: a, suspendedAt: null });
+      expect((await post(u, `/review/cards/${a}/unsuspend`)).json.data.suspendedAt).toBeNull();
+      expect(((await call(u, '/review/queue')).json.data as QueueItem[]).map((i) => i.cardId).sort()).toEqual([a, b].sort());
+    });
+
+    it('reset drops every sub_id state, keeps attempts, does not touch suspended_at', async () => {
+      const u = await newUser();
+      const board = await mkBoard(u);
+      const flow = await mkFlow(board, 3);
+      await putState(u, flow, { ...old, sub: 's1' });
+      await putState(u, flow, { ...old, sub: 's2' });
+      await ra.recordAttempt(attempt(u, flow, { subId: 's3' }));
+      await post(u, `/review/cards/${flow}/suspend`);
+      const r = await post(u, `/review/cards/${flow}/reset`);
+      expect(r.status).toBe(200);
+      expect(r.json.data.suspendedAt).toBeTruthy();
+      expect(await dbm.db.select().from(dbm.fsrsState).where(eq(dbm.fsrsState.cardId, flow))).toHaveLength(0);
+      expect(await dbm.db.select().from(dbm.attempts).where(eq(dbm.attempts.cardId, flow))).toHaveLength(1);
+    });
+
+    it('owner only: other user, unknown/deleted card and bad id are 404; bad action is 422', async () => {
+      const u = await newUser();
+      const other = await newUser();
+      const board = await mkBoard(u);
+      const c = await mkCard(board);
+      const gone = await mkCard(board);
+      await dbm.db.update(dbm.cards).set({ deletedAt: new Date() }).where(eq(dbm.cards.id, gone));
+      for (const [user, id] of [[other, c], [u, uuid()], [u, gone], [u, 'nope']] as const) {
+        const r = await post(user, `/review/cards/${id}/suspend`);
+        expect([r.status, r.json.error?.code]).toEqual([404, 'not_found']);
+      }
+      expect((await post(u, `/review/cards/${c}/explode`)).status).toBe(422);
+      expect((await call(u, `/cards/${c}`)).json.data.suspendedAt ?? null).toBeNull();
+    });
+
+    it('suspended cards are out of challenge building', async () => {
+      const u = await newUser();
+      const board = await mkBoard(u);
+      const a = await mkCard(board);
+      const b = await mkCard(board, { order: 1 });
+      await putState(u, a, old);
+      await putState(u, b, old);
+      await post(u, `/review/cards/${a}/suspend`);
+      const cb = await import('../challenge/build');
+      const ctx = await dbm.withUser(u, (tx) => cb.loadCtx(tx, u, [{ cardId: b, boardId: board, subId: null, reason: 'due', mode: 'hidden_card' }]));
+      expect([...ctx.cards.keys()]).toEqual([b]);
+    });
+  });
 });

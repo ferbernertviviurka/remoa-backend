@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { errorHttpStatus, parseWith, uploadCompleteInputSchema, uploadSignInputSchema, type HttpErrorBody, type Result } from '@remoa/contracts';
 import type { Env } from '../app';
+import { takeUploadSlot } from '../uploads/rate-limit';
 import { completeUpload, getAsset, signUpload } from '../uploads/uploads';
 
 const send = <T>(r: Result<T>, status: 200 | 201 = 200) =>
@@ -12,7 +13,9 @@ const body = (req: Request) => req.json().catch(() => null);
 export const uploadsRoutes = new Hono<Env>()
   .post('/sign', async (c) => {
     const input = parseWith(uploadSignInputSchema, await body(c.req.raw));
-    return send(input.ok ? await signUpload(c.get('userId'), input.data) : input);
+    if (!input.ok) return send(input);
+    const slot = takeUploadSlot(c.get('userId'));
+    return send(slot.ok ? await signUpload(c.get('userId'), input.data) : slot);
   })
   .post('/complete', async (c) => {
     const input = parseWith(uploadCompleteInputSchema, await body(c.req.raw));

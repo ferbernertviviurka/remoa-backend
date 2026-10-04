@@ -26,8 +26,8 @@ export const accountSecurityRoutes = new Hono<SecEnv>()
   .post('/password', async (c) => {
     const input = await c.req.json().catch(() => null);
     const accessToken = c.req.header('authorization')?.replace(/^Bearer /, '') ?? '';
-    return send(await changePassword(c.get('userId'), c.get('sid'), input, { accessToken, meta: requestMeta((h) => c.req.header(h)) }));
+    return send(await changePassword(c.get('userId'), c.get('sid'), input, { accessToken, meta: requestMeta(c) }));
   })
   .get('/sessions', async (c) => send(await listSessions(c.get('userId'), c.get('sid'))))
-  .delete('/sessions/:id', async (c) => send(await revokeSession(c.get('userId'), c.get('sid'), c.req.param('id'), requestMeta((h) => c.req.header(h)))))
-  .delete('/sessions', async (c) => send(await revokeOtherSessions(c.get('userId'), c.get('sid'), requestMeta((h) => c.req.header(h)))));
+  .delete('/sessions/:id', async (c) => send(await revokeSession(c.get('userId'), c.get('sid'), c.req.param('id'), requestMeta(c))))
+  .delete('/sessions', async (c) => send(await revokeOtherSessions(c.get('userId'), c.get('sid'), requestMeta(c))));

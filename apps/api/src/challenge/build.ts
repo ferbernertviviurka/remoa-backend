@@ -176,7 +176,7 @@ export async function loadCtx(tx: Tx, userId: string, queue: QueueItem[]): Promi
   if (!boardIds.length) return ctx;
   const s = await import('@remoa/db');
   const [cards, edges, boards] = await Promise.all([
-    tx.select().from(s.cards).where(and(inArray(s.cards.boardId, boardIds), isNull(s.cards.deletedAt), ne(s.cards.type, 'note'))),
+    tx.select().from(s.cards).where(and(inArray(s.cards.boardId, boardIds), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note'))), // D-522: suspended = out of challenges
     tx.select().from(s.edges).where(inArray(s.edges.boardId, boardIds)),
     tx.select({ id: s.boards.id, status: s.boards.status, userId: s.boards.userId }).from(s.boards).where(inArray(s.boards.id, boardIds)),
   ]);

@@ -98,11 +98,16 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin/maps + seeds', () => {
     expect((await post(`/seeds/${seed}/approve`)).status).toBe(409); // not a reviewer
     const rev = await k.newUser('reviewer', 'Dra. Revisora');
     await k.dbm.db.update(k.dbm.boards).set({ reviewerId: rev.id }).where(eq(k.dbm.boards.id, seed));
+    expect((await post(`/seeds/${seed}/approve`)).status).toBe(409); // P-206: reviewer without CRM
+    await k.dbm.db.update(k.dbm.profiles).set({ crm: 'CRM-SP 123456' }).where(eq(k.dbm.profiles.userId, rev.id));
+    const [draftCard] = await k.dbm.db.insert(k.dbm.cards).values({ boardId: seed, title: 'Ainda rascunho', status: 'draft' }).returning();
+    expect((await post(`/seeds/${seed}/approve`)).status).toBe(409); // a card still in draft
+    await k.dbm.db.update(k.dbm.cards).set({ status: 'approved' }).where(eq(k.dbm.cards.id, draftCard!.id));
     const ok = await post(`/seeds/${seed}/approve`);
     expect(ok.status).toBe(200);
     expect(ok.json.data.audit).toMatchObject({ before: { status: 'seed_draft', reviewerId: rev.id }, after: { status: 'seed_approved' } });
     expect((await post(`/seeds/${seed}/approve`)).status).toBe(409);
-    expect((await k.audit('seed.approve', seed)).map((x) => [x.result, x.denial])).toEqual([['denied', 'invalid_state'], ['denied', 'invalid_state'], ['success', null], ['denied', 'invalid_state']]);
+    expect((await k.audit('seed.approve', seed)).map((x) => [x.result, x.denial])).toEqual([['denied', 'invalid_state'], ['denied', 'invalid_state'], ['denied', 'invalid_state'], ['denied', 'invalid_state'], ['success', null], ['denied', 'invalid_state']]);
     expect((await post(`/seeds/${seed}/unpublish`, {})).status).toBe(422);
     expect((await post(`/seeds/${seed}/unpublish`)).status).toBe(200);
     expect((await k.call(`/v1/admin/maps/${seed}`, { as: adm.id })).json.data.status).toBe('seed_draft');

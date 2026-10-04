@@ -1,6 +1,6 @@
 // Integration: needs local Supabase + Storage (see cards.test.ts). The parser is an injected mock; the real one is covered by packages/anki.
 import { config } from 'dotenv';
-import { inArray, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -38,7 +38,11 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
     return id;
   };
+  /** `board` is required (D-291): starts without one get the F17 default (new map "Clínica Médica"). */
+  const withBoard = (path: string, body: unknown) =>
+    path === '/anki' && body && typeof body === 'object' && !('board' in body) ? { ...body, board: { title: 'Clínica Médica', target: 'new' } } : body;
   const call = async (u: string | null, method: string, path: string, body?: unknown) => {
+    body = withBoard(path, body);
     const res = await app.request(`/v1/imports${path}`, {
       method,
       headers: { ...(u ? { authorization: `Bearer ${u}` } : {}), 'content-type': 'application/json' },
@@ -59,8 +63,8 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     }
     throw new Error('import did not finish');
   };
-  const runImport = async (u: string, key: string, p = plan()) => {
-    const s = await call(u, 'POST', '/anki', { key, plan: p });
+  const runImport = async (u: string, key: string, p = plan(), board?: unknown) => {
+    const s = await call(u, 'POST', '/anki', board ? { key, plan: p, board } : { key, plan: p });
     expect(s.status).toBe(200);
     const progress = await finish(u, s.json.data.importId);
     return { importId: s.json.data.importId as string, progress, report: (await call(u, 'GET', `/${s.json.data.importId}/report`)).json.data };
@@ -114,7 +118,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const cards = await liveCards(first.report.boardIds[0]);
     expect(cards).toHaveLength(2); // notes only; the 3 hubs are type 'note' (D-332)
 
-    const again = await runImport(u, key);
+    const again = await runImport(u, key, plan(), { title: 'Clínica Médica', target: { boardId: first.report.boardIds[0] } });
     expect(again.report).toMatchObject({ imported: 0, skippedDuplicate: 2, boardIds: first.report.boardIds });
     expect(await liveCards(first.report.boardIds[0])).toHaveLength(2); // no new hubs when nothing was imported
   });
@@ -247,7 +251,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const key = await putPkg(u);
     const first = await runImport(u, key, plan(3));
     expect(first.report).toMatchObject({ imported: 3, skippedDuplicate: 0 });
-    const again = await runImport(u, key, plan(3));
+    const again = await runImport(u, key, plan(3), { title: 'Clínica Médica', target: { boardId: first.report.boardIds[0] } });
     expect(again.report).toMatchObject({ imported: 0, skippedDuplicate: 3 });
   });
 
@@ -267,7 +271,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const { createApp } = await import('../app');
     const real = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (users.includes(t) ? t : null) });
     const rc = async (method: string, path: string, body?: unknown) => {
-      const res = await real.request(`/v1/imports${path}`, { method, headers: { authorization: `Bearer ${u}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const res = await real.request(`/v1/imports${path}`, { method, headers: { authorization: `Bearer ${u}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(withBoard(path, body)) });
       return { status: res.status, json: (await res.json()) as { data?: any; error?: { message: string } } }; // eslint-disable-line @typescript-eslint/no-explicit-any
     };
     const key = `imports/${u}/${uuid()}.apkg`;
@@ -470,17 +474,5 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
 
     // Empty title → 422
     expect((await call(u, 'GET', '/anki/existing?title=')).status).toBe(422);
-  });
-
-  it('F17: without board field the old F06 flow continues (one board per root)', async () => {
-    const u = await newUser();
-    drafts = [draft(1, { deckName: 'Root A' }), draft(2, { deckName: 'Root B' })];
-    const { report } = await runImport(u, await putPkg(u), plan(2));
-    // Old behavior: one board per root deck
-    expect(report.boardIds).toHaveLength(2);
-    // Use drizzle's inArray to avoid SQL array cast issues
-    const boards = await dbm.db.select({ title: dbm.boards.title }).from(dbm.boards)
-      .where(inArray(dbm.boards.id, report.boardIds as string[]));
-    expect(boards.map((b) => b.title).sort()).toEqual(['Root A', 'Root B']);
   });
 });

@@ -2,10 +2,12 @@
 import { config } from 'dotenv';
 import { eq } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { publicPriceBookSchema } from '../public/pricebook';
 
 config({ path: '../../.env' });
+// D-537: XFF counts only through trusted hops; these requests model 2 proxy(ies) in front of the API.
+vi.stubEnv('TRUSTED_PROXY_HOPS', '2');
 
 describe.skipIf(!process.env.DATABASE_URL)('/v1/public/waitlist, /v1/public/pricebook', () => {
   let dbm: typeof import('@remoa/db');
@@ -22,7 +24,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/public/waitlist, /v1/public/pric
   };
   const rows = async (email: string) => dbm.db.select().from(dbm.waitlist).where(eq(dbm.waitlist.email, email));
   const mails = (email: string) => mailer.sentEmails().filter((m) => m.to === email);
-  const ip = () => `203.0.113.${Math.floor(Math.random() * 250)}-${uuid().slice(0, 6)}`;
+  const ip = () => `10.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`; // must be a real IP (D-537)
 
   beforeAll(async () => {
     dbm = await import('@remoa/db');

@@ -243,4 +243,43 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     expect(asStudent).toHaveLength(0);
     expect(studentCards).toHaveLength(0);
   });
+  it('CCR-015 (P-004, rule 6): a student cannot forge the review seal; the server connection still can', async () => {
+    const [board] = await m.withUser(b, (tx) => tx.insert(s.boards).values({ userId: b, title: 'meu' }).returning());
+    const sealed = { points: [{ text: 'p', essential: true }], status: 'approved', reviewerId: a, reviewerName: 'Dra. X', reviewerCrm: '1/SP' };
+    // insert: coerced to unsealed (copies keep working)
+    const [ins] = await m.withUser(b, (tx) => tx.insert(s.cards).values({ boardId: board!.id, title: 'c', status: 'approved', reviewerId: a, rubric: sealed }).returning());
+    expect(ins).toMatchObject({ status: 'draft', reviewerId: null, rubric: { status: 'draft', reviewerId: null } });
+    expect(ins!.rubric).not.toHaveProperty('reviewerCrm');
+    // update of seal columns: refused
+    const id = ins!.id;
+    await expect(m.withUser(b, (tx) => tx.update(s.cards).set({ status: 'approved' }).where(eq(s.cards.id, id)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.update(s.cards).set({ reviewerId: a }).where(eq(s.cards.id, id)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.update(s.cards).set({ rubric: sealed }).where(eq(s.cards.id, id)))).rejects.toThrow();
+    // board seal: refused even for a reviewer
+    await m.db.update(s.profiles).set({ role: 'reviewer' }).where(eq(s.profiles.userId, b));
+    try {
+      await expect(m.withUser(b, (tx) => tx.update(s.boards).set({ status: 'seed_approved' }).where(eq(s.boards.id, board!.id)))).rejects.toThrow();
+      await expect(m.withUser(b, (tx) => tx.insert(s.boards).values({ userId: b, title: 'x', status: 'seed_draft' }))).rejects.toThrow();
+    } finally {
+      await m.db.update(s.profiles).set({ role: 'student' }).where(eq(s.profiles.userId, b));
+    }
+    await expect(m.withUser(b, (tx) => tx.update(s.boards).set({ reviewerId: a }).where(eq(s.boards.id, board!.id)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.update(s.boards).set({ temporalMark: '2026' }).where(eq(s.boards.id, board!.id)))).rejects.toThrow();
+    // the server connection seals (editorial); legit student edits keep working; editing sealed content drops the seal
+    await m.db.update(s.cards).set({ status: 'approved', reviewerId: a, rubric: sealed }).where(eq(s.cards.id, id));
+    await m.withUser(b, (tx) => tx.update(s.cards).set({ x: 10, y: 20, suspendedAt: new Date() }).where(eq(s.cards.id, id)));
+    let [row] = await m.db.select().from(s.cards).where(eq(s.cards.id, id));
+    expect(row).toMatchObject({ status: 'approved', reviewerId: a, x: 10 });
+    await m.withUser(b, (tx) => tx.update(s.cards).set({ back: 'dose errada' }).where(eq(s.cards.id, id)));
+    [row] = await m.db.select().from(s.cards).where(eq(s.cards.id, id));
+    expect(row).toMatchObject({ status: 'draft', reviewerId: null, back: 'dose errada', rubric: { status: 'draft', reviewerId: null } });
+    await m.withUser(b, (tx) => tx.update(s.boards).set({ title: 'renomeado' }).where(eq(s.boards.id, board!.id)));
+  });
+
+  it('CCR-015: email_suppressions and profiles.onboarding_answers are server-owned', async () => {
+    const h = 'a'.repeat(64);
+    await expect(m.withUser(a, (tx) => tx.insert(s.emailSuppressions).values({ emailHash: h }))).rejects.toThrow();
+    await expect(m.withUser(a, (tx) => tx.select().from(s.emailSuppressions))).rejects.toThrow();
+    await expect(m.withUser(a, (tx) => tx.update(s.profiles).set({ onboardingAnswers: { area: 'CM' } }).where(eq(s.profiles.userId, a)))).rejects.toThrow();
+  });
 });

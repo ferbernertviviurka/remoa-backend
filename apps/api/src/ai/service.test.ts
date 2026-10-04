@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { allowGrade, generationOf, startPdfGeneration } from './service';
 
+const pdfBoard = { title: 'Sepse', area: 'CM' as const, access: 'owner' as const, matrixItemIds: [] };
+
 describe('grade rate limit', () => {
   it('allows 30 corrections per minute and blocks the 31st', () => {
     const user = 'rate-limit-user';
@@ -14,7 +16,7 @@ describe('grade rate limit', () => {
 describe('pdf generation job', () => {
   it('fails an unreadable PDF without leaving the job running', async () => {
     const user = 'pdf-unreadable-user';
-    const started = startPdfGeneration(user, 'Sepse', new TextEncoder().encode('curto'));
+    const started = await startPdfGeneration(user, pdfBoard, new TextEncoder().encode('curto'));
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     let job = generationOf(user, started.data.jobId);
@@ -52,7 +54,7 @@ describe('pdf generation job', () => {
     const bytes = new TextEncoder().encode(`${'/Type /Page '.repeat(20)}${literal}`);
     const startedAt = Date.now();
     try {
-      const started = startPdfGeneration('pdf-twenty-user', 'Sepse', bytes);
+      const started = await startPdfGeneration('pdf-twenty-user', pdfBoard, bytes);
       expect(started.ok).toBe(true);
       if (!started.ok) return;
       const seen = new Set<number>();

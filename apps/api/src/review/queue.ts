@@ -12,7 +12,7 @@ const ROLLOVER_HOUR = 4; // FRD: the study day rolls over at 04:00 local
 const DEFAULT_TZ = 'America/Sao_Paulo';
 const MODE: Record<CardType, ChallengeMode> = { concept: 'hidden_card', case: 'case', flow: 'next_step', image: 'occlusion', note: 'hidden_card' /* never used: D-200 notes are filtered out in loadCards */ };
 
-type CardRow = { id: string; boardId: string; type: CardType; order: number; boardMs: number; own: boolean; subs: string[]; x: number; y: number };
+type CardRow = { id: string; boardId: string; type: CardType; order: number; boardMs: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean };
 type StateRow = FsrsMemory & { cardId: string; subId: string; createdMs: number };
 type Item = { cardId: string; boardId: string; subId: string; mode: ChallengeMode; order: number; boardMs: number; idx: number; newAllowed: boolean };
 
@@ -31,12 +31,12 @@ async function loadCards(tx: Tx, userId: string, boardId: string | null, withNot
   const scope = boardId
     ? sql`c.board_id = ${boardId}`
     : sql`b.archived_at is null and (b.user_id = ${userId} or exists (select 1 from fsrs_state s where s.user_id = ${userId} and s.card_id = c.id))`;
-  const rows = await tx.execute<{ id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[]; x: number; y: number }>(sql`
-    select c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
+  const rows = await tx.execute<{ id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean }>(sql`
+    select (c.suspended_at is not null) as suspended, c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
       case c.type when 'flow' then ${subIds('steps')} when 'image' then ${subIds('masks')} else '[""]'::jsonb end as subs
     from cards c join boards b on b.id = c.board_id
     where c.deleted_at is null and (${withNotes}::boolean or c.type <> 'note') and ${scope}`); // D-200: notes are never scheduled, counted, or in the recall map (absent = no state); only the Hoje thumbnail asks for them (D-334)
-  return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y }));
+  return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y, suspended: r.suspended }));
 }
 
 /**
@@ -118,6 +118,8 @@ export function buildQueue(
   return o.limit === undefined ? all : all.slice(0, o.limit);
 }
 
+const active = (cards: CardRow[]) => cards.filter((c) => !c.suspended); // F03 FR-9 (D-522): suspended cards stay on the map but are never queued or counted as due
+
 const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number }) => {
   const [cards, states, win, plan, [pref]] = await Promise.all([
     loadCards(tx, userId, boardId), loadStates(tx, userId, null), dayWindow(tx, userId, opts.now), planOf(userId, opts.now), // F08: newCardsPerDay by plan (P-027)
@@ -128,7 +130,7 @@ const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { 
   for (const s of states.values()) if (s.createdMs >= win.startMs) introduced++;
   const ids = boardId ? new Set(cards.map((c) => c.id)) : null;
   const scoped = ids ? new Map([...states].filter(([, s]) => ids.has(s.cardId))) : states;
-  return buildQueue(itemsOf(cards, boardId !== null), scoped, { now: opts.now, endMs: win.endMs, newBudget: effectiveNewCardsPerDay(pref?.n ?? null, PLAN_LIMITS[plan.plan].newCardsPerDay) - introduced, limit: opts.limit });
+  return buildQueue(itemsOf(active(cards), boardId !== null), scoped, { now: opts.now, endMs: win.endMs, newBudget: effectiveNewCardsPerDay(pref?.n ?? null, PLAN_LIMITS[plan.plan].newCardsPerDay) - introduced, limit: opts.limit });
 };
 
 export const getDailyQueue: GetDailyQueue = async (userId, opts) => ok(await run(userId, (tx) => queueFor(tx, userId, null, opts)));
@@ -160,7 +162,7 @@ export async function boardListExtras(tx: Tx, userId: string, now: Date, boardId
     if (!o) out.set(id, (o = { dueCount: 0, stateCounts: { review: 0, watch: 0, steady: 0, unknown: 0 }, preview: { nodes: [], edges: [] } }));
     return o;
   };
-  for (const it of itemsOf(cards, false)) {
+  for (const it of itemsOf(active(cards), false)) {
     const m = states.get(stateKey(it.cardId, it.subId));
     if (m && isDue(m, win.endMs)) of(it.boardId).dueCount++;
   }
@@ -201,7 +203,7 @@ const DAY_MS = 86_400_000;
 export async function dueByOffset(tx: Tx, userId: string, win: { endMs: number }, days: number) {
   const [cards, states] = await Promise.all([loadCards(tx, userId, null), loadStates(tx, userId, null)]);
   const out = Array<number>(days).fill(0);
-  for (const it of itemsOf(cards, false)) {
+  for (const it of itemsOf(active(cards), false)) {
     const m = states.get(stateKey(it.cardId, it.subId));
     if (!m) continue;
     const k = isDue(m, win.endMs) ? 0 : Math.floor((m.due.getTime() - win.endMs) / DAY_MS) + 1;

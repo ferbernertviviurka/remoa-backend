@@ -3,10 +3,12 @@
 import { config } from 'dotenv';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { SHARE_ACCESS_HEADER, SHARE_LIMITS } from '@remoa/contracts';
 
 config({ path: '../../.env' });
+// D-537: XFF counts only through trusted hops; these requests model 1 proxy(ies) in front of the API.
+vi.stubEnv('TRUSTED_PROXY_HOPS', '1');
 process.env.SHARE_SECRET ||= 'test-share-secret-test-share-secret';
 
 // Recursive allowlist of keys in a SharedBoard (record keys under `assets` are asset ids, checked separately).
@@ -227,6 +229,18 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('F17 shar
     expect((await view(token, { grant: grant2 })).status).toBe(404);
     expect((await unlock('B'.repeat(43), 'x')).status).toBe(404);
     expect((await req('POST', `/v1/public/shared/${rotated}/unlock`, { body: {} })).status).toBe(422);
+  });
+
+  // D-543: one IPv6 subscriber gets a whole /64; rotating addresses inside it must not open a fresh bucket each time.
+  it('unlock: IPv6 addresses of the same /64 share the limit; IPv4-mapped stays per IPv4', async () => {
+    const token = tokenOf((await putShare(await newBoard(), { access: 'password', password: 'senha-v6' })).json.data.url);
+    const net = `2001:db8:${(++ipSeq).toString(16)}:1`;
+    for (let i = 0; i < 5; i++) expect((await unlock(token, `errada-${i}`, `${net}::${(i + 1).toString(16)}`)).status).toBe(401);
+    expect((await unlock(token, 'senha-v6', `${net}:ffff:0:0:abcd`)).status).toBe(429);
+    expect((await unlock(token, 'senha-v6', `2001:db8:${(++ipSeq).toString(16)}:1::1`)).status).toBe(200); // another /64
+    const v4 = ip();
+    for (let i = 0; i < 5; i++) expect((await unlock(token, `errada-${i}`, `::ffff:${v4}`)).status).toBe(401);
+    expect((await unlock(token, 'senha-v6', ip())).status).toBe(200); // not every mapped IPv4 in one bucket
   });
 
   it('unlock: a parallel burst of wrong passwords cannot pass the limit; the token and password never reach the logs', async () => {

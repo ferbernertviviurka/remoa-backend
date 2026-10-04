@@ -3,13 +3,18 @@
 import { config } from 'dotenv';
 import { sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateReferralCode, REFERRAL_LIMITS, type MapOp } from '@remoa/contracts';
 import type { Logger } from '@remoa/log';
 import { DISPOSABLE_DOMAINS, flagWeakSignals, isDisposable } from './fraud';
 import { emailHash } from './email-normalize';
 
 config({ path: '../../.env' });
+// D-537: XFF counts only through trusted hops; these requests model 1 proxy(ies) in front of the API.
+vi.stubEnv('TRUSTED_PROXY_HOPS', '1');
+
+const track = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../telemetry/server', () => ({ trackServer: track }));
 
 const memLog = () => {
   const lines: { level: string; msg: string; extra?: Record<string, unknown> }[] = [];
@@ -98,6 +103,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     const { createApp } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => tokens[t] ?? null });
   });
+  beforeEach(() => track.mockClear());
   afterAll(async () => {
     if (!dbm || !users.length) return;
     await dbm.db.execute(sql`delete from auth.users where id in (${sql.join(users.map((u) => sql`${u}`), sql`, `)})`);
@@ -189,10 +195,15 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     expect((await req('POST', '/v1/boards/ops', { u: referee, body: { ops } })).status).toBe(200);
     const row = (await referral(referee))!;
     expect(row.status).toBe('qualified');
+    // P-184: server events once (re-runs below emit nothing), ids and enums only
+    const ev = track.mock.calls.map((c: unknown[]) => [c[0], c[1], c[2]]);
+    expect(ev).toHaveLength(4);
+    expect(ev).toEqual(expect.arrayContaining([['first_board_created', {}, referee], ['referral_qualified', {}, referee], ['referral_reward_granted', { side: 'referrer', kind: expect.any(String) }, row.referrer_id], ['referral_reward_granted', { side: 'referee', kind: expect.any(String) }, referee]]));
     expect((await grants(row.id)).map((g) => g.user_id).sort()).toEqual([row.referrer_id, referee].sort());
     // idempotent: sequential and concurrent re-runs create nothing
     expect(await q.maybeQualifyReferral(referee)).toBe('none');
     await Promise.all([1, 2, 3].map(() => q.maybeQualifyReferral(referee)));
+    expect(track).toHaveBeenCalledTimes(4);
     expect(await grants(row.id)).toHaveLength(2);
     // the referrer's Pro is in force through getEntitlements (T4)
     const ent = await req('GET', '/v1/billing/entitlements', { u: row.referrer_id });
@@ -236,11 +247,13 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
       const { referee } = await pair(o);
       await board(referee, 3);
       const { log, lines } = memLog();
+      track.mockClear();
       expect(await q.maybeQualifyReferral(referee, { log })).toBe('rejected');
       const row = (await referral(referee))!;
       expect([row.status, row.reject_reason]).toEqual(['rejected', reason]);
       expect(await grants(row.id)).toHaveLength(0);
       expect(lines.find((l) => l.msg === 'referral_rejected')?.extra).toEqual({ event: 'referral_rejected', reason });
+      expect(track.mock.calls).toEqual([['referral_rejected', { reason }, referee]]);
       expect(await q.maybeQualifyReferral(referee)).toBe('none'); // final
     }
   });
@@ -351,6 +364,36 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     }
   });
 
+  it('P-192: invitee unsubscribe token, idempotent suppression, suppressed invite is silent and looks identical; entitlements.referralPending', async () => {
+    process.env.UNSUBSCRIBE_SECRET ||= 'test-secret-test-secret';
+    const { sendInvites } = await import('./invites');
+    const { inviteeUnsubscribeToken } = await import('../account/reminders');
+    const mailer = await import('../account/mailer');
+    const { getEntitlements } = await import('../billing/entitlements');
+    const referrer = await user();
+    const pending = async () => ((await getEntitlements(referrer)) as { data: { referralPending: boolean } }).data.referralPending;
+    expect(await pending()).toBe(false);
+    const a = `${uuid()}@example.com`;
+    const b = `${uuid()}@example.com`;
+    const token = inviteeUnsubscribeToken(emailHash(b));
+    const url = `/v1/public/unsubscribe?token=${token}`;
+    expect((await req('GET', `/v1/public/unsubscribe?token=${emailHash(b)}.${'A'.repeat(43)}`)).status).toBe(422); // forged
+    expect((await req('POST', url)).status).toBe(200);
+    expect((await req('POST', url)).status).toBe(200); // idempotent
+    expect(await exec(sql`select 1 from email_suppressions where email_hash = ${emailHash(b)}`)).toHaveLength(1);
+    const out = await sendInvites(referrer, [a, b], memLog().log);
+    expect(out).toEqual({ ok: true, data: { sent: 2, invitesLeftToday: out.ok ? out.data.invitesLeftToday : -1 } });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await exec(sql`select 1 from referrals where referrer_id = ${referrer} and invited_email_hash = ${emailHash(b)}`)).toHaveLength(0);
+    expect(mailer.sentEmails().filter((m) => m.to === b)).toHaveLength(0);
+    const sentA = mailer.sentEmails().filter((m) => m.to === a);
+    expect(sentA).toHaveLength(1);
+    expect(sentA[0]!.text).toContain(`/v1/public/unsubscribe?token=${inviteeUnsubscribeToken(emailHash(a))}`);
+    expect(await pending()).toBe(true);
+    await dbm.db.execute(sql`update referrals set status = 'expired' where referrer_id = ${referrer}`);
+    expect(await pending()).toBe(false);
+  });
+
   it('attributeReferral logs self-referral as referral_rejected and never the code', async () => {
     const r = await user();
     const code = await codeOf(r);
@@ -358,5 +401,6 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     expect(await att.attributeReferral(r, code, { log, ip: '1.1.1.1', ua: 'x' })).toEqual({ attributed: false });
     expect(lines[0]).toMatchObject({ msg: 'referral_rejected', extra: { event: 'referral_rejected', reason: 'self_referral' } });
     expect(JSON.stringify(lines)).not.toContain(code);
+    expect(track.mock.calls).toEqual([['referral_rejected', { reason: 'self_referral' }, r]]);
   });
 });

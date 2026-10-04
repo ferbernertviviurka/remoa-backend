@@ -4,15 +4,13 @@ import {
   type HttpErrorBody, type Result,
 } from '@remoa/contracts';
 import type { Env } from '../app';
+import { clientIp } from '../client-ip';
 import { attributeReferral, lookupReferralCode } from '../referral/attribution';
 import { sendInvites } from '../referral/invites';
 import { getReferralSummary } from '../referral/summary';
 
 const send = <T>(r: Result<T>) =>
   r.ok ? Response.json({ ok: true, data: r.data }) : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
-
-const clientIp = (c: { req: { header: (k: string) => string | undefined } }) =>
-  (c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? 'unknown').split(',')[0]!.trim();
 
 // requireUser is applied in app.ts. T3: summary, invites. T2: attribution.
 export const referralRoutes = new Hono<Env>()

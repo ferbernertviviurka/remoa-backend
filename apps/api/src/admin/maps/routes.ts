@@ -1,11 +1,12 @@
 // F19 FR-15 (D-461): /v1/admin/maps and /v1/admin/seeds. Listing and the drawer never carry card content; opening the graph needs a reason
-// (`map.open_readonly`, sensitive, read-only, audited with counts only). Seeds: approve needs a recorded reviewer (F10).
+// (`map.open_readonly`, sensitive, read-only, audited with counts only). Seeds: approve needs a recorded reviewer with name + CRM (F10, D-495).
 import { Hono, type Context } from 'hono';
 import { sql, type SQL } from 'drizzle-orm';
 import { adminErrors, adminMapListQuerySchema, err, ok, parseWith, type AdminAction, type AdminMapPage, type AdminMapRow, type Result } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { getBoard } from '../../boards/boards';
 import { dbm } from '../../db';
+import { normalizeCrm } from '../../editorial/editorial';
 import { notFound, reasonOf, registerExport, send, withAdmin, type AdminEnv, type AuditCapture } from '../core';
 import { dtReq, isUuid, likeOf, trailOf } from '../users/util';
 
@@ -108,10 +109,13 @@ export const mapsRoutes = new Hono<AdminEnv>()
     return ok({});
   }));
 
-/** F10 has no editorial tables yet (STATUS D-461): a recorded review = `boards.reviewer_id` pointing at a `reviewer` profile with a name. CRM has no column to check. */
+/** P-206 (D-495): a recorded review = `boards.reviewer_id` pointing at a `reviewer` profile with a name AND a valid CRM (rule 6),
+ * and no live card still in draft. Without that the admin cannot make a seed public. */
 async function reviewRecorded(tx: Tx, boardId: string) {
-  const [r] = await tx.execute<{ name: string | null }>(sql`select p.name from boards b join profiles p on p.user_id = b.reviewer_id and p.role = 'reviewer' where b.id = ${boardId}`);
-  return !!r?.name?.trim();
+  const [r] = await tx.execute<{ name: string | null; crm: string | null; drafts: number }>(sql`select p.name, p.crm,
+    (select count(*)::int from cards c where c.board_id = b.id and c.deleted_at is null and c.status <> 'approved') as drafts
+    from boards b join profiles p on p.user_id = b.reviewer_id and p.role = 'reviewer' where b.id = ${boardId}`);
+  return !!r?.name?.trim() && !!normalizeCrm(r.crm) && r.drafts === 0;
 }
 
 const seedAction = (name: 'seed.approve' | 'seed.unpublish', from: string, to: 'seed_approved' | 'seed_draft') =>

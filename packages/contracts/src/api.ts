@@ -4,7 +4,7 @@ import type { Grade, MapState } from './enums';
 import type { Result } from './errors';
 import type { Board, BoardGraph, BoardSummary, CreateBoardInput, MapOp, UpdateBoardInput } from './board';
 import type { AssetRef, AssetView, CardDetail, Rubric, SaveCardInput, UploadCompleteInput, UploadSignInput, UploadSignOutput } from './card';
-import type { Attempt, FsrsMemory, IntervalPreview, QueueItem, RecordAttemptOutput, RetrievabilityMap } from './review';
+import type { Attempt, CardStudyAction, CardStudyState, FsrsMemory, IntervalPreview, QueueItem, RecordAttemptOutput, RetrievabilityMap } from './review';
 import type {
   AnswerInput,
   AnswerOutput,
@@ -34,7 +34,7 @@ import type { BoardVersion, PublishVersionInput, ResolveDisputeInput, ReviewDeci
 import type { AnkiDraft, ApkgSummary, ExistingBoard, FieldMapping, ImportPlan, ImportProgress, ImportReport, ImportKeyInput, ImportUploadSignInput, StartImportInput } from './import';
 import type { CopyBoardInput, ShareState, SharedAccessGrant, SharedBoardResponse, UnlockInput, UpdateShareInput } from './share';
 import type { HomeSummary, ProgressSummary } from './reports';
-import type { OnboardingAnswers, WaitlistEntry } from './onboarding';
+import type { OnboardingAnswersPatch, OnboardingState, WaitlistEntry } from './onboarding';
 import type {
   AccountSnapshot,
   AvatarVariants,
@@ -92,6 +92,8 @@ export type RecordAttempt = (attempt: Attempt) => Async<RecordAttemptOutput>;
 export type GetDailyQueue = (userId: string, opts: { now: Date; limit?: number }) => Async<QueueItem[]>;
 export type GetBoardQueue = (userId: string, boardId: string, opts: { now: Date; limit?: number }) => Async<QueueItem[]>;
 export type GetRetrievability = (userId: string, boardId: string, now: Date) => Async<RetrievabilityMap>;
+/** F03 FR-9 (D-491): POST /v1/review/cards/:id/:action. */
+export type SetCardStudy = (userId: string, cardId: string, action: CardStudyAction) => Async<CardStudyState>;
 
 // F04 challenge
 export type StartSession = (userId: string, input: StartSessionInput) => Async<StartSessionOutput>;
@@ -183,7 +185,10 @@ export type GetProgress = (userId: string, now: Date) => Async<ProgressSummary>;
 
 // F12 onboarding
 export type JoinWaitlist = (entry: WaitlistEntry) => Async<null>;
-export type SaveOnboarding = (userId: string, answers: OnboardingAnswers) => Async<null>;
+// F12 (D-492): GET /v1/onboarding · POST /v1/onboarding/answers · POST /v1/onboarding/complete (sets profiles.onboarding_done_at once; idempotent)
+export type GetOnboarding = (userId: string) => Async<OnboardingState>;
+export type SaveOnboarding = (userId: string, answers: OnboardingAnswersPatch) => Async<OnboardingState>;
+export type CompleteOnboarding = (userId: string) => Async<OnboardingState>;
 
 // F13 account. All under /v1/account (requireUser) except unsubscribe. `sessionId` = JWT `session_id` claim (D-124).
 // During scheduled deletion only GET /me, POST /deletion/cancel and POST /export pass; the rest is 403 account_deleted (D-123).

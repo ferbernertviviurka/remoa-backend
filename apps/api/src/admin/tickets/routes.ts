@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { adminTicketListQuerySchema, adminTicketReplyInputSchema, errorHttpStatus, formatTicketNumber, parseWith, type HttpErrorBody, type Result } from '@remoa/contracts';
 import { assignTicket, getTicket, listTickets, notifyAnswered, replyAsAdmin, resolveTicket, ticketNumberOf } from '../../support/admin-inbox';
+import { trackServer } from '../../telemetry/server';
 import type { AdminEnv } from '../core/require-admin';
 import { withAdmin } from '../core/with-admin';
 
@@ -35,7 +36,18 @@ export const ticketsRoutes = new Hono<AdminEnv>()
     return send(r);
   })
   .post('/:id/assign', async (c) => action(c, 'ticket.assign', (tx, id, admin) => assignTicket(tx, admin, id)))
-  .post('/:id/resolve', async (c) => action(c, 'ticket.resolve', (tx, id) => resolveTicket(tx, id)));
+  .post('/:id/resolve', async (c) => {
+    let tracked: { userId: string; type: string } | null = null;
+    const res = await action(c, 'ticket.resolve', async (tx, id) => {
+      const x = await resolveTicket(tx, id);
+      if (x.ok) tracked = { userId: x.data.userId ?? '', type: x.data.type };
+      return x;
+    });
+    // D-510: after commit, so an audit rollback does not over-count
+    const t = tracked as { userId: string; type: string } | null;
+    if (res.ok && t?.userId) void trackServer('support_ticket_resolved', { type: t.type as never }, t.userId);
+    return res;
+  });
 
 async function action(
   c: Parameters<typeof withAdmin>[0],

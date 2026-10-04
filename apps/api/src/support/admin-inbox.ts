@@ -103,10 +103,10 @@ export async function assignTicket(tx: Tx, adminId: string, ticketId: string): P
   return ok({ before: t.status, after: t.status === 'open' ? 'in_review' : t.status });
 }
 
-export async function resolveTicket(tx: Tx, ticketId: string): Promise<Result<{ type: string; before: string; after: string }>> {
+export async function resolveTicket(tx: Tx, ticketId: string): Promise<Result<{ type: string; userId: string | null; before: string; after: string }>> {
   const t = UUID.test(ticketId) ? await lock(tx, ticketId) : undefined;
   if (!t) return notFound();
   if (t.status === 'resolved') return err('conflict', 'already resolved');
   const [r] = await tx.execute<{ type: string }>(sql`update support_tickets set status = 'resolved', resolved_at = now(), updated_at = now() where id = ${ticketId} returning type`);
-  return ok({ type: r!.type, before: t.status, after: 'resolved' });
+  return ok({ type: r!.type, userId: t.user_id, before: t.status, after: 'resolved' });
 }

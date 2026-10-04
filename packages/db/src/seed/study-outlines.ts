@@ -180,3 +180,13 @@ Relação: Medida correta -> MAPA: complementa
 Relação: Urgência e emergência -> Conduta de hipertensão: distingue`,
   },
 ];
+
+/** F07 FR-6: seed map title -> matrix item code (./enamed.ts). */
+export const matrixCodeByTitle: Record<string, string[]> = {
+  'Sepse e choque séptico': ['CM.06.01'],
+  'Insuficiência cardíaca descompensada': ['CM.01.02'],
+  'Pneumonia': ['CM.02.03'],
+  'Cetoacidose diabética': ['CM.05.02'],
+  'Hipertensão arterial': ['CM.01.01'],
+};
+

@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { REFERRAL_LIMITS, type AttributionResult, type attributionSkips } from '@remoa/contracts';
 import type { Logger } from '@remoa/log';
 import { dbm } from '../db';
+import { trackServer } from '../telemetry/server';
 import { emailHash } from './email-normalize';
 import { flagWeakSignals } from './fraud';
 
@@ -58,7 +59,10 @@ export async function attributeReferral(userId: string, code: string, ctx: { log
     });
 
   if (skip) {
-    if (skip === 'self_referral') ctx.log.warn('referral_rejected', { event: 'referral_rejected', reason: 'self_referral' });
+    if (skip === 'self_referral') {
+      ctx.log.warn('referral_rejected', { event: 'referral_rejected', reason: 'self_referral' });
+      void trackServer('referral_rejected', { reason: 'self_referral' }, userId);
+    }
     else ctx.log.info('referral attribution skipped', { reason: skip });
     return { attributed: false };
   }

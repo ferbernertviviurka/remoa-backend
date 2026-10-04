@@ -84,11 +84,8 @@ export const importBoardInputSchema = z
   });
 export type ImportBoardInput = z.input<typeof importBoardInputSchema>;
 
-/**
- * POST /v1/imports/anki: starts the job; progress at GET /v1/imports/:id, report at /report.
- * `board` is optional only while the F06 client (one board per root deck, D-117) is still live; F17/T5 always sends it.
- */
-export const startImportInputSchema = importKeySchema.extend({ plan: importPlanSchema, board: importBoardInputSchema.optional() });
+/** POST /v1/imports/anki: starts the job; progress at GET /v1/imports/:id, report at /report. `board` required (D-291 closed by CCR-016). */
+export const startImportInputSchema = importKeySchema.extend({ plan: importPlanSchema, board: importBoardInputSchema });
 export type StartImportInput = z.infer<typeof startImportInputSchema>;
 
 /** F17 FR-11: GET /v1/imports/anki/existing?title= — own active board whose normalised title matches (trim, case, accents). */

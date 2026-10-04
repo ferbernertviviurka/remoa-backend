@@ -1,22 +1,44 @@
-// ponytail: cron entry until Inngest lands (F05 owns apps/api/src/inngest); then wrap these two functions in scheduled functions and delete this file.
+// Maintenance jobs. Scheduled by Inngest crons (inngest/maintenance.ts); `pnpm job:maintenance` still runs both once by hand.
+import { pathToFileURL } from 'node:url';
 import { createLogger } from '@remoa/log';
 import { createStripe, installStripe } from '../billing/stripe';
 import { expireAnswerTexts, purgeDeletedAccounts } from './jobs';
 import { sendDailyReminders } from './reminders';
 import { sweepReferrals } from '../referral/sweep';
 import { sweepSupport } from '../support/retention';
+import { cleanOrphanAssets, purgeDeletedCards } from '../cleanup/assets';
+import { sendOnboardingEmails } from '../onboarding/emails';
 import { refreshRecentMetrics } from '../admin/overview/metrics';
 
 const log = createLogger({ requestId: 'job-maintenance' });
-const now = new Date();
-const stripe = process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000' }) : undefined;
-installStripe(stripe); // F18: the referral sweep re-applies pending credits
-const purged = await purgeDeletedAccounts(now, stripe);
-const expired = await expireAnswerTexts(now);
-// ponytail: F13 FR-15 daily reminder; this runner must run every hour (cron `0 * * * *`). Becomes an hourly Inngest cron when Inngest exists.
-const reminded = await sendDailyReminders(now);
-const referrals = await sweepReferrals(now); // F18 (D-384): expire invites, qualify what the hooks missed
-const support = await sweepSupport(now); // F19 FR-9 (Q-046)
-const metrics = await refreshRecentMetrics(now); // F19 FR-13 (D-458): admin_metrics_daily, yesterday + today
-log.info('maintenance done', { purged, expired, reminded, referrals, support, metrics });
-process.exit(0);
+
+/** Hourly (cron `0 * * * *`): reminders are per-hour, the rest is idempotent. */
+export async function runHourly(now = new Date()) {
+  const reminded = await sendDailyReminders(now); // F13 FR-15
+  const referrals = await sweepReferrals(now); // F18 (D-384)
+  const support = await sweepSupport(now); // F19 FR-9 (Q-046)
+  const metrics = await refreshRecentMetrics(now); // F19 FR-13 (D-458)
+  const onboarding = await sendOnboardingEmails(now); // F12 FR-8 (D-525)
+  const out = { reminded, referrals, support, metrics, onboarding };
+  log.info('maintenance hourly done', out);
+  return out;
+}
+
+/** Daily (cron `0 6 * * *` UTC): LGPD purge and answer-text retention (F08 FR-8). */
+export async function runDaily(now = new Date()) {
+  const stripe = process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000' }) : undefined;
+  installStripe(stripe); // F18: the referral sweep re-applies pending credits
+  const purged = await purgeDeletedAccounts(now, stripe);
+  const expired = await expireAnswerTexts(now);
+  const cards = await purgeDeletedCards(now); // F01 P-009
+  const assets = await cleanOrphanAssets(now); // F02 P-018 (also frees the assets of the cards just purged)
+  const out = { purged, expired, cards, assets };
+  log.info('maintenance daily done', out);
+  return out;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await runDaily();
+  await runHourly();
+  process.exit(0);
+}

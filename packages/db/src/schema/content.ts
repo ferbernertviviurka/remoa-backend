@@ -20,6 +20,8 @@ export const profiles = pgTable('profiles', {
   avatarColor: smallint('avatar_color').notNull().default(0),
   timezone: text('timezone').notNull().default('America/Sao_Paulo'),
   onboardingDoneAt: timestamp('onboarding_done_at', { withTimezone: true }),
+  /** F12 (D-492): partial OnboardingAnswers as saved by POST /v1/onboarding/answers. Server-owned (no column GRANT). */
+  onboardingAnswers: jsonb('onboarding_answers').notNull().default({}),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
   /** F18: who referred this user (first touch, D-383). Server-owned (no column GRANT). */
   referredBy: uuid('referred_by').references(() => authUsers.id, { onDelete: 'set null' }),
@@ -122,9 +124,14 @@ export const cards = pgTable('cards', {
   order: integer('order').notNull().default(0),
   reviewerId: uuid('reviewer_id').references(() => authUsers.id),
   deletedAt: timestamp('deleted_at', { withTimezone: true }), // F01: soft delete, 30 days
+  /** F03 FR-9 (D-491): suspended by the owner; out of the review queue and challenges until unsuspended. FSRS state is kept. */
+  suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  /** F02 FR-9 (D-531): in a seed copy, the seed card this one was copied from. Null for own cards and pre-0023 copies. */
+  sourceCardId: uuid('source_card_id').references((): AnyPgColumn => cards.id, { onDelete: 'set null' }),
   ...timestamps,
 }, (t) => [
   index('cards_board_idx').on(t.boardId),
+  index('cards_source_card_idx').on(t.sourceCardId).where(sql`${t.sourceCardId} is not null`),
   index('cards_back_asset_idx').on(t.backAssetId).where(sql`${t.backAssetId} is not null`),
   // limits mirror CARD_SIZE_MIN/MAX in @remoa/contracts
   check('cards_size_chk', sql`(${t.width} is null and ${t.height} is null) or (${t.width} between 140 and 640 and ${t.height} between 90 and 560)`),

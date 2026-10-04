@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   boardGraphSchema,
-  boardMatrixItemIds,
   boardSchema,
   coverageRowSchema,
   createBoardInputSchema,
@@ -245,7 +244,7 @@ describe('other lanes', () => {
     progressSummarySchema.parse(data(await m.getProgress(user, now)));
     expect(data(await m.joinWaitlist({ email: 'a@b.co', segment: 'y5_6', variant: '29', origin: null }))).toBeNull();
     expect(code(await m.joinWaitlist({ email: 'nope', segment: 'y5_6', variant: null, origin: null }))).toBe('validation');
-    expect(data(await m.saveOnboarding(user, { segment: 'graduated', goal: 'enamed_2027_1', area: 'CM', startPath: 'seed' }))).toBeNull();
+    expect(data(await m.saveOnboarding(user, { segment: 'graduated', goal: 'enamed_2027_1', area: 'CM', startPath: 'seed' })).answers).toMatchObject({ segment: 'graduated', startPath: 'seed' });
     expect(code(await m.saveOnboarding(user, { segment: 'graduated', goal: 'Enamed!', area: 'CM', startPath: 'seed' }))).toBe('validation');
   });
 
@@ -290,8 +289,6 @@ describe('F17 contracts + mocks', () => {
     expect(ok_({ title: 'T', matrixItemIds: Array.from({ length: 11 }, (_, i) => fid(i + 1)) })).toBe(false);
     const parsed = createBoardInputSchema.parse({ title: 'T', matrixItemIds: [fid(1), fid(1), fid(2)] });
     expect(parsed).toMatchObject({ access: 'owner', area: 'CM', matrixItemIds: [fid(1), fid(2)] });
-    expect(boardMatrixItemIds({ matrixItemIds: [], matrixItemId: fid(3) })).toEqual([fid(3)]); // deprecated alias
-    expect(boardMatrixItemIds(parsed)).toEqual([fid(1), fid(2)]);
     const board = { title: 'T', area: 'PED', matrixItemIds: [], access: 'password' };
     expect(importBoardInputSchema.safeParse(board).success).toBe(false);
     expect(importBoardInputSchema.safeParse({ ...board, target: { boardId: fid(1) } }).success).toBe(true); // existing: access unchanged
@@ -356,5 +353,34 @@ describe('board mocks (F01)', () => {
     data(await m.updateBoard(user, sepseBoardId, { archived: true }));
     expect(data(await m.listBoards(user)).map((b) => b.id)).toEqual([copy.id]);
     expect(code(await m.updateBoard(fid(2), copy.id, { title: 'x' }))).toBe('not_found');
+  });
+});
+
+describe('CCR-015 mocks (F12 onboarding, F03 FR-9)', () => {
+  it('onboarding: partial answers merge, complete is idempotent, checklist counts the map', async () => {
+    const { onboardingStateSchema } = await import('../onboarding');
+    const s0 = onboardingStateSchema.parse(data(await m.getOnboarding(user)));
+    expect(s0.doneAt).toBeNull();
+    expect(s0.checklist.map((i) => i.id)).toEqual(['cards', 'edges', 'sessions']);
+    expect(s0.checklist[0]).toMatchObject({ target: 20, done: false });
+    expect(code(await m.saveOnboarding(user, {}))).toBe('validation');
+    data(await m.saveOnboarding(user, { area: 'CM' }));
+    const s1 = data(await m.saveOnboarding(user, { startPath: 'pdf' }));
+    expect(s1.answers).toEqual({ area: 'CM', startPath: 'pdf' });
+    const done = data(await m.completeOnboarding(user)).doneAt;
+    expect(done).toEqual(now);
+    expect(data(await m.completeOnboarding(user)).doneAt).toEqual(done);
+  });
+
+  it('setCardStudy: suspend/unsuspend/reset; unknown card is not_found', async () => {
+    const id = sepseCardIds.sepse;
+    expect(data(await m.setCardStudy(user, id, 'suspend')).suspendedAt).toEqual(now);
+    expect(data(await m.setCardStudy(user, id, 'reset')).suspendedAt).toEqual(now);
+    expect(data(await m.setCardStudy(user, id, 'unsuspend')).suspendedAt).toBeNull();
+    expect(code(await m.setCardStudy(user, fid(9999), 'suspend'))).toBe('not_found');
+  });
+
+  it('entitlements carry referralPending', async () => {
+    expect(entitlementsSchema.parse(data(await m.getEntitlements(user))).referralPending).toBe(false);
   });
 });

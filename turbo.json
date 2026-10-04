@@ -13,10 +13,14 @@
     "dev": {
       "cache": false,
       "persistent": true,
-      "passThroughEnv": ["STRIPE", "GRADER"]
+      "passThroughEnv": [
+        "STRIPE",
+        "GRADER"
+      ]
     },
     "lint": {},
     "typecheck": {},
-    "test": {}
+    "test": {},
+    "test:coverage": {}
   }
 }

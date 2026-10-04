@@ -95,3 +95,12 @@ export const billingCredits = pgTable('billing_credits', {
   check('billing_credits_currency', sql`${t.currency} = 'brl'`),
   check('billing_credits_applied', sql`(${t.appliedAt} is null) = (${t.stripeBalanceTxnId} is null)`),
 ]);
+
+/**
+ * P-192 (D-494): addresses that clicked "não quero mais convites" without having an account. Keyed by the D-386 hash
+ * (sha256 hex of the normalized e-mail); never the plaintext. Server only (RLS on, no policy, no grant).
+ */
+export const emailSuppressions = pgTable('email_suppressions', {
+  emailHash: text('email_hash').primaryKey(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`now()`),
+}, (t) => [check('email_suppressions_hash', sql`${t.emailHash} ~ '^[0-9a-f]{64}$'`)]);

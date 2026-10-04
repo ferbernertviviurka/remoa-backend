@@ -3,7 +3,7 @@ import { config } from 'dotenv';
 import { eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { randomUUID as uuid } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { err, ok } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
 import { authenticatedAt, isFresh, takeDeniedSlot, type AdminEnv } from './require-admin';
@@ -13,6 +13,8 @@ import { reasonOf } from './with-admin';
 import { fakeToken, fakeVerifier } from './test-helpers';
 
 config({ path: '../../.env' });
+// D-537: XFF counts only through trusted hops; these requests model 2 proxy(ies) in front of the API.
+vi.stubEnv('TRUSTED_PROXY_HOPS', '2');
 process.env.AUDIT_IP_SALT ||= 'test-salt-test-salt';
 
 describe('admin core helpers', () => {

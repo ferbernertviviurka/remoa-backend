@@ -3,8 +3,18 @@ import { config } from 'dotenv';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { normalizeCrm } from './editorial';
 
 config({ path: '../../.env' });
+
+describe('normalizeCrm (D-496)', () => {
+  it('accepts number + UF in the usual spellings and returns 123456-SP', () => {
+    for (const raw of ['123456-SP', 'CRM-SP 123456', 'crm/sp 123.456', '123456 sp', 'SP 123456', 'CRM 123456/SP']) expect(normalizeCrm(raw)).toBe('123456-SP');
+  });
+  it('rejects missing UF, unknown UF, missing number and noise', () => {
+    for (const raw of ['', '123456', 'SP', '123456-XX', '12345678-SP', '123456-SP-RJ', 'abc', null, undefined]) expect(normalizeCrm(raw)).toBeNull();
+  });
+});
 
 type Body = { data?: { id?: string; version?: number; items?: { id: string; cardId: string }[] }; error?: { code: string; message: string } };
 
@@ -13,14 +23,14 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
   let dbm: typeof import('@remoa/db');
   let app: ReturnType<typeof import('../app').createApp>;
 
-  const newUser = async (role: 'student' | 'reviewer' = 'student') => {
+  const newUser = async (role: 'student' | 'reviewer' | 'admin' = 'student', crm: string | null = 'CRM-SP 123456') => {
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
-    if (role === 'reviewer') {
-      await dbm.db.insert(dbm.profiles).values({ userId: id, name: 'Revisor', role: 'reviewer', crm: 'CRM-SP 123456' }).onConflictDoUpdate({
+    if (role !== 'student') {
+      await dbm.db.insert(dbm.profiles).values({ userId: id, name: 'Revisor', role, crm }).onConflictDoUpdate({
         target: dbm.profiles.userId,
-        set: { name: 'Revisor', role: 'reviewer', crm: 'CRM-SP 123456' },
+        set: { name: 'Revisor', role, crm },
       });
     }
     return id;
@@ -87,7 +97,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
     }
     const [approved] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, concepts[0]!.id));
     expect(approved).toMatchObject({ status: 'approved', reviewerId: reviewer });
-    expect(approved!.rubric).toMatchObject({ reviewerName: 'Revisor', reviewerCrm: 'CRM-SP 123456', status: 'approved' });
+    expect(approved!.rubric).toMatchObject({ reviewerName: 'Revisor', reviewerCrm: '123456-SP', status: 'approved' });
 
     const published = await call(reviewer, 'POST', '/editorial/publish', { boardId: board!.id, changelog: 'Primeira edição', temporalMark: 'Enamed 2026.2' });
     expect(published.status).toBe(200);
@@ -141,7 +151,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
     expect(saved!.rubric).toMatchObject({
       status: 'approved',
       reviewerName: 'Revisor',
-      reviewerCrm: 'CRM-SP 123456',
+      reviewerCrm: '123456-SP',
       source: 'Diretriz',
       points: [{ text: 'Queda da pressão com perfusão ruim.', essential: true }],
     });
@@ -150,7 +160,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
   it('adjusting a dispute writes a new rubric version, even when the card had none', async () => {
     const author = await newUser();
     const reviewer = await newUser('reviewer');
-    const [board] = await dbm.db.insert(dbm.boards).values({ userId: author, title: 'Ajuste', status: 'private' }).returning();
+    const [board] = await dbm.db.insert(dbm.boards).values({ userId: author, title: 'Ajuste', status: 'seed_approved' }).returning();
     const [withRubric, without] = await dbm.db.insert(dbm.cards).values([
       {
         boardId: board!.id, title: 'Com rubrica', back: 'Noradrenalina.', source: 'Diretriz', status: 'approved',
@@ -215,5 +225,153 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
       criticalError: true,
       points: [{ text: 'Noradrenalina' }],
     });
+  });
+  const seedWithPending = async (status: 'seed_draft' | 'seed_approved' | 'private' = 'seed_draft', owner?: string) => {
+    const author = owner ?? await newUser();
+    const [board] = await dbm.db.insert(dbm.boards).values({ userId: author, title: `Seed ${uuid().slice(0, 6)}`, status }).returning();
+    const [card] = await dbm.db.insert(dbm.cards).values({ boardId: board!.id, title: 'Choque', back: 'Noradrenalina.', source: 'ILAS', status: 'draft' }).returning();
+    const [item] = await dbm.db.insert(dbm.reviewQueue).values({ cardId: card!.id, status: 'pending' }).returning();
+    return { author, board: board!, card: card!, item: item! };
+  };
+
+  it('publish: never a student private board; needs the reviewer CRM; the version records name and CRM (rule 6)', async () => {
+    const reviewer = await newUser('reviewer');
+    const student = await newUser();
+    const [priv] = await dbm.db.insert(dbm.boards).values({ userId: student, title: 'Meu mapa', status: 'private' }).returning();
+    await dbm.db.insert(dbm.cards).values({ boardId: priv!.id, title: 'Nota', status: 'approved' });
+    const leaked = await call(reviewer, 'POST', '/editorial/publish', { boardId: priv!.id, changelog: 'x', temporalMark: 'Enamed 2026.2' });
+    expect(leaked.status).toBe(404);
+    const [still] = await dbm.db.select().from(dbm.boards).where(eq(dbm.boards.id, priv!.id));
+    expect(still).toMatchObject({ status: 'private', version: 1 });
+
+    const [seed] = await dbm.db.insert(dbm.boards).values({ userId: student, title: 'Seed pronta', status: 'seed_draft' }).returning();
+    await dbm.db.insert(dbm.cards).values({ boardId: seed!.id, title: 'Ok', status: 'approved' });
+    const noCrm = await newUser('reviewer', null);
+    const blocked = await call(noCrm, 'POST', '/editorial/publish', { boardId: seed!.id, changelog: 'x', temporalMark: 'Enamed 2026.2' });
+    expect(blocked.status).toBe(422);
+    expect(blocked.json.error?.message).toBe('reviewer_crm_required');
+    const admin = await newUser('admin');
+    expect((await call(admin, 'POST', '/editorial/publish', { boardId: seed!.id, changelog: 'x', temporalMark: 'Enamed 2026.2' })).status).toBe(403);
+
+    const done = await call(reviewer, 'POST', '/editorial/publish', { boardId: seed!.id, changelog: 'Primeira', temporalMark: 'Enamed 2026.2' });
+    expect(done.status).toBe(200);
+    const [version] = await dbm.db.select().from(dbm.boardVersions).where(eq(dbm.boardVersions.boardId, seed!.id));
+    expect(version!.snapshot).toMatchObject({ reviewerName: 'Revisor', reviewerCrm: '123456-SP' });
+  });
+
+  it('decide: only a reviewer with name and valid CRM approves; admin is refused; a decided item stays decided', async () => {
+    const { item, card } = await seedWithPending();
+    const admin = await newUser('admin');
+    expect((await call(admin, 'POST', '/editorial/decide', { reviewItemId: item.id, decision: 'approved', note: null })).status).toBe(403);
+    const badCrm = await newUser('reviewer', 'qualquer coisa');
+    const bad = await call(badCrm, 'POST', '/editorial/decide', { reviewItemId: item.id, decision: 'approved', note: null });
+    expect(bad.status).toBe(422);
+    expect(bad.json.error?.message).toBe('reviewer_crm_required');
+    const [untouched] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, card.id));
+    expect(untouched).toMatchObject({ status: 'draft', reviewerId: null });
+
+    const reviewer = await newUser('reviewer', 'crm/rj 98.765');
+    expect((await call(reviewer, 'POST', '/editorial/decide', { reviewItemId: item.id, decision: 'approved', note: null })).status).toBe(200);
+    const [stamped] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, card.id));
+    expect(stamped!.rubric).toMatchObject({ reviewerName: 'Revisor', reviewerCrm: '98765-RJ', status: 'approved' });
+    const again = await call(reviewer, 'POST', '/editorial/decide', { reviewItemId: item.id, decision: 'rejected', note: 'mudei de ideia' });
+    expect(again.status).toBe(409);
+  });
+
+  it('decide: a queue row on a student private card never stamps that card approved', async () => {
+    const { item, card } = await seedWithPending('private');
+    const reviewer = await newUser('reviewer');
+    expect((await call(reviewer, 'POST', '/editorial/decide', { reviewItemId: item.id, decision: 'approved', note: null })).status).toBe(409);
+    const [kept] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, card.id));
+    expect(kept).toMatchObject({ status: 'draft', reviewerId: null });
+  });
+
+  it('crm: invalid formats are refused, valid ones are stored normalized', async () => {
+    const reviewer = await newUser('reviewer', null);
+    expect((await call(reviewer, 'POST', '/editorial/crm', { crm: '12' })).status).toBe(422);
+    const saved = await call(reviewer, 'POST', '/editorial/crm', { crm: 'CRM-MG 4321' });
+    expect(saved.status).toBe(200);
+    const [p] = await dbm.db.select().from(dbm.profiles).where(eq(dbm.profiles.userId, reviewer));
+    expect(p?.crm).toBe('4321-MG');
+  });
+
+  const disputeOn = async (cardId: string, by: string) => {
+    const [attempt] = await dbm.db.insert(dbm.attempts).values({
+      userId: by, cardId, mode: 'hidden_card', inputKind: 'text', grade: 1, answerText: 'resposta',
+      verdict: { verdict: 'incorrect', matched: [], missing: [], criticalError: false, feedback: 'f', model: 'offline-grader', disputed: true },
+    }).returning();
+    const [item] = await dbm.db.insert(dbm.reviewQueue).values({ cardId, status: 'pending', flagSource: 'user_disagree', attemptId: attempt!.id }).returning();
+    return item!;
+  };
+  const adjust = (reviewer: string, id: string) =>
+    call(reviewer, 'POST', '/editorial/dispute', { reviewItemId: id, outcome: 'rubric_adjusted', note: null, rubricPoints: [{ text: 'Iniciar noradrenalina', essential: true }] });
+  const rubricV1 = { points: [{ text: 'Noradrenalina', essential: true }], source: 'ILAS', version: 1, status: 'approved', reviewerId: null };
+
+  it('dispute on a seed copy adjusts the seed card, never the student copy; a resolved item cannot be resolved again', async () => {
+    const author = await newUser();
+    const reviewer = await newUser('reviewer');
+    const student = await newUser();
+    const [seed] = await dbm.db.insert(dbm.boards).values({ userId: author, title: 'Seed original', status: 'seed_approved' }).returning();
+    const [orig] = await dbm.db.insert(dbm.cards).values({ boardId: seed!.id, title: 'Choque séptico', back: 'Noradrenalina.', status: 'approved', rubric: rubricV1 }).returning();
+    const [copy] = await dbm.db.insert(dbm.boards).values({ userId: student, title: 'Seed original', status: 'private', sourceBoardId: seed!.id }).returning();
+    const [mine] = await dbm.db.insert(dbm.cards).values({ boardId: copy!.id, title: 'Choque séptico', back: 'minha anotação', status: 'approved', rubric: rubricV1 }).returning();
+    const item = await disputeOn(mine!.id, student);
+    expect((await adjust(reviewer, item.id)).status).toBe(200);
+    const [[o], [m]] = await Promise.all([
+      dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, orig!.id)),
+      dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, mine!.id)),
+    ]);
+    expect(o!.rubric).toMatchObject({ version: 2, status: 'draft', points: [{ text: 'Iniciar noradrenalina' }] });
+    expect(m).toMatchObject({ status: 'approved', back: 'minha anotação', rubric: rubricV1 });
+    expect((await adjust(reviewer, item.id)).status).toBe(409);
+
+    const copied = await call(student, 'POST', '/editorial/copy', { boardId: seed!.id });
+    const [fresh] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.boardId, copied.json.data!.id!));
+    expect(fresh).toMatchObject({ status: 'draft', sourceCardId: orig!.id }); // an unreviewed adjustment never travels as approved
+  });
+
+  it('a seed copy linked by source_card_id reaches its seed card even after the student renames it (D-531)', async () => {
+    const author = await newUser();
+    const reviewer = await newUser('reviewer');
+    const student = await newUser();
+    const [seed] = await dbm.db.insert(dbm.boards).values({ userId: author, title: 'Seed vínculo', status: 'seed_approved' }).returning();
+    const [orig, decoy] = await dbm.db.insert(dbm.cards).values([
+      { boardId: seed!.id, title: 'Choque séptico', back: 'Noradrenalina.', status: 'approved' as const, rubric: rubricV1 },
+      { boardId: seed!.id, title: 'Meu título', back: 'Outro.', status: 'approved' as const, rubric: rubricV1 },
+    ]).returning();
+    const [copy] = await dbm.db.insert(dbm.boards).values({ userId: student, title: 'Seed vínculo', status: 'private', sourceBoardId: seed!.id }).returning();
+    const [mine] = await dbm.db.insert(dbm.cards).values({ boardId: copy!.id, title: 'Meu título', status: 'approved', rubric: rubricV1, sourceCardId: orig!.id }).returning();
+    const item = await disputeOn(mine!.id, student);
+    expect((await adjust(reviewer, item.id)).status).toBe(200);
+    const [o] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, orig!.id));
+    const [d] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, decoy!.id));
+    expect(o!.rubric).toMatchObject({ version: 2 });
+    expect(d!.rubric).toMatchObject({ version: 1 });
+  });
+
+  it('dispute on someone else private card refuses the adjustment; on the disputer own card it applies', async () => {
+    const reviewer = await newUser('reviewer');
+    const owner = await newUser();
+    const other = await newUser();
+    const [board] = await dbm.db.insert(dbm.boards).values({ userId: owner, title: 'Privado', status: 'private' }).returning();
+    const [card] = await dbm.db.insert(dbm.cards).values({ boardId: board!.id, title: 'Droga', back: 'Noradrenalina.', status: 'approved', rubric: rubricV1 }).returning();
+    const foreign = await disputeOn(card!.id, other);
+    expect((await adjust(reviewer, foreign.id)).status).toBe(409);
+    const [kept] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, card!.id));
+    expect(kept!.rubric).toEqual(rubricV1);
+    const own = await disputeOn(card!.id, owner);
+    expect((await adjust(reviewer, own.id)).status).toBe(200);
+    const [changed] = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.id, card!.id));
+    expect(changed!.rubric).toMatchObject({ version: 2, status: 'draft' });
+  });
+
+  it('seeds: a student sees only approved, unarchived seeds', async () => {
+    const student = await newUser();
+    const { board: draft } = await seedWithPending('seed_draft');
+    const { board: archived } = await seedWithPending('seed_approved');
+    await dbm.db.update(dbm.boards).set({ archivedAt: new Date() }).where(eq(dbm.boards.id, archived.id));
+    const ids = ((await call(student, 'GET', '/editorial/seeds')).json.data as unknown as { id: string }[]).map((b) => b.id);
+    expect(ids).not.toContain(draft.id);
+    expect(ids).not.toContain(archived.id);
   });
 });

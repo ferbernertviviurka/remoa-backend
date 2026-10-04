@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import sharp from 'sharp';
 import {
   APKG_MAX_BYTES, PLAN_LIMITS, err, ok,
@@ -62,7 +62,7 @@ export const imageKey = (media: string, masks: { polygon: { x: number; y: number
   createHash('sha1').update(`img:${media}\n${JSON.stringify(masks.map((m) => m.polygon.map((p) => [+p.x.toFixed(3), +p.y.toFixed(3)])))}`).digest('hex');
 
 /** Parsed board input from startImportInputSchema (output type, all defaults applied). */
-type ImportBoardResolved = NonNullable<StartImportInput['board']>;
+type ImportBoardResolved = StartImportInput['board'];
 
 /** Same pipeline as `completeUpload` (uploads.ts): WebP w800/w1600 under assets/<userId>/<assetId>/. null = not a usable image. */
 async function createAssetFromBytes(userId: string, bytes: Uint8Array): Promise<string | null> {
@@ -149,43 +149,35 @@ export function createImports({ anki }: { anki: AnkiPort }) {
     if (await overTotal(db, userId, 'cards', await limitFor(userId, 'cards'), plan.estimatedCards + hubs)) return err('quota_exceeded', 'cards');
 
     // F17: board-level quota and pre-validation (fail fast before creating the import record).
-    if (boardInput) {
-      const itemIds = boardInput.matrixItemIds;
-      if (boardInput.target === 'new') {
-        // Always creates 1 new board.
-        if (await overTotal(db, userId, 'boards', await limitFor(userId, 'boards'), 1)) return err('quota_exceeded', 'boards');
-        // Validate matrixItemIds belong to the board's area (422 before the job starts).
-        if (itemIds.length) {
-          const m = await dbm();
-          const valid = await m.db.select({ id: m.matrixItems.id }).from(m.matrixItems).where(
-            and(inArray(m.matrixItems.id, itemIds), eq(m.matrixItems.area, boardInput.area),
-              sql`not exists (select 1 from matrix_items c where c.parent_id = ${m.matrixItems.id})`),
-          );
-          if (valid.length !== itemIds.length) return err('validation', 'matrixItemId is unknown, a group, or does not belong to the board area');
-        }
-      } else {
-        // target = { boardId }: verify ownership and active status (D-291).
-        const targetBoardId = (boardInput.target as { boardId: string }).boardId;
-        const [existing] = await run(userId, (tx, s) =>
-          tx.select({ id: s.boards.id, area: s.boards.area }).from(s.boards)
-            .where(and(eq(s.boards.id, targetBoardId), eq(s.boards.userId, userId), isNull(s.boards.archivedAt))).limit(1));
-        if (!existing) return err('not_found', 'board not found');
-        // Validate new matrixItemIds against the existing board's area.
-        if (itemIds.length) {
-          const m = await dbm();
-          const valid = await m.db.select({ id: m.matrixItems.id }).from(m.matrixItems).where(
-            and(inArray(m.matrixItems.id, itemIds), eq(m.matrixItems.area, existing.area),
-              sql`not exists (select 1 from matrix_items c where c.parent_id = ${m.matrixItems.id})`),
-          );
-          if (valid.length !== itemIds.length) return err('validation', 'matrixItemId is unknown, a group, or does not belong to the board area');
-        }
+    const itemIds = boardInput.matrixItemIds;
+    if (boardInput.target === 'new') {
+      // Always creates 1 new board.
+      if (await overTotal(db, userId, 'boards', await limitFor(userId, 'boards'), 1)) return err('quota_exceeded', 'boards');
+      // Validate matrixItemIds belong to the board's area (422 before the job starts).
+      if (itemIds.length) {
+        const m = await dbm();
+        const valid = await m.db.select({ id: m.matrixItems.id }).from(m.matrixItems).where(
+          and(inArray(m.matrixItems.id, itemIds), eq(m.matrixItems.area, boardInput.area),
+            sql`not exists (select 1 from matrix_items c where c.parent_id = ${m.matrixItems.id})`),
+        );
+        if (valid.length !== itemIds.length) return err('validation', 'matrixItemId is unknown, a group, or does not belong to the board area');
       }
     } else {
-      // Old behavior (F06): one board per root deck; check quota only for roots without an existing board.
-      const existing = await run(userId, async (tx, s) =>
-        (await tx.select({ title: s.boards.title }).from(s.boards).where(and(eq(s.boards.userId, userId), isNull(s.boards.archivedAt)))).map((b) => b.title));
-      const newBoards = roots.filter((r) => !existing.includes(r)).length;
-      if (newBoards && (await overTotal(db, userId, 'boards', await limitFor(userId, 'boards'), newBoards))) return err('quota_exceeded', 'boards');
+      // target = { boardId }: verify ownership and active status (D-291).
+      const targetBoardId = (boardInput.target as { boardId: string }).boardId;
+      const [existing] = await run(userId, (tx, s) =>
+        tx.select({ id: s.boards.id, area: s.boards.area }).from(s.boards)
+          .where(and(eq(s.boards.id, targetBoardId), eq(s.boards.userId, userId), isNull(s.boards.archivedAt))).limit(1));
+      if (!existing) return err('not_found', 'board not found');
+      // Validate new matrixItemIds against the existing board's area.
+      if (itemIds.length) {
+        const m = await dbm();
+        const valid = await m.db.select({ id: m.matrixItems.id }).from(m.matrixItems).where(
+          and(inArray(m.matrixItems.id, itemIds), eq(m.matrixItems.area, existing.area),
+            sql`not exists (select 1 from matrix_items c where c.parent_id = ${m.matrixItems.id})`),
+        );
+        if (valid.length !== itemIds.length) return err('validation', 'matrixItemId is unknown, a group, or does not belong to the board area');
+      }
     }
 
     const importId = await run(userId, async (tx, s) =>
@@ -238,7 +230,7 @@ export function createImports({ anki }: { anki: AnkiPort }) {
     });
   }
 
-  async function job(userId: string, importId: string, file: Buffer, plan: ImportPlan, boardInput?: ImportBoardResolved) {
+  async function job(userId: string, importId: string, file: Buffer, plan: ImportPlan, boardInput: ImportBoardResolved) {
     const log = createLogger({ requestId: importId });
     const t0 = Date.now();
     await setStats(userId, importId, { processed: 0, total: plan.estimatedCards }, 'running');
@@ -259,28 +251,11 @@ export function createImports({ anki }: { anki: AnkiPort }) {
       return id;
     };
     try {
-      // F17: one board for ALL selected decks; old F06: one board per root deck.
+      // F17: one board for ALL selected decks (the F06 one-board-per-root flow is gone, D-291).
       const boardToList: [string, AnkiDraft[]][] = [];
-      if (boardInput) {
-        const boardId = await resolveImportBoard(userId, boardInput);
-        if (boardInput.target !== 'new') await mergeImportMatrixItems(userId, boardId, boardInput.matrixItemIds);
-        boardToList.push([boardId, drafts.data]);
-      } else {
-        const byRoot = new Map<string, AnkiDraft[]>();
-        for (const d of drafts.data) {
-          const r = anki.rootOf(d.deckName);
-          byRoot.set(r, [...(byRoot.get(r) ?? []), d]);
-        }
-        for (const [root, rootDrafts] of byRoot) {
-          const board = await run(userId, async (tx, s) => {
-            const [b] = await tx.select({ id: s.boards.id }).from(s.boards)
-              .where(and(eq(s.boards.userId, userId), eq(s.boards.title, root), isNull(s.boards.archivedAt))).orderBy(asc(s.boards.createdAt)).limit(1);
-            if (b) return b.id;
-            return (await tx.insert(s.boards).values({ userId, title: root, area: 'CM' }).returning({ id: s.boards.id }))[0]!.id;
-          });
-          boardToList.push([board, rootDrafts]);
-        }
-      }
+      const boardId = await resolveImportBoard(userId, boardInput);
+      if (boardInput.target !== 'new') await mergeImportMatrixItems(userId, boardId, boardInput.matrixItemIds);
+      boardToList.push([boardId, drafts.data]);
 
       for (const [board, list] of boardToList) {
         rep.boardIds.push(board);

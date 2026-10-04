@@ -1,3 +1,4 @@
+import { onboardingRoutes } from './routes/onboarding';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
@@ -34,6 +35,7 @@ import { createLogger, newRequestId, type Logger } from '@remoa/log';
 import { serve as serveInngest } from 'inngest/hono';
 import { inngest } from './inngest/client';
 import { generateBoard } from './inngest/generate-board';
+import { maintenanceDaily, maintenanceHourly } from './inngest/maintenance';
 
 /** Resolves a Supabase access token to a user id (+ JWT `session_id`, D-124), or null if invalid. A bare id = no session (tests). */
 export type VerifyToken = (token: string) => Promise<string | { userId: string; sessionId: string | null } | null>;
@@ -90,7 +92,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   });
 
   app.get('/health', (c) => c.json({ ok: true }));
-  const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard] });
+  const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard, maintenanceHourly, maintenanceDaily] });
   app.on(['GET', 'POST', 'PUT'], '/api/inngest', (c) => inngestHandler(c));
   // Lane routes mount under /v1 with requireUser (F02 uploads, F05 ai, F08 stripe webhook is public + signature).
   app.get('/v1/me', requireUser, (c) => c.json({ ok: true, data: { userId: c.get('userId') } }));
@@ -107,6 +109,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 
   app.use('/v1/cards', requireUser).use('/v1/cards/*', requireUser).route('/v1/cards', cardsRoutes);
+  app.use('/v1/onboarding', requireUser).use('/v1/onboarding/*', requireUser).route('/v1/onboarding', onboardingRoutes); // F12
   app.use('/v1/home', requireUser).route('/v1/home', homeRoutes);
   app.use('/v1/matrix/*', requireUser).route('/v1/matrix', matrixRoutes);
   app.use('/v1/coverage', requireUser).route('/v1/coverage', coverageRoutes);

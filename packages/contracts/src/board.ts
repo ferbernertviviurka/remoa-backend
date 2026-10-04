@@ -35,6 +35,8 @@ export const boardSchema = z.object({
   title: z.string().min(1),
   area: z.enum(areas),
   matrixItemId: idSchema.nullable(),
+  /** F17 FR-21 (D-532): every matrix link of the map (`board_matrix_items`, oldest first). Filled by GET/PATCH /v1/boards/:id; absent elsewhere. */
+  matrixItemIds: z.array(idSchema).optional(),
   status: z.enum(boardStatuses),
   version: z.number().int().positive(),
   temporalMark: z.string().nullable(),
@@ -64,23 +66,26 @@ export const createBoardInputSchema = z
     area: z.enum(areas).default('CM'),
     /** F17 FR-17: matrix items (→ `board_matrix_items`; the first also → boards.matrix_item_id). */
     matrixItemIds: matrixItemIdsSchema.default([]),
-    /** @deprecated G01 single item; read through `boardMatrixItemIds(input)`. */
-    matrixItemId: idSchema.nullable().optional(),
     access: boardAccessSchema.default('owner'),
     password: sharePasswordSchema.optional(),
   })
   .superRefine(refineSharePassword({ requirePassword: true }));
 export type CreateBoardInput = z.input<typeof createBoardInputSchema>;
-/** Effective item list: `matrixItemIds` when non-empty, else the deprecated `matrixItemId`. */
-export const boardMatrixItemIds = (input: { matrixItemIds?: string[]; matrixItemId?: string | null }): string[] =>
-  input.matrixItemIds?.length ? input.matrixItemIds : input.matrixItemId ? [input.matrixItemId] : [];
+/**
+ * POST /v1/ai/generate-pdf (D-532): multipart/form-data with `file` (the PDF) and `board` (JSON of this schema), so the
+ * generated map is born with area, items and access like an import. Same shape as createBoard.
+ */
+export const generatePdfBoardInputSchema = createBoardInputSchema;
 /** F17 FR-11 "mapa com o mesmo nome": trim, case and accents ignored. */
 export const normalizeBoardTitle = (title: string) => title.normalize('NFD').replace(/\p{M}/gu, '').trim().toLowerCase();
-/** PATCH /v1/boards/:id — rename and/or archive (`archived: false` restores). */
+/**
+ * PATCH /v1/boards/:id — rename, archive (`archived: false` restores) and/or change the area (F17 FR-21, D-532: links to
+ * matrix items of another area are removed in the same transaction).
+ */
 export const updateBoardInputSchema = z
-  .object({ title: boardTitleSchema, archived: z.boolean() })
+  .object({ title: boardTitleSchema, archived: z.boolean(), area: z.enum(areas) })
   .partial()
-  .refine((v) => v.title !== undefined || v.archived !== undefined, 'nothing to update');
+  .refine((v) => v.title !== undefined || v.archived !== undefined || v.area !== undefined, 'nothing to update');
 export type UpdateBoardInput = z.infer<typeof updateBoardInputSchema>;
 
 /** Row in "Meus mapas" / sidebar. */
@@ -91,6 +96,8 @@ export const boardSummarySchema = boardSchema
     edgeCount: z.number().int().nonnegative(),
     /** G01 v2: item da matriz do mapa (D-081). */
     matrixItemId: idSchema.nullable().default(null),
+    /** F17 FR-21 (D-532): every matrix link of the map; the API always sends it. */
+    matrixItemIds: z.array(idSchema).optional(),
     /** F17 FR-19: badge on the card when ≠ owner. */
     access: boardAccessSchema.default('owner'),
     dueCount: z.number().int().nonnegative().default(0), // F03 FR-8: sidebar badge, items due today

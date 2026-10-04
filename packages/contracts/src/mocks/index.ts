@@ -1,7 +1,7 @@
 // In-memory implementations of every signature in ../api. State is module-level; call resetMocks() between tests.
 import { err, ok, parseWith } from '../errors';
 import type { Board, Edge } from '../board';
-import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, boardMatrixItemIds, createBoardInputSchema, mapOpSchema, normalizeBoardTitle } from '../board';
+import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, createBoardInputSchema, mapOpSchema, normalizeBoardTitle } from '../board';
 import { SHARE_LIMITS, sharedBoardSchema, updateShareInputSchema, type ShareState } from '../share';
 import { cardDetailSchema, cardSchema, saveCardInputSchema, type Card, type CardDetail } from '../card';
 import { challengeItemPublicSchema, type ChallengeItem } from '../challenge';
@@ -9,7 +9,8 @@ import type { Grade } from '../enums';
 import { PLAN_LIMITS, type Entitlements } from '../billing';
 import type { ReviewItem } from '../editorial';
 import { startImportInputSchema, type ApkgSummary, type ImportReport } from '../import';
-import { onboardingAnswersSchema, waitlistEntrySchema } from '../onboarding';
+import { ACTIVATION_TARGETS, activationItems, onboardingAnswersPatchSchema, waitlistEntrySchema, type OnboardingState } from '../onboarding';
+import { cardStudyActionSchema } from '../review';
 import type * as Api from '../api';
 import { FIXTURE_NOW, MOCK_APP_URL, fid, mockShareToken, retrievabilityFixture, reviewQueueFixture, sepseBoard, sepseCards, sepseEdges } from './fixtures';
 import * as review from './review';
@@ -37,6 +38,7 @@ let reviewItems: ReviewItem[] = [];
 type ShareRow = { token: string | null; password: string | null; version: number; copies: number };
 let shares = new Map<string, ShareRow>();
 let unlockFails = new Map<string, number>();
+let onboarding: Pick<OnboardingState, 'doneAt' | 'answers'> = { doneAt: null, answers: {} };
 let seq = 0;
 const nextId = () => fid(10_000 + seq++);
 
@@ -46,6 +48,7 @@ export function resetMocks() {
   edges = clone(sepseEdges);
   seenOps = new Set();
   sessions = new Map();
+  onboarding = { doneAt: null, answers: {} };
   usage = { ai_grades: 0, ai_generations: 0, boards: 0, cards: 0 };
   reviewItems = [
     {
@@ -135,7 +138,7 @@ export const createBoard: Api.CreateBoard = async (userId, raw) => {
     userId,
     title,
     area,
-    matrixItemId: boardMatrixItemIds(parsed.data)[0] ?? null,
+    matrixItemId: parsed.data.matrixItemIds[0] ?? null,
     access,
     shareUrl: share?.url ?? null,
     status: 'private',
@@ -537,7 +540,7 @@ export const copySharedBoard: Api.CopySharedBoard = async (userId, { token }, { 
   if (b.userId === userId) return duplicateBoard(userId, b.id, `${b.title} (cópia)`);
   const q = await assertQuota(userId, 'boards');
   if (!q.ok) return q;
-  const created = await createBoard(userId, { title: b.title, area: b.area, matrixItemId: b.matrixItemId });
+  const created = await createBoard(userId, { title: b.title, area: b.area, matrixItemIds: b.matrixItemId ? [b.matrixItemId] : [] });
   if (!created.ok) return created;
   const copy = findBoard(created.data.id)!;
   copy.sourceBoardId = b.id;
@@ -609,7 +612,7 @@ export const getHomeSummary: Api.GetHomeSummary = async (_userId, now) => {
 const FREE_LIMITS: Entitlements['limits'] = PLAN_LIMITS.free.limits;
 
 export const getEntitlements: Api.GetEntitlements = async () =>
-  ok({ plan: 'free', status: null, ...PLAN_LIMITS.free, limits: FREE_LIMITS, usage: { ...usage }, renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null });
+  ok({ plan: 'free', status: null, ...PLAN_LIMITS.free, limits: FREE_LIMITS, usage: { ...usage }, renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null, referralPending: false });
 
 export const assertQuota: Api.AssertQuota = async (_userId, key) => {
   const limit = FREE_LIMITS[key];
@@ -698,9 +701,35 @@ export const joinWaitlist: Api.JoinWaitlist = async (entry) => {
   const parsed = parseWith(waitlistEntrySchema, entry);
   return parsed.ok ? ok(null) : parsed;
 };
+/** Checklist counts come from the in-memory map (Sepse board: 6 cards), sessions = mock sessions started. */
+const onboardingState = (): OnboardingState => {
+  const live = cards.filter((c) => c.type !== 'note').length;
+  const current = { cards: live, edges: edges.length, sessions: sessions.size };
+  return {
+    ...clone(onboarding),
+    checklist: activationItems.map((id) => ({ id, current: current[id], target: ACTIVATION_TARGETS[id], done: current[id] >= ACTIVATION_TARGETS[id] })),
+  };
+};
+export const getOnboarding: Api.GetOnboarding = async () => ok(onboardingState());
 export const saveOnboarding: Api.SaveOnboarding = async (_userId, answers) => {
-  const parsed = parseWith(onboardingAnswersSchema, answers);
-  return parsed.ok ? ok(null) : parsed;
+  const parsed = parseWith(onboardingAnswersPatchSchema, answers);
+  if (!parsed.ok) return parsed;
+  onboarding.answers = { ...onboarding.answers, ...parsed.data };
+  return ok(onboardingState());
+};
+export const completeOnboarding: Api.CompleteOnboarding = async () => {
+  onboarding.doneAt ??= FIXTURE_NOW;
+  return ok(onboardingState());
+};
+
+// --- F03 FR-9 suspend / reset -----------------------------------------------------
+export const setCardStudy: Api.SetCardStudy = async (_userId, cardId, action) => {
+  const a = parseWith(cardStudyActionSchema, action);
+  if (!a.ok) return a;
+  const card = cards.find((c) => c.id === cardId);
+  if (!card) return err('not_found', 'card not found');
+  if (a.data !== 'reset') card.suspendedAt = a.data === 'suspend' ? (card.suspendedAt ?? FIXTURE_NOW) : null;
+  return ok({ cardId, suspendedAt: card.suspendedAt ?? null });
 };
 
 export const mocks = {
@@ -763,6 +792,9 @@ export const mocks = {
   getProgress,
   joinWaitlist,
   saveOnboarding,
+  getOnboarding,
+  completeOnboarding,
+  setCardStudy,
 } satisfies {
   listBoards: Api.ListBoards;
   getBoard: Api.GetBoard;
@@ -823,5 +855,8 @@ export const mocks = {
   getProgress: Api.GetProgress;
   joinWaitlist: Api.JoinWaitlist;
   saveOnboarding: Api.SaveOnboarding;
+  getOnboarding: Api.GetOnboarding;
+  completeOnboarding: Api.CompleteOnboarding;
+  setCardStudy: Api.SetCardStudy;
 };
 

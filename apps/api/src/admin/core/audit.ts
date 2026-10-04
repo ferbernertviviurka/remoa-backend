@@ -7,6 +7,7 @@ import type { AdminUserRef, AuditEntry, AuditListQuery, AuditPage } from '@remoa
 import { auditListQuerySchema } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { dbm } from '../../db';
+import { clientIp } from '../../client-ip';
 
 type Row = typeof import('@remoa/db').adminAuditLog.$inferInsert;
 type Meta = Pick<Row, 'ipHash' | 'userAgent' | 'requestId'>;
@@ -16,10 +17,10 @@ export function ipHash(ip: string | undefined, salt = process.env.AUDIT_IP_SALT)
   return ip && salt ? createHash('sha256').update(ip + salt).digest('hex') : null;
 }
 
-/** x-forwarded-for is client-controlled unless the proxy overwrites it: an audit hint, never authorization. */
-export function auditMeta(c: Pick<Context, 'req' | 'get'>): Meta {
-  const ip = (c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip'))?.split(',')[0]?.trim();
-  return { ipHash: ipHash(ip), userAgent: c.req.header('user-agent')?.slice(0, 300) ?? null, requestId: (c.get('requestId') as string | undefined) ?? null };
+/** The IP comes from clientIp (D-537): forwarded headers only through a trusted hop. */
+export function auditMeta(c: Pick<Context, 'req' | 'get' | 'env'>): Meta {
+  const ip = clientIp(c);
+  return { ipHash: ipHash(ip === 'unknown' ? undefined : ip), userAgent: c.req.header('user-agent')?.slice(0, 300) ?? null, requestId: (c.get('requestId') as string | undefined) ?? null };
 }
 
 export function toEntry(r: typeof import('@remoa/db').adminAuditLog.$inferSelect, actor: AdminUserRef | null, targetLabel: string | null = null): AuditEntry {

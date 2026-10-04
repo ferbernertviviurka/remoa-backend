@@ -65,7 +65,7 @@ export const eventSchemas = {
   coverage_viewed: none,
   board_linked_to_matrix: z.object({ count, suggestedCount: count }).strict(),
   // F17 sharing (never title, token, password, IP or owner id)
-  board_access_changed: z.object({ from: z.enum(boardAccess), to: z.enum(boardAccess), source: z.enum(['create', 'editor']) }).strict(),
+  board_access_changed: z.object({ from: z.enum(boardAccess), to: z.enum(boardAccess), source: z.enum(['create', 'editor', 'properties']) }).strict(),
   board_share_rotated: none,
   board_share_password_changed: none,
   shared_board_viewed: z.object({ access: z.enum(['password', 'public']), cards: count }).strict(),
@@ -93,7 +93,7 @@ export const eventSchemas = {
   // F12
   waitlist_joined: z.object({ variant: z.string().regex(/^\d+$/).nullable(), segment: z.enum(segments) }).strict(),
   onboarding_step: z.object({ step: z.number().int().min(1).max(4) }).strict(),
-  onboarding_completed: z.object({ path: z.enum([...startPaths, 'skipped']) }).strict(),
+  onboarding_completed: z.object({ path: z.enum([...startPaths, 'blank', 'skipped']) }).strict(),
   demo_started: none,
   // F13 (no name, e-mail or free text)
   account_viewed: z.object({ section: z.enum(accountSections) }).strict(),

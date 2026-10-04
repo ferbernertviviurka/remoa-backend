@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { areas } from './enums';
+import { timestampSchema } from './common';
 
 /** Year / situation. Append-only (rows stored); UI order lives in the frontend. */
 export const segments = ['y3_4', 'y5_6', 'graduated', 'y1_2', 'cursinho', 'resident', 'working'] as const;
@@ -33,3 +34,30 @@ export const waitlistEntrySchema = z.object({
   origin: z.string().max(200).nullable(),
 });
 export type WaitlistEntry = z.infer<typeof waitlistEntrySchema>;
+
+// --- F12 onboarding + activation checklist (CCR-015, D-492/D-493) -------------------------------------------
+/** POST /v1/onboarding/answers: every step is skippable, so any subset; merged into profiles.onboarding_answers. */
+export const onboardingAnswersPatchSchema = onboardingAnswersSchema.partial().refine((a) => Object.keys(a).length > 0, 'empty answers');
+export type OnboardingAnswersPatch = z.infer<typeof onboardingAnswersPatchSchema>;
+
+/**
+ * FR-9 checklist, counted by the server over the user's live boards: non-note live cards, edges, ended sessions (any kind).
+ * "Instalar no celular" is not here: only the browser knows (display-mode standalone); the web adds it locally.
+ */
+export const ACTIVATION_TARGETS = { cards: 20, edges: 5, sessions: 1 } as const;
+export const activationItems = ['cards', 'edges', 'sessions'] as const;
+export const activationItemSchema = z.object({
+  id: z.enum(activationItems),
+  current: z.number().int().nonnegative(),
+  target: z.number().int().positive(),
+  done: z.boolean(),
+});
+export type ActivationItem = z.infer<typeof activationItemSchema>;
+
+/** GET /v1/onboarding, and the answer of both POSTs. `doneAt` null = show the onboarding (redirect after sign-up). */
+export const onboardingStateSchema = z.object({
+  doneAt: timestampSchema.nullable(),
+  answers: onboardingAnswersSchema.partial(),
+  checklist: z.array(activationItemSchema),
+});
+export type OnboardingState = z.infer<typeof onboardingStateSchema>;

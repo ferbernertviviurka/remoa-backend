@@ -3,7 +3,9 @@ import { createHmac } from 'node:crypto';
 import { and, count, eq, gte } from 'drizzle-orm';
 import type { AccountEventType } from '@remoa/contracts';
 import type { Db, Tx } from '@remoa/db';
+import type { Context } from 'hono';
 import { dbm } from '../db';
+import { clientIp } from '../client-ip';
 
 /** No personal data: a keyed hash of the IP and a coarse user-agent ("Chrome no macOS"). */
 export type EventMeta = { ipHash?: string; ua?: string; [k: string]: string | number | boolean | null | undefined };
@@ -69,11 +71,12 @@ export function parseUserAgent(ua: string | null | undefined): { browser: string
 
 /**
  * Meta for an event from request headers. The IP is HMAC'd with AUDIT_HASH_SECRET and dropped when the secret is unset.
- * x-forwarded-for is client-controlled unless the proxy overwrites it: fine for an audit hint, never for authorization.
+ * The IP comes from clientIp (D-537): forwarded headers only through a trusted hop.
  */
-export function requestMeta(header: (name: string) => string | undefined): EventMeta {
-  const { browser, os } = parseUserAgent(header('user-agent'));
-  const ip = header('x-forwarded-for')?.split(',')[0]?.trim() || header('x-real-ip');
+export function requestMeta(c: Pick<Context, 'req' | 'env'>): EventMeta {
+  const { browser, os } = parseUserAgent(c.req.header('user-agent'));
+  const raw = clientIp(c);
+  const ip = raw === 'unknown' ? undefined : raw;
   const secret = process.env.AUDIT_HASH_SECRET;
   const meta: EventMeta = {};
   if (browser || os) meta.ua = [browser, os].filter(Boolean).join(' no ');
