@@ -19,8 +19,18 @@ export const profiles = pgTable('profiles', {
   timezone: text('timezone').notNull().default('America/Sao_Paulo'),
   onboardingDoneAt: timestamp('onboarding_done_at', { withTimezone: true }),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  /** F18: who referred this user (first touch, D-383). Server-owned (no column GRANT). */
+  referredBy: uuid('referred_by').references(() => authUsers.id, { onDelete: 'set null' }),
+  /** F19: set by the admin (withAdmin 'user.suspend'); blocks every /v1/* call. Server-owned (no column GRANT). */
+  suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  suspendedReason: text('suspended_reason'),
   ...timestamps,
-}, (t) => [check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`)]);
+}, (t) => [
+  check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`),
+  check('profiles_suspended', sql`(${t.suspendedAt} is null) = (${t.suspendedReason} is null)`),
+  // F19 admin search by name (ILIKE).
+  index('profiles_name_trgm_idx').using('gin', t.name.op('gin_trgm_ops')),
+]);
 
 export const matrixItems = pgTable('matrix_items', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -58,6 +68,9 @@ export const boards = pgTable('boards', {
   ...timestamps,
 }, (t) => [
   index('boards_user_idx').on(t.userId),
+  // F19 admin: search by title (ILIKE) and newest first.
+  index('boards_title_trgm_idx').using('gin', t.title.op('gin_trgm_ops')),
+  index('boards_created_idx').on(t.createdAt.desc()),
   check('boards_share_token_chk', sql`(${t.access} = 'owner') = (${t.shareToken} is null)`),
   check('boards_share_password_chk', sql`(${t.access} = 'password') = (${t.sharePasswordHash} is not null)`),
   // only student boards are shared; seeds are readable by everyone, so a token there would leak

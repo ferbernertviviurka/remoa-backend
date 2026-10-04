@@ -77,6 +77,7 @@ export async function getAccount(userId: string, auth: AuthData, now = new Date(
     deletionScheduledFor: row?.deletedAt ? new Date(row.deletedAt.getTime() + RETENTION.deletionGraceDays * DAY) : null,
     passwordChangedAt: await passwordChangedAt(userId),
     avatarUrls: profile.avatarKey ? await signAvatarUrls(profile.avatarKey) : null,
+    isAdmin: row?.role === 'admin' && !row.deletedAt && !row.suspendedAt, // same gate as requireAdmin (minus e-mail)
   };
 }
 

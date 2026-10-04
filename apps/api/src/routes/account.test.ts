@@ -48,6 +48,8 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/account (export, delete) + maint
     const b = await newUser();
     const mine = await seedData(a);
     await seedData(b);
+    const [t] = await dbm.db.insert(dbm.supportTickets).values({ userId: a, type: 'bug', subject: 'Erro no mapa' }).returning();
+    await dbm.db.insert(dbm.supportMessages).values([{ ticketId: t!.id, authorType: 'user', authorId: a, body: 'oi' }, { ticketId: t!.id, authorType: 'admin', body: 'nota interna', internal: true }]);
     const r = await call(a, 'POST', '/account/export');
     expect(r.status).toBe(200);
     expect(r.res.headers.get('content-disposition')).toMatch(/^attachment; filename="remoa-export-\d{4}-\d{2}-\d{2}\.json"$/);
@@ -57,6 +59,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/account (export, delete) + maint
     expect(data.cards).toHaveLength(2);
     expect(data.edges).toHaveLength(1);
     expect(data.attempts.map((x) => x.id)).toEqual([mine.att.id]);
+    expect(data.tickets.map((x) => [x.id, x.messages.map((m) => m.body)])).toEqual([[t!.id, ['oi']]]); // F19 FR-9: no internal notes, no assignee
     expect((await app.request('/v1/account/export', { method: 'POST' })).status).toBe(401);
     expect((await app.request('/v1/account', { method: 'DELETE' })).status).toBe(401);
   });

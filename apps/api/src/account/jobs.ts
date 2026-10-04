@@ -26,7 +26,7 @@ export async function purgeDeletedAccounts(now: Date, stripe?: StripePort) {
       }
     }
     // Storage first and best effort: a failure must not block the legal deletion, but is logged for follow-up.
-    for (const prefix of [`uploads/${id}/`, `assets/${id}/`, `avatars/${id}/`]) {
+    for (const prefix of [`uploads/${id}/`, `assets/${id}/`, `avatars/${id}/`, `support/${id}/`]) {
       await deletePrefix(prefix).catch((e) => log.error('storage purge failed', { userId: id, prefix, error: String(e) }));
     }
     // One failing user (e.g. an FK without cascade) must not stop the others' legal deletion.

@@ -370,7 +370,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
       await dbm.db.insert(dbm.cards).values(rows);
       await dbm.db.insert(dbm.edges).values([
         { boardId: board, fromCardId: rows[0]!.id, toCardId: rows[1]!.id },
-        { boardId: board, fromCardId: rows[0]!.id, toCardId: rows[65]!.id },
+        { boardId: board, fromCardId: rows[0]!.id, toCardId: rows[6]!.id }, // D-334: 70 -> 60 sampled evenly; index 6 is one of the skipped ones
       ]);
       const b = await listed(u, board);
       expect(b.preview.nodes).toHaveLength(60);
@@ -427,7 +427,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
       }
       expect(Object.keys((await call(u, `/review/retrievability?boardId=${board}`)).json.data)).toEqual([concept]);
       const listed = ((await call(u, '/boards')).json.data as { id: string; dueCount: number; stateCounts: Record<string, number>; preview: { nodes: unknown[] } }[]).find((b) => b.id === board)!;
-      expect([listed.dueCount, Object.values(listed.stateCounts).reduce((a, b) => a + b, 0), listed.preview.nodes.length]).toEqual([1, 1, 1]);
+      expect([listed.dueCount, Object.values(listed.stateCounts).reduce((a, b) => a + b, 0), listed.preview.nodes.length]).toEqual([1, 1, 2]); // the note is only in the thumbnail (D-334)
       const r = await ra.recordAttempt(attempt(u, note));
       expect(r.ok).toBe(false);
       expect(!r.ok && r.error.code).toBe('validation');

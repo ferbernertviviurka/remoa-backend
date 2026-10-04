@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createApp, supabaseVerifier } from './app';
 import { ensureBucket } from './storage/storage';
 import { createLogger } from '@remoa/log';
-import { createMockStripe, createStripe } from './billing/stripe';
+import { createMockStripe, createStripe, installStripe } from './billing/stripe';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
 
 const env = (k: string) => {
@@ -24,6 +24,7 @@ const grade = process.env.GRADER === 'mock' ? mockGrader : undefined;
 const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
 const mockStripe = process.env.STRIPE === 'mock' ? createMockStripe({ apiOrigin: `http://localhost:${process.env.PORT ?? 4000}` }) : undefined;
 const stripe = mockStripe?.port ?? (process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin }) : undefined);
+installStripe(stripe); // F18: grants/credits run from referral code and the webhook, not only routes
 const app = createApp({
   grade,
   stripe,

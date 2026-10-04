@@ -120,6 +120,13 @@ describe('events', () => {
     expect(eventSchemas.answer_submitted.safeParse({ mode: 'hidden_card', inputKind: 'text', verdict: 'correct', latencyMs: 10, answerText: 'x' }).success).toBe(false);
     expect(eventSchemas.grade_overridden.safeParse({ text: 'x' }).success).toBe(false);
   });
+  it('landing_cta_clicked: location + cta only, no extras', () => {
+    const s = eventSchemas.landing_cta_clicked;
+    expect(s.safeParse({ location: 'plans_pro', cta: 'waitlist' }).success).toBe(true);
+    expect(s.safeParse({ location: 'plans_founder', cta: 'create' }).success).toBe(true);
+    expect(s.safeParse({ location: 'hero', cta: 'create' }).success).toBe(false);
+    expect(s.safeParse({ location: 'final', cta: 'create', email: 'a@b.c' }).success).toBe(false);
+  });
   it('track() is typed per event', () => {
     const calls: unknown[] = [];
     const track: Track = (e, p) => calls.push([e, p]);

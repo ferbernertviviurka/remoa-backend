@@ -13,6 +13,8 @@ import { limitFor, overTotal } from '../billing/quota';
 import { planOf } from '../billing/plan';
 import { dbm, run } from '../db';
 import { initialShareColumns } from '../share/crypto';
+import { layoutImport } from './layout';
+import { maybeQualifyReferral } from '../referral/qualify';
 
 /** What T1's `@remoa/anki` produces for the job (`media[0]` = front image file name; image drafts carry `payload.media` + normalized masks). */
 export type AnkiDraft = CardDraft & { deckId: string; deckName: string; media: string[]; backMedia?: string | null; tags?: string[]; empty: boolean };
@@ -33,15 +35,18 @@ export const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 const PIXEL_LIMIT = 50e6;
 const BATCH = 200;
 const STALLED_MS = 10 * 60_000;
-const COL_W = 300;
-const COL_ROWS = 20; // FR-6: a sub deck wraps into a new column every 20 cards
+const MERGE_GAP = 400; // importing into a board that already has cards: the new map starts this far right of the last one
 const GENERIC_ERROR = 'A importação falhou. Tente de novo mais tarde.';
 const MAX_PARSING = 2;
 // ponytail: in-process semaphore until the Inngest worker (P-058)
 let parsing = 0;
 /** The parser message is meant for the student; anything else is logged, never shown. */
 class ParserError extends Error {}
-const ROW_H = 260;
+/** Default on-canvas size per card type (@remoa/ui nodeSize); a question image adds 90 px of height. The layout only needs it to avoid overlaps. */
+const SIZE = { concept: [232, 150], case: [280, 216], flow: [248, 282], image: [248, 206] } as const;
+const sizeOf = (d: AnkiDraft) => { const [w, h] = SIZE[d.type as keyof typeof SIZE] ?? SIZE.concept; return { w, h: h + (d.type !== 'image' && d.media[0] ? 90 : 0) }; };
+/** Deck hubs in the quota check: every selected deck plus its ancestors (D-335: hubs are real cards and count). */
+const hubCount = (names: string[]) => new Set(names.flatMap((n) => n.split('::').map((_, i, a) => a.slice(0, i + 1).join('::')))).size;
 const IMAGE_FORMATS = ['jpeg', 'png', 'webp', 'svg'];
 
 const plain = (s: string | null) =>
@@ -140,7 +145,8 @@ export function createImports({ anki }: { anki: AnkiPort }) {
     if (busy.length) return err('conflict', 'Já existe uma importação em andamento. Espere terminar e tente de novo.');
     const { db } = await dbm();
     if (plan.estimatedCards > PLAN_LIMITS[(await planOf(userId)).plan].ankiImportMaxCards) return err('quota_exceeded', 'cards');
-    if (await overTotal(db, userId, 'cards', await limitFor(userId, 'cards'), plan.estimatedCards)) return err('quota_exceeded', 'cards');
+    const hubs = hubCount(summary.data.decks.filter((d) => plan.deckIds.includes(d.id)).map((d) => d.name));
+    if (await overTotal(db, userId, 'cards', await limitFor(userId, 'cards'), plan.estimatedCards + hubs)) return err('quota_exceeded', 'cards');
 
     // F17: board-level quota and pre-validation (fail fast before creating the import record).
     if (boardInput) {
@@ -282,13 +288,10 @@ export function createImports({ anki }: { anki: AnkiPort }) {
           tx.select({ title: s.cards.title, front: s.cards.front, back: s.cards.back, payload: s.cards.payload, x: s.cards.x, order: s.cards.order })
             .from(s.cards).where(and(eq(s.cards.boardId, board), isNull(s.cards.deletedAt))));
         const seen = new Set(cur.map((c) => (c.payload as { importKey?: string } | null)?.importKey ?? dedupeHash(c)));
-        let order = cur.reduce((m, c) => Math.max(m, c.order + 1), 0);
-        const x0 = cur.length ? cur.reduce((m, c) => Math.max(m, c.x), 0) + COL_W : 0;
-        // drafts arrive sorted by sub deck: colBase = first column of the current sub deck
-        let curDeck: string | null = null, rowInDeck = 0, colBase = 0;
+        // phase 1: dedupe + assets -> pending cards (no position yet)
+        type Pending = { row: typeof import('@remoa/db').cards.$inferInsert; masks: (typeof import('@remoa/db').masks.$inferInsert)[]; deck: string; w: number; h: number };
+        const pending: Pending[] = [];
         for (let i = 0; i < list.length; i += BATCH) {
-          const cardRows: (typeof import('@remoa/db').cards.$inferInsert)[] = [];
-          const maskRows: (typeof import('@remoa/db').masks.$inferInsert)[] = [];
           for (const d of list.slice(i, i + BATCH)) {
             if (d.empty) { rep.skippedEmpty++; continue; }
             const h = d.type === 'image' ? imageKey(d.payload.media, d.payload.masks) : dedupeHash(d);
@@ -297,12 +300,13 @@ export function createImports({ anki }: { anki: AnkiPort }) {
             let frontAssetId: string | null = null;
             let backAssetId: string | null = null;
             let payload: unknown = d.payload;
+            let masks: Pending['masks'] = [];
             if (d.type === 'image') {
               const assetId = await assetFor(d.payload.media);
               if (!assetId) { rep.missingMedia++; continue; } // an image card without its image is useless
-              const masks = d.payload.masks.filter((m) => m.polygon.length >= 3).map((m, k) => ({ id: crypto.randomUUID(), polygon: m.polygon, label: m.label?.trim() || String(k + 1) }));
-              payload = { assetId, masks, importKey: h };
-              maskRows.push(...masks.map((m) => ({ cardId: id, assetId, polygon: m.polygon, label: m.label })));
+              const ms = d.payload.masks.filter((m) => m.polygon.length >= 3).map((m, k) => ({ id: crypto.randomUUID(), polygon: m.polygon, label: m.label?.trim() || String(k + 1) }));
+              payload = { assetId, masks: ms, importKey: h };
+              masks = ms.map((m) => ({ cardId: id, assetId, polygon: m.polygon, label: m.label }));
             } else if (d.media[0]) {
               frontAssetId = await assetFor(d.media[0]);
               if (!frontAssetId) rep.missingMedia++; // card kept without its image
@@ -311,35 +315,44 @@ export function createImports({ anki }: { anki: AnkiPort }) {
               backAssetId = await assetFor(d.backMedia);
               if (!backAssetId) rep.missingMedia++;
             }
-            if (d.deckName !== curDeck) {
-              if (curDeck !== null) colBase += Math.ceil(rowInDeck / COL_ROWS);
-              curDeck = d.deckName;
-              rowInDeck = 0;
-            }
-            const n = rowInDeck++;
             seen.add(h); // only once the card will really be inserted (a failed image must not shadow a later identical card)
-            cardRows.push({
-              id, boardId: board, type: d.type, title: d.title, front: d.front, back: d.back, source: d.source, frontAssetId, backAssetId,
-              tags: cleanTags(d.tags),
-              payload, x: x0 + (colBase + Math.floor(n / COL_ROWS)) * COL_W, y: (n % COL_ROWS) * ROW_H, order: order++,
+            pending.push({
+              row: { id, boardId: board, type: d.type, title: d.title, front: d.front, back: d.back, source: d.source, frontAssetId, backAssetId, tags: cleanTags(d.tags), payload },
+              masks, deck: d.deckName, ...sizeOf(d),
             });
-          }
-          if (cardRows.length) {
-            await run(userId, async (tx, s) => {
-              await tx.insert(s.cards).values(cardRows);
-              if (maskRows.length) await tx.insert(s.masks).values(maskRows);
-            });
-            rep.imported += cardRows.length;
           }
           processed += Math.min(BATCH, list.length - i);
           await setStats(userId, importId, { processed, total });
         }
+        if (!pending.length) continue;
+
+        // phase 2 (D-332): one hub per deck + radial layout, then insert hubs and cards in batches
+        const lay = layoutImport(pending.map((p) => ({ id: p.row.id!, deck: p.deck, w: p.w, h: p.h })));
+        const x0 = cur.length ? cur.reduce((m, c) => Math.max(m, c.x), 0) + MERGE_GAP : 0;
+        let order = cur.reduce((m, c) => Math.max(m, c.order + 1), 0);
+        const hubRows = lay.hubs.map((h) => ({ id: h.id, boardId: board, type: 'note' as const, title: h.title, source: 'Anki', payload: {}, x: x0 + h.x, y: h.y, order: order++ }));
+        const rows = pending.map((p) => {
+          const pos = lay.positions.get(p.row.id!)!;
+          return { ...p, row: { ...p.row, x: x0 + pos.x, y: pos.y, order: order++ } };
+        });
+        await run(userId, async (tx, s) => {
+          await tx.insert(s.cards).values(hubRows);
+          for (let i = 0; i < rows.length; i += BATCH) {
+            const part = rows.slice(i, i + BATCH);
+            await tx.insert(s.cards).values(part.map((p) => p.row));
+            const ms = part.flatMap((p) => p.masks);
+            if (ms.length) await tx.insert(s.masks).values(ms);
+          }
+          for (let i = 0; i < lay.edges.length; i += 1000) await tx.insert(s.edges).values(lay.edges.slice(i, i + 1000).map((e) => ({ boardId: board, fromCardId: e.from, toCardId: e.to, label: null })));
+        });
+        rep.imported += rows.length;
       }
     } finally {
       pkg.close();
     }
     const report = { ...rep, durationMs: Date.now() - t0 };
     await setStats(userId, importId, { ...report, processed: total, total }, 'done');
+    if (rep.imported) await maybeQualifyReferral(userId); // F18 (D-384); never throws
     log.info('import done', report);
   }
 

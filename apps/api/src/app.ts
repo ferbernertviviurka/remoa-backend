@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createMiddleware } from 'hono/factory';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { errorHttpStatus, type AppError, type GradeAnswer, type HttpErrorBody } from '@remoa/contracts';
+import { adminErrors, errorHttpStatus, type AppError, type GradeAnswer, type HttpErrorBody } from '@remoa/contracts';
 import { accountRoutes } from './routes/account';
 import { accountSecurityRoutes } from './routes/account-security';
 import { accountProfileRoutes } from './routes/account-profile';
 import { publicRoutes } from './routes/public';
 import { accountAvatarRoutes } from './routes/account-avatar';
-import { isAccountDeleted } from './account/account';
+import { accountState } from './admin/core';
+import { adminRoutes } from './routes/admin';
 import { billingRoutes } from './routes/billing';
 import { stripeRoutes } from './routes/stripe';
 import type { createMockStripe, StripePort } from './billing/stripe';
@@ -21,7 +22,9 @@ import { importsRoutes } from './routes/imports';
 import { createImports, type AnkiPort } from './imports/imports';
 import { ankiPort } from './imports/anki';
 import { matrixRoutes } from './routes/matrix';
+import { publicReferralRoutes, referralRoutes } from './routes/referral';
 import { reviewRoutes } from './routes/review';
+import { supportRoutes } from './routes/support';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
 
@@ -59,7 +62,7 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, a
     const start = Date.now();
     await next();
     // F17: the share token is a credential; it never reaches the logs
-    log.info('request', { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/shared\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start });
+    log.info('request', { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/(?:shared|referral)\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start });
   });
   app.use('/v1/*', cors({ origin: webOrigin, credentials: true }));
 
@@ -68,8 +71,12 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, a
     const v = token ? await verifyToken(token) : null;
     const { userId, sessionId } = typeof v === 'string' ? { userId: v, sessionId: null } : (v ?? { userId: null, sessionId: null });
     if (!userId) return fail({ code: 'unauthorized', message: 'invalid or missing token' });
-    if (process.env.DATABASE_URL && !DURING_DELETION.has(`${c.req.method} ${c.req.path}`) && (await isAccountDeleted(userId)))
-      return fail({ code: 'forbidden', message: 'account_deleted' }); // F08 FR-7 soft delete; D-123 exceptions
+    if (process.env.DATABASE_URL) {
+      const s = await accountState(userId); // one primary-key lookup: deletion (F08) + suspension (F19)
+      const route = `${c.req.method} ${c.req.path}`;
+      if (s?.deletedAt && !DURING_DELETION.has(route)) return fail({ code: 'forbidden', message: 'account_deleted' }); // F08 FR-7 soft delete; D-123 exceptions
+      if (s?.suspendedAt && route !== 'GET /v1/account/me') return fail({ code: 'forbidden', message: adminErrors.suspended }); // F19 D-430
+    }
     c.set('userId', userId);
     c.set('sessionId', sessionId);
     await next();
@@ -86,6 +93,7 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, a
     const v = token ? await verifyToken(token).catch(() => null) : null;
     return typeof v === 'string' ? v : (v?.userId ?? null);
   };
+  app.route('/v1/public/referral', publicReferralRoutes); // F18: no auth, rate limited per IP
   app.route('/v1/public', publicRoutes({ stripe, viewer })); // F13 unsubscribe: no auth, signed token; F17 shared links: optional session
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 
@@ -99,8 +107,11 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, a
   app.use('/v1/imports/*', requireUser).route('/v1/imports', importsRoutes(createImports({ anki: anki ?? ankiPort }))); // F06 Anki import
   app.use('/v1/assets', requireUser).use('/v1/assets/*', requireUser).route('/v1/assets', assetsRoutes);
 
+  app.use('/v1/support/*', requireUser).route('/v1/support', supportRoutes); // F19
+  app.use('/v1/referral/*', requireUser).route('/v1/referral', referralRoutes); // F18
   app.use('/v1/billing/*', requireUser).route('/v1/billing', billingRoutes({ stripe }));
   app.route('/v1/stripe', stripeRoutes({ stripe, mock: mockStripe, webOrigin })); // public: signature / unguessable mock session
+  app.route('/v1/admin', adminRoutes({ verifyToken })); // F19: requireAdmin inside (404 for non-admin, never 401/403)
 
   app.notFound(() => fail({ code: 'not_found', message: 'route not found' }));
   app.onError((e, c) => {

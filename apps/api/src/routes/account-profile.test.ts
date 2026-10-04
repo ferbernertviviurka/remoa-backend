@@ -67,7 +67,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     const free = await call(id, 'GET', '/account/me');
     expect(free.status).toBe(200);
     const s = accountSnapshotSchema.parse(free.json.data);
-    expect(s).toMatchObject({ email, emailConfirmed: true, pendingEmail: null, streakDays: null, deletionScheduledFor: null, avatarUrls: null });
+    expect(s).toMatchObject({ email, emailConfirmed: true, pendingEmail: null, streakDays: null, deletionScheduledFor: null, avatarUrls: null, isAdmin: false });
     expect(s.entitlements.plan).toBe('free');
     expect(s.preferences).toMatchObject({ theme: 'light', reminderEnabled: false, reminderHour: 19, newCardsPerDay: 10 });
     expect(s.identities.map((i) => i.provider)).toEqual(['email']);
@@ -78,6 +78,11 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     await call(pro.id, 'PATCH', '/account/preferences', { reminderEnabled: true });
     const p = (await call(pro.id, 'GET', '/account/me')).json.data;
     expect(p.entitlements.plan).toBe('pro');
+    await dbm.db.update(dbm.profiles).set({ role: 'admin' }).where(eq(dbm.profiles.userId, pro.id));
+    expect((await call(pro.id, 'GET', '/account/me')).json.data.isAdmin).toBe(true); // D-471: rail item, no /v1/admin/me call
+    await dbm.db.update(dbm.profiles).set({ suspendedAt: new Date(), suspendedReason: 'teste de suspensão' }).where(eq(dbm.profiles.userId, pro.id));
+    expect((await call(pro.id, 'GET', '/account/me')).json.data.isAdmin).toBe(false); // same gate as requireAdmin
+    await dbm.db.update(dbm.profiles).set({ role: 'student', suspendedAt: null, suspendedReason: null }).where(eq(dbm.profiles.userId, pro.id));
     expect(p.preferences.newCardsPerDay).toBe(20);
     expect(p.profile).toMatchObject({ name: 'Ana Souza', goal: 'enamed_2027_1', stage: 'y5_6' });
     expect(p.completeness.percent).toBe(80); // email + name + goal + reminder

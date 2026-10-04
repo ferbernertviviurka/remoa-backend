@@ -65,7 +65,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const progress = await finish(u, s.json.data.importId);
     return { importId: s.json.data.importId as string, progress, report: (await call(u, 'GET', `/${s.json.data.importId}/report`)).json.data };
   };
-  const liveCards = (boardId: string) => dbm.db.execute<{ title: string; front_asset_id: string | null; payload: any; x: number; y: number }>(sql`select title, front_asset_id, payload, x, y from cards where board_id = ${boardId} and deleted_at is null order by "order"`); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const liveCards = (boardId: string) => dbm.db.execute<{ title: string; front_asset_id: string | null; payload: any; x: number; y: number }>(sql`select title, front_asset_id, payload, x, y from cards where board_id = ${boardId} and deleted_at is null and type <> 'note' order by "order"`); // eslint-disable-line @typescript-eslint/no-explicit-any
 
   beforeAll(async () => {
     dbm = await import('@remoa/db');
@@ -112,11 +112,11 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const board = await dbm.db.execute<{ title: string; area: string }>(sql`select title, area from boards where id = ${first.report.boardIds[0]}`);
     expect(board[0]).toMatchObject({ title: 'Clínica Médica', area: 'CM' });
     const cards = await liveCards(first.report.boardIds[0]);
-    expect(cards.map((c) => [c.x, c.y])).toEqual([[0, 0], [300, 0]]); // one column per sub deck
+    expect(cards).toHaveLength(2); // notes only; the 3 hubs are type 'note' (D-332)
 
     const again = await runImport(u, key);
     expect(again.report).toMatchObject({ imported: 0, skippedDuplicate: 2, boardIds: first.report.boardIds });
-    expect(await liveCards(first.report.boardIds[0])).toHaveLength(2);
+    expect(await liveCards(first.report.boardIds[0])).toHaveLength(2); // no new hubs when nothing was imported
   });
 
   it('skips empty drafts and in-import duplicates; counts missing media and keeps the card', async () => {
@@ -148,7 +148,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const r = await runImport(u, await putPkg(u), plan(3));
     expect(r.report).toMatchObject({ imported: 3, missingMedia: 1 });
     const rows = await dbm.db.execute<{ title: string; back_asset_id: string | null; tags: string[] }>(
-      sql`select c.title, c.back_asset_id, c.tags from cards c join boards b on b.id = c.board_id where b.user_id = ${u} order by c.title`);
+      sql`select c.title, c.back_asset_id, c.tags from cards c join boards b on b.id = c.board_id where b.user_id = ${u} and c.type <> 'note' order by c.title`);
     expect(rows[0]!.back_asset_id).not.toBeNull();
     expect(rows[0]!.tags).toEqual(['a::b', 'x'.repeat(64)]);
     expect(rows[1]).toMatchObject({ back_asset_id: null });
@@ -285,18 +285,40 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     expect(rep.imported).toBeGreaterThan(0);
     const cards = await dbm.db.execute<{ type: string; n: number }>(sql`select c.type, count(*)::int as n from cards c join boards b on b.id = c.board_id where b.user_id = ${u} group by c.type`);
     expect(cards.find((c) => c.type === 'image')?.n).toBeGreaterThan(0);
-    expect(cards.reduce((n, c) => n + c.n, 0)).toBe(rep.imported);
+    expect(cards.filter((c) => c.type !== 'note').reduce((n, c) => n + c.n, 0)).toBe(rep.imported); // notes = deck hubs
+    const ed = await dbm.db.execute<{ n: number }>(sql`select count(*)::int as n from edges e join boards b on b.id = e.board_id where b.user_id = ${u}`);
+    expect(ed[0]!.n).toBeGreaterThanOrEqual(rep.imported);
     expect(await dbm.db.execute(sql`select 1 from masks m join assets a on a.id = m.asset_id where a.user_id = ${u}`)).not.toHaveLength(0);
   });
-  it('layout: a sub deck wraps into a column every 20 cards (45 -> 20/20/5), next sub deck starts after', async () => {
+  it('layout (D-332): one hub per deck + ancestors, hub -> note and parent -> sub deck edges, no note-to-note edge, no overlap', async () => {
     const u = await newUser();
-    drafts = [...Array.from({ length: 45 }, (_, i) => draft(i)), draft(100, { deckName: 'Clínica Médica::Choque' })];
-    const r = await runImport(u, await putPkg(u), plan(46));
-    const cards = await liveCards(r.report.boardIds[0]);
-    const byX = new Map<number, number>();
-    cards.forEach((c) => byX.set(c.x, (byX.get(c.x) ?? 0) + 1));
-    expect([...byX.entries()]).toEqual([[0, 20], [300, 20], [600, 5], [900, 1]]);
-    expect(Math.max(...cards.map((c) => c.y))).toBe(19 * 260);
+    drafts = [...Array.from({ length: 30 }, (_, i) => draft(i)), draft(100, { deckName: 'Clínica Médica::Choque' }), draft(101, { deckName: 'Clínica Médica::Choque' })];
+    const r = await runImport(u, await putPkg(u), plan(32));
+    const board = r.report.boardIds[0];
+    expect(r.report.imported).toBe(32);
+    const cards = await dbm.db.execute<{ id: string; type: string; title: string; x: number; y: number }>(sql`select id, type, title, x, y from cards where board_id = ${board} and deleted_at is null`);
+    const hubs = cards.filter((c) => c.type === 'note');
+    expect(hubs.map((h) => h.title).sort()).toEqual(['Choque', 'Clínica Médica', 'Sepse']);
+    const edges = await dbm.db.execute<{ from_card_id: string; to_card_id: string; label: string | null }>(sql`select from_card_id, to_card_id, label from edges where board_id = ${board}`);
+    const hubIds = new Set(hubs.map((h) => h.id));
+    expect(edges).toHaveLength(32 + 2); // every note + Clínica->Sepse + Clínica->Choque
+    expect(edges.every((e) => hubIds.has(e.from_card_id) && e.label === null)).toBe(true);
+    expect(new Set(edges.map((e) => e.to_card_id)).size).toBe(edges.length);
+    const box = (c: { type: string; x: number; y: number }) => ({ x: c.x, y: c.y, w: c.type === 'note' ? 248 : 232, h: c.type === 'note' ? 176 : 150 });
+    for (const [i, a] of cards.entries()) for (const b of cards.slice(i + 1)) {
+      const [p, q] = [box(a), box(b)];
+      expect(p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h, `${a.title} x ${b.title}`).toBe(false);
+    }
+    expect(cards.every((c) => c.x >= 0 && c.y >= 0)).toBe(true);
+  });
+
+  it('quota (D-335): hubs count against the Free cap of 50 cards', async () => {
+    const u = await newUser();
+    const b = await dbm.db.insert(dbm.boards).values({ userId: u, title: 'Outro' }).returning({ id: dbm.boards.id });
+    await dbm.db.insert(dbm.cards).values(Array.from({ length: 47 }, (_, i) => ({ boardId: b[0]!.id, title: `c${i}` })));
+    drafts = [draft(1), draft(2)];
+    const r = await call(u, 'POST', '/anki', { key: await putPkg(u), plan: plan(2) }); // 47 + 2 notes + 2 hubs (Clínica Médica, Sepse) = 51
+    expect(r.status).toBe(402);
   });
 
   it('a failed image does not shadow a later identical card; non-parser errors are stored generic', async () => {
@@ -349,7 +371,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const cards = await liveCards(report.boardIds[0]);
     expect(cards).toHaveLength(2);
     // two decks → two columns
-    expect([...new Set(cards.map((c) => c.x))]).toHaveLength(2);
+    expect(new Set(cards.map((c) => `${c.x},${c.y}`)).size).toBe(2);
   });
 
   it('F17: deck with 2 roots → 1 board with columns from both roots (not 2 boards)', async () => {
@@ -364,7 +386,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     expect(boards).toHaveLength(1); // only one board was created
     const cards = await liveCards(report.boardIds[0]);
     expect(cards).toHaveLength(2);
-    expect([...new Set(cards.map((c) => c.x))]).toHaveLength(2); // each root in its own column
+    expect(new Set(cards.map((c) => `${c.x},${c.y}`)).size).toBe(2); // each root in its own column
   });
 
   it('F17: target existing deduplicates (0 cards on re-import) and merges matrixItemIds', async () => {

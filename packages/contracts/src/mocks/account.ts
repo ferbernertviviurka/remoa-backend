@@ -53,6 +53,7 @@ export const accountFreeFixture: AccountSnapshot = {
   deletionScheduledFor: null,
   passwordChangedAt: at(-90),
   avatarUrls: null,
+  isAdmin: false,
 };
 
 /** Pro, 100% complete, Google linked. */
@@ -64,6 +65,12 @@ export const accountProFixture: AccountSnapshot = {
   entitlements: proEntitlements,
   completeness: { percent: 100, missing: [] },
   avatarUrls: { large: 'https://storage.remoa.test/avatars/512.webp?sig=x', small: 'https://storage.remoa.test/avatars/96.webp?sig=x' },
+};
+
+/** Founder (D-375): lifetime, unlimited AI, no renewal. */
+export const accountFounderFixture: AccountSnapshot = {
+  ...accountProFixture,
+  entitlements: { ...proEntitlements, plan: 'founder', ...PLAN_LIMITS.founder, limits: PLAN_LIMITS.founder.limits, renewsAt: null },
 };
 
 /** Deletion scheduled: the frontend shows the banner and routes to /conta/dados. */

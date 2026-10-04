@@ -64,7 +64,7 @@ export async function sendDailyReminders(now: Date): Promise<number> {
         return { due: n ?? 0, reviewed: (a?.n ?? 0) > 0 };
       });
       if (!due || reviewed) continue;
-      const mail = reminderEmail({ name: c.name?.split(' ')[0] ?? 'estudante', n: due, reviewUrl: `${web}/revisar`, unsubscribeUrl: `${api}/v1/public/unsubscribe?token=${unsubscribeToken(c.user_id)}` });
+      const mail = reminderEmail({ name: c.name?.split(' ')[0] ?? 'estudante', n: due, reviewUrl: `${web}/app/revisar`, unsubscribeUrl: `${api}/v1/public/unsubscribe?token=${unsubscribeToken(c.user_id)}` });
       const unsub = `${api}/v1/public/unsubscribe?token=${unsubscribeToken(c.user_id)}`;
       // RFC 8058 one-click: mail clients POST to the URL, the body link opens the confirm page.
       await sendEmail({ to: c.email, ...mail, headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } });

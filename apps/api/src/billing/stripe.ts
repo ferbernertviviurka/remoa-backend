@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 import { randomBytes } from 'node:crypto';
-import { PRICES_BRL, type BillingPeriod, type PaymentMethod, type SwitchToAnnualResult } from '@remoa/contracts';
+import { FOUNDER_PRICE_CENTS, PRICES_BRL, type BillingPeriod, type PaymentMethod, type SwitchToAnnualResult } from '@remoa/contracts';
 
 /** F15: `period`/`amount`/`itemId` only come from F15 lookups (`plan`), the webhook reads the first three fields. */
 export type SubscriptionInfo = { status: string; renewsAt: Date; cancelAtPeriodEnd: boolean; period?: BillingPeriod; amount?: number; itemId?: string };
@@ -19,7 +19,7 @@ export type PlansPort = {
   /** null = no such session. */
   session: (id: string) => Promise<SessionInfo | null>;
   /** Last paid Pix (payment-mode) checkout of the customer: what the table doesn't store. */
-  lastPayment: (customerId: string) => Promise<{ period: BillingPeriod; amount: number } | null>;
+  lastPayment: (customerId: string) => Promise<{ period: BillingPeriod; amount: number; method?: PaymentMethod } | null>;
   /** Card subscription details for the summary/switch. */
   plan: (subscriptionId: string) => Promise<Required<Pick<SubscriptionInfo, 'period' | 'amount' | 'itemId'>>>;
   switchAnnual: (a: { customerId: string; subscriptionId: string; itemId: string; idempotencyKey: string }) => Promise<SwitchToAnnualResult>;
@@ -33,7 +33,14 @@ export type StripePort = {
   subscription: (id: string) => Promise<SubscriptionInfo>;
   /** LGPD delete: stop charging now (the webhook's subscription.deleted moves the row to free). */
   cancelNow: (subscriptionId: string) => Promise<void>;
+  /** F18 (D-410): credit on the customer balance (consumed by the next invoice). Returns the balance transaction id. Optional so F08 fakes compile. */
+  createBalanceTransaction?: (a: { customerId: string; amountCents: number; idempotencyKey: string; description: string }) => Promise<string>;
 } & Partial<PlansPort>;
+
+/** The process-wide port (set by index.ts / maintenance.ts) for code that runs outside a route: F18 grants and credits. */
+let installed: StripePort | undefined;
+export const installStripe = (p: StripePort | undefined) => void (installed = p);
+export const installedStripe = () => installed;
 
 export const plansPort = (s: StripePort | undefined) =>
   s?.prices && s.promotion && s.session && s.lastPayment && s.plan && s.switchAnnual ? (s as StripePort & PlansPort) : null;
@@ -48,7 +55,7 @@ const need = (k: string) => {
   return v;
 };
 const unix = (s: number) => new Date(s * 1000);
-const periods = new Set<string>(['monthly', 'annual']);
+const periods = new Set<string>(['monthly', 'annual', 'lifetime']);
 const periodOf = (v: unknown): BillingPeriod => (periods.has(String(v)) ? (v as BillingPeriod) : 'monthly');
 
 /** Coupon → off amounts in BRL; null when it can't discount a BRL price. */
@@ -77,11 +84,23 @@ export const createStripe = ({ secret, webOrigin }: { secret: string; webOrigin:
         client_reference_id: userId,
         metadata: { userId, period, method },
         discounts: promo ? [promo.discount] : undefined,
-        success_url: `${webOrigin}/planos/sucesso?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${webOrigin}/planos?cancelado=1`,
+        success_url: `${webOrigin}/app/planos/sucesso?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${webOrigin}/app/planos?cancelado=1`,
       };
       const session =
-        method === 'card'
+        period === 'lifetime'
+          ? // D-375 Founder: one-time payment, Pix or card, PriceBook amount (from STRIPE_PRICE_LIFETIME) like Pix (D-188). No subscription, no coupon.
+            await s.checkout.sessions.create(
+              {
+                ...base,
+                discounts: undefined,
+                mode: 'payment',
+                allowed_payment_method_types: ['card', 'pix'],
+                line_items: [{ price_data: { currency: 'brl', unit_amount: amount, product_data: { name: 'Remoa Founder' } }, quantity: 1 }],
+              },
+              { idempotencyKey },
+            )
+          : method === 'card'
           ? await s.checkout.sessions.create(
               { ...base, mode: 'subscription', allowed_payment_method_types: ['card'], line_items: [{ price: need(period === 'monthly' ? 'STRIPE_PRICE_MONTHLY' : 'STRIPE_PRICE_ANNUAL'), quantity: 1 }] },
               { idempotencyKey },
@@ -102,10 +121,10 @@ export const createStripe = ({ secret, webOrigin }: { secret: string; webOrigin:
       (
         await s.billingPortal.sessions.create({
           customer: customerId,
-          return_url: `${webOrigin}/conta?portal=ok`,
+          return_url: `${webOrigin}/app/conta?portal=ok`,
           flow_data:
             cancel && subscriptionId
-              ? { type: 'subscription_cancel', subscription_cancel: { subscription: subscriptionId }, after_completion: { type: 'redirect', redirect: { return_url: `${webOrigin}/conta?portal=ok` } } }
+              ? { type: 'subscription_cancel', subscription_cancel: { subscription: subscriptionId }, after_completion: { type: 'redirect', redirect: { return_url: `${webOrigin}/app/conta?portal=ok` } } }
               : undefined,
         })
       ).url,
@@ -117,6 +136,9 @@ export const createStripe = ({ secret, webOrigin }: { secret: string; webOrigin:
       // Already gone at Stripe (missed webhook) = nothing left to charge; must not block the LGPD delete forever.
       await s.subscriptions.cancel(id).catch((e: { code?: string }) => (e?.code === 'resource_missing' ? undefined : Promise.reject(e)));
     },
+    // F18: negative amount = credit. Same idempotency key = same transaction at Stripe (retries of the sweep).
+    createBalanceTransaction: async ({ customerId, amountCents, idempotencyKey, description }) =>
+      (await s.customers.createBalanceTransaction(customerId, { amount: -amountCents, currency: 'brl', description, metadata: { idempotencyKey } }, { idempotencyKey })).id,
     // --- F15 ---
     prices: async () => {
       const read = async (k: string) => {
@@ -124,8 +146,13 @@ export const createStripe = ({ secret, webOrigin }: { secret: string; webOrigin:
         if (p.currency !== 'brl' || p.unit_amount == null) throw new Error(`stripe: ${k} is not a fixed BRL price`);
         return { amount: p.unit_amount, priceId: p.id };
       };
-      const [monthly, annual] = await Promise.all([read('STRIPE_PRICE_MONTHLY'), read('STRIPE_PRICE_ANNUAL')]);
-      return { monthly, annual };
+      const [monthly, annual, lifetime] = await Promise.all([
+        read('STRIPE_PRICE_MONTHLY'),
+        read('STRIPE_PRICE_ANNUAL'),
+        // D-375: unset = the launch price, so a missing env can't take the whole price book down.
+        process.env.STRIPE_PRICE_LIFETIME ? read('STRIPE_PRICE_LIFETIME') : { amount: FOUNDER_PRICE_CENTS },
+      ]);
+      return { monthly, annual, lifetime };
     },
     promotion: async (code, customerId) => {
       const [p] = (await s.promotionCodes.list({ code, active: true, limit: 1, expand: ['data.promotion.coupon'] })).data;
@@ -156,7 +183,8 @@ export const createStripe = ({ secret, webOrigin }: { secret: string; webOrigin:
     lastPayment: async (customer) => {
       const list = await s.checkout.sessions.list({ customer, status: 'complete', limit: 20 });
       const x = list.data.find((v) => v.mode === 'payment' && v.payment_status === 'paid');
-      return x ? { period: periodOf(x.metadata?.period), amount: x.amount_total ?? 0 } : null;
+      const method = x?.metadata?.method === 'card' ? ('card' as const) : ('pix' as const);
+      return x ? { period: periodOf(x.metadata?.period), amount: x.amount_total ?? 0, method } : null;
     },
     plan: async (id) => subDetail(await s.subscriptions.retrieve(id, { expand: ['discounts'] })),
     // D-190: change the price in place, Stripe prorates. Interval change bills now; if the card needs SCA (or is declined)
@@ -173,10 +201,10 @@ export const createStripe = ({ secret, webOrigin }: { secret: string; webOrigin:
         return { kind: 'switched', renewsAt: d.renewsAt, amount: d.amount };
       } catch (e) {
         if ((e as { type?: string })?.type !== 'StripeCardError') throw e;
-        const back = { type: 'redirect' as const, redirect: { return_url: `${webOrigin}/planos` } };
+        const back = { type: 'redirect' as const, redirect: { return_url: `${webOrigin}/app/planos` } };
         const portal = await s.billingPortal.sessions.create({
           customer: customerId,
-          return_url: `${webOrigin}/planos`,
+          return_url: `${webOrigin}/app/planos`,
           flow_data: { type: 'subscription_update_confirm', subscription_update_confirm: { subscription: subscriptionId, items: [{ id: itemId, price, quantity: 1 }] }, after_completion: back },
         });
         return { kind: 'redirect', url: portal.url };
@@ -202,7 +230,7 @@ export const addPeriod = (from: Date, period: BillingPeriod) => {
   return d;
 };
 
-const MOCK_PRICES: PriceList = { monthly: { amount: PRICES_BRL.monthly * 100 }, annual: { amount: PRICES_BRL.annual * 100 } };
+const MOCK_PRICES: PriceList = { monthly: { amount: PRICES_BRL.monthly * 100 }, annual: { amount: PRICES_BRL.annual * 100 }, lifetime: { amount: FOUNDER_PRICE_CENTS } };
 /** Mock FUNDADOR (Q-024: real values come from the Stripe promotion code). */
 const MOCK_FUNDADOR: Promo = { discount: { coupon: 'cpn_mock_fundador' }, percentOff: 25, amountOff: null };
 
@@ -217,6 +245,9 @@ export const createMockStripe = ({ apiOrigin }: { apiOrigin: string }) => {
   };
   // Same idempotency key = same session, like Stripe.
   const byKey = new Map<string, string>();
+  /** F18: customer balance in centavos (negative = credit), and balance txn id per idempotency key. */
+  const balances = new Map<string, number>();
+  const txnByKey = new Map<string, string>();
   const port: StripePort & PlansPort = {
     createCustomer: async () => rid('cus'),
     checkout: async (a) => {
@@ -231,6 +262,14 @@ export const createMockStripe = ({ apiOrigin }: { apiOrigin: string }) => {
     cancelNow: async (id) => {
       subs.delete(id);
     },
+    createBalanceTransaction: async ({ customerId, amountCents, idempotencyKey }) => {
+      const hit = txnByKey.get(idempotencyKey);
+      if (hit) return hit;
+      const id = rid('cbtxn');
+      txnByKey.set(idempotencyKey, id);
+      balances.set(customerId, (balances.get(customerId) ?? 0) - amountCents);
+      return id;
+    },
     prices: async () => MOCK_PRICES,
     promotion: async (code) => (code === 'FUNDADOR' ? MOCK_FUNDADOR : null),
     session: async (id) => {
@@ -238,8 +277,8 @@ export const createMockStripe = ({ apiOrigin }: { apiOrigin: string }) => {
       return s?.kind === 'checkout' ? { userId: s.userId, status: s.state!, paymentStatus: s.paid ? 'paid' : 'unpaid', period: s.period!, method: s.method! } : null;
     },
     lastPayment: async (customerId) => {
-      const s = [...sessions.values()].reverse().find((v) => v.customerId === customerId && v.method === 'pix' && v.paid);
-      return s ? { period: s.period!, amount: s.total! } : null;
+      const s = [...sessions.values()].reverse().find((v) => v.customerId === customerId && (v.method === 'pix' || v.period === 'lifetime') && v.paid);
+      return s ? { period: s.period!, amount: s.total!, method: s.method! } : null;
     },
     plan: async (id) => {
       const s = subs.get(id);
@@ -254,10 +293,10 @@ export const createMockStripe = ({ apiOrigin }: { apiOrigin: string }) => {
     },
   };
   const completed = (s: MockSession, type: string): MockEvent => {
-    const card = s.method === 'card';
+    const card = s.method === 'card' && s.period !== 'lifetime'; // Founder is payment mode even by card
     const subscription = card ? rid('sub') : null;
     if (subscription) subs.set(subscription, { status: 'active', renewsAt: addPeriod(new Date(), s.period!), cancelAtPeriodEnd: false, period: s.period, amount: s.total, itemId: rid('si') });
-    return { id: rid('evt'), type, data: { object: { mode: card ? 'subscription' : 'payment', payment_status: 'paid', client_reference_id: s.userId, customer: s.customerId, subscription, metadata: { userId: s.userId, period: s.period, method: s.method } } } };
+    return { id: rid('evt'), type, data: { object: { mode: card ? 'subscription' : 'payment', payment_status: 'paid', client_reference_id: s.userId, customer: s.customerId, subscription, payment_intent: card ? null : rid('pi'), amount_total: s.total ?? 0 /* F19: payments mirror */, metadata: { userId: s.userId, period: s.period, method: s.method } } } };
   };
   /** `pending`: a Pix that is not paid yet (FR-8): the session completes unpaid and no event is applied until `mockPixConfirm`. */
   const mockEvent = (kind: 'checkout' | 'portal', sessionId: string, opts: { pending?: boolean } = {}): MockEvent | 'pending' | null => {
@@ -286,5 +325,6 @@ export const createMockStripe = ({ apiOrigin }: { apiOrigin: string }) => {
   };
   /** True while the session can still be abandoned (Stripe's cancel_url leaves it open). */
   const isOpen = (sessionId: string) => sessions.get(sessionId)?.state === 'open';
-  return { port, mockEvent, mockPixConfirm, isOpen };
+  const mockBalance = (customerId: string) => balances.get(customerId) ?? 0;
+  return { port, mockEvent, mockPixConfirm, isOpen, mockBalance };
 };

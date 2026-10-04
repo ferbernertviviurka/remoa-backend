@@ -14,6 +14,7 @@ import { boardListExtras } from '../review/queue';
 import { initialShareColumns } from '../share/crypto';
 import { shareUrlOf } from '../share/url';
 import { turnOffShare } from './share';
+import { maybeQualifyReferral } from '../referral/qualify';
 
 const notFound = () => err<never>('not_found', 'board not found');
 const isUuid = (v: string) => idSchema.safeParse(v).success;
@@ -131,7 +132,7 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
   const q = await assertQuota(userId, 'boards');
   if (!q.ok) return q;
   const limit = await cardLimitOf(userId);
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const [src] = await tx.select().from(s.boards).where(eq(s.boards.id, boardId));
     if (!src) return notFound();
     const cards = await tx.select().from(s.cards).where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)));
@@ -142,6 +143,8 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
     await cloneBoardContent(tx, s, copy!.id, cards, edges, { status: (c) => (src.status === 'private' ? c.status : 'draft'), tags: (c) => c.tags });
     return ok(toBoard(copy!));
   });
+  if (r.ok) await maybeQualifyReferral(userId); // F18 (D-384): a copied seed/own board can be the first map; never throws
+  return r;
 };
 
 type CardRow = typeof import('@remoa/db').cards.$inferSelect;
@@ -259,7 +262,7 @@ async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp, q: { use
 
 export const applyMapOps: ApplyMapOps = async (userId, ops) => {
   const cardLimit = ops.some((o) => o.op === 'createCard') ? await cardLimitOf(userId) : null;
-  return guard(() =>
+  const r = await guard(() =>
     run(userId, async (tx, s) => {
       const boardIds = [...new Set(ops.map((o) => o.boardId))];
       // RLS on UPDATE silently matches 0 rows, so ownership is checked explicitly.
@@ -270,5 +273,6 @@ export const applyMapOps: ApplyMapOps = async (userId, ops) => {
       return { applied: ops.map((o) => o.opId) };
     }),
   );
-
+  if (r.ok && cardLimit !== null) await maybeQualifyReferral(userId); // F18 (D-384): after the commit; never throws
+  return r;
 };

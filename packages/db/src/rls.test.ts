@@ -167,4 +167,65 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await expect(m.withUser(a, (tx) => tx.insert(s.shareAttempts).values({ tokenHash: 't', ipHash: 'i' }))).rejects.toThrow();
     await m.db.delete(s.shareAttempts).where(eq(s.shareAttempts.tokenHash, 't'));
   });
+  it('F18: referral tables are server-written; referrer sees friends only masked via referral_friends()', async () => {
+    const c = randomUUID(); // referee that will be deleted
+    await m.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${c}', '${c}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    try {
+      await m.db.update(s.profiles).set({ name: '  Beatriz   Souza Lima ' }).where(eq(s.profiles.userId, b));
+      await m.db.update(s.profiles).set({ name: 'Caio' }).where(eq(s.profiles.userId, c));
+      await m.db.insert(s.referralCodes).values({ userId: a, code: 'ABCD2345' });
+      const t0 = new Date();
+      const [rb] = await m.db.insert(s.referrals).values({ referrerId: a, refereeId: b, channel: 'link', status: 'qualified', signedUpAt: t0, qualifiedAt: t0 }).returning();
+      const [rc] = await m.db.insert(s.referrals).values({ referrerId: a, refereeId: c, channel: 'link', status: 'rejected', rejectReason: 'fraud_signals', signedUpAt: t0 }).returning();
+      await m.db.insert(s.referrals).values({ referrerId: a, channel: 'email', status: 'invited', invitedEmailHash: 'h1', invitedEmailMasked: 'd***@gmail.com' });
+      await m.db.insert(s.referrals).values({ referrerId: a, channel: 'email', status: 'expired', invitedEmailHash: 'h2', invitedEmailMasked: 'x***@gmail.com' });
+      const end = new Date(t0.getTime() + 30 * 86_400_000);
+      await m.db.insert(s.entitlementGrants).values([
+        { userId: a, source: 'referral', referralId: rb!.id, startsAt: t0, endsAt: end },
+        { userId: b, source: 'referral', referralId: rb!.id, startsAt: t0, endsAt: end },
+      ]);
+      await m.db.insert(s.billingCredits).values({ userId: a, referralId: rc!.id, amountCents: 3900 });
+
+      // constraints: one referrer per referee, no self-referral, double grant idempotent, code format
+      await expect(m.db.insert(s.referrals).values({ referrerId: c, refereeId: b, channel: 'link', status: 'signed_up', signedUpAt: t0 })).rejects.toThrow();
+      await expect(m.db.insert(s.referrals).values({ referrerId: a, refereeId: a, channel: 'link', status: 'signed_up', signedUpAt: t0 })).rejects.toThrow();
+      await expect(m.db.insert(s.entitlementGrants).values({ userId: a, source: 'referral', referralId: rb!.id, startsAt: t0, endsAt: end })).rejects.toThrow();
+      await expect(m.db.insert(s.billingCredits).values({ userId: a, referralId: rc!.id, amountCents: 3900 })).rejects.toThrow();
+      await expect(m.db.insert(s.referralCodes).values({ userId: b, code: 'ABCD234O' })).rejects.toThrow();
+
+      // own rows readable, others' not; no client writes
+      expect(await m.withUser(a, (tx) => tx.select().from(s.referralCodes))).toHaveLength(1);
+      expect(await m.withUser(b, (tx) => tx.select().from(s.referralCodes))).toHaveLength(0);
+      expect(await m.withUser(a, (tx) => tx.select().from(s.entitlementGrants))).toHaveLength(1);
+      expect(await m.withUser(b, (tx) => tx.select().from(s.entitlementGrants))).toEqual([expect.objectContaining({ userId: b })]);
+      expect(await m.withUser(b, (tx) => tx.select().from(s.billingCredits))).toHaveLength(0);
+      await expect(m.withUser(b, (tx) => tx.insert(s.referralCodes).values({ userId: b, code: 'WXYZ2345' }))).rejects.toThrow();
+      await expect(m.withUser(b, (tx) => tx.insert(s.entitlementGrants).values({ userId: b, source: 'promo', startsAt: t0, endsAt: end }))).rejects.toThrow();
+      await expect(m.withUser(b, (tx) => tx.insert(s.billingCredits).values({ userId: b, amountCents: 1 }))).rejects.toThrow();
+      expect(await m.withUser(a, (tx) => tx.select().from(s.referrals)).catch(() => 'denied')).toBe('denied');
+      await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ referredBy: a }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
+
+      type F = { id: string; display_name: string | null; removed: boolean; status: string; invited_at: Date | null };
+      const friends = (u: string) => m.withUser(u, async (tx) => [...(await tx.execute<F>(sql`select * from public.referral_friends()`))]);
+      const fa = await friends(a);
+      expect(fa).toHaveLength(3); // expired hidden
+      expect(fa.find((f) => f.id === rb!.id)).toMatchObject({ display_name: 'Beatriz L.', removed: false, status: 'qualified', invited_at: null });
+      expect(fa.find((f) => f.id === rc!.id)).toMatchObject({ display_name: 'Caio', status: 'signed_up' }); // rejected never shown
+      expect(fa.find((f) => f.status === 'invited')).toMatchObject({ display_name: 'd***@gmail.com', removed: false });
+      expect(JSON.stringify(fa)).not.toMatch(/@test\.local|h1|fraud/);
+      expect(await friends(b)).toHaveLength(0);
+
+      // soft then hard delete of the referee: "Conta removida"; the referrer keeps the grant
+      await m.db.update(s.profiles).set({ deletedAt: new Date() }).where(eq(s.profiles.userId, c));
+      expect((await friends(a)).find((f) => f.id === rc!.id)).toMatchObject({ display_name: null, removed: true });
+      await m.db.execute(sql.raw(`delete from auth.users where id = '${c}'`));
+      expect((await friends(a)).find((f) => f.id === rc!.id)).toMatchObject({ display_name: null, removed: true });
+      const [credit] = await m.db.select().from(s.billingCredits).where(eq(s.billingCredits.userId, a));
+      expect(credit?.referralId).toBe(rc!.id);
+    } finally {
+      await m.db.execute(sql.raw(`delete from auth.users where id = '${c}'`));
+      await m.db.delete(s.referrals).where(eq(s.referrals.referrerId, a));
+      await m.db.delete(s.referralCodes).where(eq(s.referralCodes.userId, a));
+    }
+  });
 });

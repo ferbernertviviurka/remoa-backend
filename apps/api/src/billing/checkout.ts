@@ -66,6 +66,9 @@ export const createCheckout = (stripe: StripePort) => async (userId: string, inp
   const raw = input.couponCode ?? input.coupon;
   const code = raw === undefined ? null : couponCodeSchema.safeParse(raw);
   if (code && !code.success) return err('validation', 'invalid coupon');
+  const lifetime = input.period === 'lifetime';
+  // D-375: coupons (FUNDADOR included) are for Pro periods only; Founder is a fixed price.
+  if (code && lifetime) return err('validation', 'coupon not applicable');
   const plans = plansPort(stripe);
   if (!plans) return err('internal', 'billing unavailable');
   const key = `checkout:${userId}:${input.period}:${input.method}:${code?.data ?? ''}`;
@@ -74,7 +77,9 @@ export const createCheckout = (stripe: StripePort) => async (userId: string, inp
     const [row] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId));
     // A second checkout over a live card subscription would orphan it (still charging, invisible to portal and deleteAccount).
     // Also when cancellation is scheduled (F15 review B2): reactivating the old one in the portal would charge it again unseen; the UI offers "Reativar".
-    if (row?.stripeSubscriptionId && row.plan === 'pro' && row.status !== 'canceled') return err('conflict', row.cancelAtPeriodEnd ? 'reactivate' : 'already subscribed');
+    if (row?.plan === 'founder') return err('conflict', 'already founder');
+    // Founder over a live card Pro is allowed: the webhook cancels that subscription once Founder is paid (D-375).
+    if (!lifetime && row?.stripeSubscriptionId && row.plan === 'pro' && row.status !== 'canceled') return err('conflict', row.cancelAtPeriodEnd ? 'reactivate' : 'already subscribed');
     let promo: Promo | undefined;
     if (code) {
       const p = await checkedPromotion(plans, userId, code.data, row?.stripeCustomerId ?? null);

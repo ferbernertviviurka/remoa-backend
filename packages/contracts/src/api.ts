@@ -49,6 +49,15 @@ import type {
   UpdateProfileInput,
 } from './account';
 
+import type { AttributionInput, AttributionResult, InviteInput, InviteResult, ReferralInvitePublic, ReferralSummary } from './referral';
+import type { SupportAttachmentSignInput, SupportReplyInput, SupportTicketCreated, SupportTicketDetail, SupportTicketInput, SupportTicketSummary, SupportUnread } from './support';
+import type {
+  AdminActionResult, AdminExportInput, AdminMapListQuery, AdminMapPage, AdminMe, AdminOverview, AdminPaymentDetail, AdminPaymentListQuery,
+  AdminPaymentPage, AdminReferralDetail, AdminReferralListQuery, AdminReferralPage, AdminTicketDetail, AdminTicketListQuery, AdminTicketPage,
+  AdminTicketReplyInput, AdminUserDetail, AdminUserListQuery, AdminUserPage, AuditEntry, AuditListQuery, AuditPage, MarkPaidInput,
+  OverviewPeriod, ReasonInput, RevokeGrantInput,
+} from './admin';
+
 type Async<T> = Promise<Result<T>>;
 
 // F01 board (apps/web features/map)
@@ -208,3 +217,52 @@ export type UpdatePreferences = (userId: string, input: UpdatePreferencesInput) 
 export type CancelDeletion = (userId: string) => Async<null>;
 /** GET /v1/public/unsubscribe?token= (no auth) — turns the daily reminder off. */
 export type UnsubscribeReminder = (token: string) => Async<null>;
+
+// F18 referral (D-380–D-389). Routes in remoa-backend apps/api/src/routes/referral.ts.
+/** GET /v1/referral/summary — creates the user's code on first call (D-382). */
+export type GetReferralSummary = (userId: string) => Async<ReferralSummary>;
+/** POST /v1/referral/invites — `rate_limited` 'invite_daily_limit' above REFERRAL_LIMITS.invitesPerDay (whole request refused). */
+export type SendReferralInvites = (userId: string, input: InviteInput) => Async<InviteResult>;
+/** GET /v1/public/referral/:code (no auth, rate-limited per IP) — unknown and malformed codes are `{ valid: false }`. */
+export type GetReferralInvite = (code: string) => Async<ReferralInvitePublic>;
+/** POST /v1/referral/attribution — first touch; refusals are `{ attributed: false }`, never an error (D-383). */
+export type AttributeReferral = (userId: string, input: AttributionInput) => Async<AttributionResult>;
+
+// F19 support (D-425–D-427, D-434). Routes in remoa-backend apps/api/src/routes/support.ts (requireUser).
+/** POST /v1/support/attachments/sign — presigned PUT, key `support/<userId>/<uuid>`. */
+export type SignSupportAttachment = (userId: string, input: SupportAttachmentSignInput) => Async<UploadSignOutput>;
+/** POST /v1/support/tickets — `rate_limited` support_rate_limited, `conflict` support_duplicate, `validation` support_bad_attachment. */
+export type SubmitSupportTicket = (userId: string, input: SupportTicketInput) => Async<SupportTicketCreated>;
+/** GET /v1/support/tickets — newest first. */
+export type ListMyTickets = (userId: string) => Async<SupportTicketSummary[]>;
+/** GET /v1/support/tickets/:id — another user's ticket = not_found. */
+export type GetMyTicket = (userId: string, ticketId: string) => Async<SupportTicketDetail>;
+/** POST /v1/support/tickets/:id/messages — reopens; `conflict` support_ticket_closed after reopenDays. */
+export type ReplyToTicket = (userId: string, ticketId: string, input: SupportReplyInput) => Async<SupportTicketDetail>;
+/** POST /v1/support/tickets/:id/read — sets last_user_read_at = now. */
+export type MarkTicketRead = (userId: string, ticketId: string) => Async<null>;
+/** GET /v1/support/unread — badge (polled every 60 s). */
+export type GetSupportUnread = (userId: string) => Async<SupportUnread>;
+
+// F19 admin (D-428–D-434). Routes in apps/api/src/routes/admin.ts; every handler runs behind requireAdmin (404 for non-admin)
+// and every action through withAdmin (one audit row in the same transaction). `adminId` = the caller.
+export type GetAdminMe = (adminId: string) => Async<AdminMe>;
+export type GetAdminOverview = (adminId: string, period: OverviewPeriod) => Async<AdminOverview>;
+export type ListAdminUsers = (adminId: string, q: AdminUserListQuery) => Async<AdminUserPage>;
+export type GetAdminUser = (adminId: string, userId: string) => Async<AdminUserDetail>;
+export type ListAdminMaps = (adminId: string, q: AdminMapListQuery) => Async<AdminMapPage>;
+export type ListAdminPayments = (adminId: string, q: AdminPaymentListQuery) => Async<AdminPaymentPage>;
+export type GetAdminPayment = (adminId: string, paymentId: string) => Async<AdminPaymentDetail>;
+export type ListAdminReferrals = (adminId: string, q: AdminReferralListQuery) => Async<AdminReferralPage>;
+export type GetAdminReferral = (adminId: string, referralId: string) => Async<AdminReferralDetail>;
+export type ListAdminTickets = (adminId: string, q: AdminTicketListQuery) => Async<AdminTicketPage>;
+export type GetAdminTicket = (adminId: string, ticketId: string) => Async<AdminTicketDetail>;
+export type ListAudit = (adminId: string, q: AuditListQuery) => Async<AuditPage>;
+/** Any action POST with `{ reason }` (target id from the path). */
+export type RunAdminAction = (adminId: string, targetId: string, input: ReasonInput) => Async<AdminActionResult>;
+export type OpenMapReadOnly = (adminId: string, boardId: string, input: ReasonInput) => Async<AdminActionResult & { graph: BoardGraph }>;
+export type MarkPaymentPaid = (adminId: string, paymentId: string, input: MarkPaidInput) => Async<AdminActionResult>;
+export type RevokeGrant = (adminId: string, referralId: string, input: RevokeGrantInput) => Async<AdminActionResult>;
+export type ReplyAsAdmin = (adminId: string, ticketId: string, input: AdminTicketReplyInput) => Async<AdminActionResult>;
+/** POST /v1/admin/export → CSV body (text/csv). */
+export type ExportAdminCsv = (adminId: string, input: AdminExportInput) => Async<{ csv: string; audit: AuditEntry }>;

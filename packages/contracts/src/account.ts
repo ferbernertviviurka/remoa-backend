@@ -230,6 +230,8 @@ export const accountSnapshotSchema = z.object({
   /** Last `password_changed` in account_events; null = never changed in Remoa (line hidden). */
   passwordChangedAt: timestampSchema.nullable(),
   avatarUrls: avatarVariantsSchema.nullable(),
+  /** F19 FR-11 (D-471): shows the rail "Admin" item only; cosmetic, `/v1/admin/*` re-checks on every request. Same test as requireAdmin. */
+  isAdmin: z.boolean(),
 });
 export type AccountSnapshot = z.infer<typeof accountSnapshotSchema>;
 

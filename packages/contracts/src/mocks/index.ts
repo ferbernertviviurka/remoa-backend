@@ -20,6 +20,9 @@ export * from './review';
 export * from './ai';
 export * from './account';
 export * from './billing';
+export * from './referral';
+export * from './support';
+export * from './admin';
 
 // --- store -------------------------------------------------------------------
 const clone = <T>(v: T): T => structuredClone(v);
@@ -622,7 +625,7 @@ export const createCheckout: Api.CreateCheckout = async (_userId, { period, meth
   ok({ url: `https://checkout.stripe.mock/${period}/${method}` });
 export const openPortal: Api.OpenPortal = async () => ok({ url: 'https://billing.stripe.mock/portal' });
 export const exportAccount: Api.ExportAccount = async (userId) =>
-  ok({ version: 1, exportedAt: new Date(), userId, profile: null, boards: [], cards: [], edges: [], attempts: [] });
+  ok({ version: 1, exportedAt: new Date(), userId, profile: null, boards: [], cards: [], edges: [], attempts: [], tickets: [] });
 export const deleteAccount: Api.DeleteAccount = async () => ok({ hardDeleteAt: new Date(Date.now() + 7 * 86_400_000) });
 
 // --- F10 editorial -----------------------------------------------------------

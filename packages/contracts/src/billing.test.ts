@@ -144,3 +144,25 @@ describe('F15 schemas', () => {
     expect(eventSchemas.plans_viewed.safeParse({ from: 'evil' }).success).toBe(false);
   });
 });
+
+describe('Founder (D-375)', () => {
+  it('is Pro plus unlimited AI; lifetime is a checkout period', () => {
+    expect(PLAN_LIMITS.founder.limits).toEqual({ ai_grades: null, ai_generations: null, boards: null, cards: null });
+    expect([PLAN_LIMITS.founder.newCardsPerDay, PLAN_LIMITS.founder.ankiImportMaxCards]).toEqual([PLAN_LIMITS.pro.newCardsPerDay, PLAN_LIMITS.pro.ankiImportMaxCards]);
+    expect(checkoutInputSchema.parse({ period: 'lifetime', method: 'pix' }).period).toBe('lifetime');
+  });
+});
+
+describe('accountExportSchema tickets (F19 FR-9, D-471)', async () => {
+  const { accountExportSchema } = await import('./billing');
+  const id = '00000000-0000-4000-8000-000000000001';
+  const msg = { id, authorType: 'admin', body: 'oi', createdAt: new Date() };
+  const base = { version: 1, exportedAt: new Date(), userId: id, profile: null, boards: [], cards: [], edges: [], attempts: [] };
+  const ticket = { id, number: 1001, subject: 's', messages: [msg] };
+  it('accepts user-visible tickets; rejects missing tickets, assignee and internal notes', () => {
+    expect(accountExportSchema.safeParse({ ...base, tickets: [ticket] }).success).toBe(true);
+    expect(accountExportSchema.safeParse(base).success).toBe(false);
+    expect(accountExportSchema.safeParse({ ...base, tickets: [{ ...ticket, assignedTo: id }] }).success).toBe(false);
+    expect(accountExportSchema.safeParse({ ...base, tickets: [{ ...ticket, messages: [{ ...msg, internal: true }] }] }).success).toBe(false);
+  });
+});

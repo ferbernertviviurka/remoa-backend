@@ -35,7 +35,7 @@ describe('mock Stripe (STRIPE=mock)', () => {
 
   it('prices come from PRICES_BRL; FUNDADOR is the only code', async () => {
     const { port } = createMockStripe({ apiOrigin: 'http://api.test' });
-    expect(await port.prices()).toEqual({ monthly: { amount: 3900 }, annual: { amount: 34900 } });
+    expect(await port.prices()).toEqual({ monthly: { amount: 3900 }, annual: { amount: 34900 }, lifetime: { amount: 59990 } });
     expect(await port.promotion('FUNDADOR', null)).toMatchObject({ percentOff: 25 });
     expect(await port.promotion('OUTRO', null)).toBeNull();
   });
@@ -52,7 +52,7 @@ describe('mock Stripe (STRIPE=mock)', () => {
     expect(m.mockEvent('checkout', id)).toBeNull();
     expect(m.mockPixConfirm(id)?.type).toBe('checkout.session.async_payment_succeeded');
     expect(m.mockPixConfirm(id)).toBeNull();
-    expect(await m.port.lastPayment('cus_1')).toEqual({ period: 'monthly', amount: 3900 });
+    expect(await m.port.lastPayment('cus_1')).toEqual({ period: 'monthly', amount: 3900, method: 'pix' });
   });
 
   it('card checkout creates a monthly subscription that can switch to annual', async () => {
@@ -64,5 +64,17 @@ describe('mock Stripe (STRIPE=mock)', () => {
     const r = await m.port.switchAnnual({ customerId: 'cus_1', subscriptionId: subId, itemId: 'si', idempotencyKey: 'x' });
     expect(r).toMatchObject({ kind: 'switched', amount: 34900 });
     expect((await m.port.plan(subId)).period).toBe('annual');
+  });
+});
+
+describe('mock Stripe balance (F18 credits)', () => {
+  it('negative balance per customer; same idempotency key = same transaction, counted once', async () => {
+    const m = createMockStripe({ apiOrigin: 'http://api.test' });
+    const a = { customerId: 'cus_b', amountCents: 3900, idempotencyKey: 'referral-credit:1', description: 'x' };
+    const id = await m.port.createBalanceTransaction!(a);
+    expect(await m.port.createBalanceTransaction!(a)).toBe(id);
+    await m.port.createBalanceTransaction!({ ...a, amountCents: 2908, idempotencyKey: 'referral-credit:2' });
+    expect(m.mockBalance('cus_b')).toBe(-6808);
+    expect(m.mockBalance('cus_none')).toBe(0);
   });
 });

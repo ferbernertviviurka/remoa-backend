@@ -27,7 +27,7 @@ const subIds = (key: 'steps' | 'masks') => sql`case when jsonb_typeof(c.payload-
 ), '[]'::jsonb) else '[]'::jsonb end`;
 
 /** RLS (withUser) decides what is readable. `boardId` null = daily scope: live cards of non-archived boards the user owns or has study state on. */
-async function loadCards(tx: Tx, userId: string, boardId: string | null): Promise<CardRow[]> {
+async function loadCards(tx: Tx, userId: string, boardId: string | null, withNotes = false): Promise<CardRow[]> {
   const scope = boardId
     ? sql`c.board_id = ${boardId}`
     : sql`b.archived_at is null and (b.user_id = ${userId} or exists (select 1 from fsrs_state s where s.user_id = ${userId} and s.card_id = c.id))`;
@@ -35,7 +35,7 @@ async function loadCards(tx: Tx, userId: string, boardId: string | null): Promis
     select c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
       case c.type when 'flow' then ${subIds('steps')} when 'image' then ${subIds('masks')} else '[""]'::jsonb end as subs
     from cards c join boards b on b.id = c.board_id
-    where c.deleted_at is null and c.type <> 'note' and ${scope}`); // D-200: notes are never scheduled, counted, or in the recall map (absent = no state)
+    where c.deleted_at is null and (${withNotes}::boolean or c.type <> 'note') and ${scope}`); // D-200: notes are never scheduled, counted, or in the recall map (absent = no state); only the Hoje thumbnail asks for them (D-334)
   return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y }));
 }
 
@@ -147,7 +147,8 @@ export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) => {
  * all live cards, same span for x and y so the aspect ratio is kept).
  */
 export async function boardListExtras(tx: Tx, userId: string, now: Date, boardIds: string[]) {
-  const [cards, states, win] = await Promise.all([loadCards(tx, userId, null), loadStates(tx, userId, null), dayWindow(tx, userId, now)]);
+  const [withNotes, states, win] = await Promise.all([loadCards(tx, userId, null, true), loadStates(tx, userId, null), dayWindow(tx, userId, now)]);
+  const cards = withNotes.filter((c) => c.type !== 'note');
   const edgeRows = boardIds.length
     ? await tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
         sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${`{${boardIds.join(',')}}`}::uuid[])`,
@@ -164,19 +165,25 @@ export async function boardListExtras(tx: Tx, userId: string, now: Date, boardId
     if (m && isDue(m, win.endMs)) of(it.boardId).dueCount++;
   }
   const byBoard = new Map<string, CardRow[]>();
-  for (const c of cards) byBoard.set(c.boardId, [...(byBoard.get(c.boardId) ?? []), c]);
+  for (const c of withNotes) byBoard.set(c.boardId, [...(byBoard.get(c.boardId) ?? []), c]);
   for (const [boardId, list] of byBoard) {
     const o = of(boardId);
     list.sort((a, b) => a.order - b.order || cmp(a.id, b.id));
-    const st = list.map((c) => cardState(c, states, now).state);
-    for (const s of st) o.stateCounts[s]++;
+    const st = list.map((c) => (c.type === 'note' ? 'unknown' : cardState(c, states, now).state));
+    list.forEach((c, i) => { if (c.type !== 'note') o.stateCounts[st[i]!]++; });
     const xs = list.map((c) => c.x);
     const ys = list.map((c) => c.y);
     const [minX, minY] = [Math.min(...xs), Math.min(...ys)];
     const span = Math.max(1, Math.max(...xs) - minX, Math.max(...ys) - minY);
-    const shown = list.slice(0, PREVIEW_MAX_NODES);
+    // D-334: hubs (notes) first so the thumbnail keeps the hub -> card edges; the rest of a big board is sampled evenly (a straight slice by order showed one corner)
+    const pos = new Map(list.map((c, i) => [c, i]));
+    const hubs = list.filter((c) => c.type === 'note').slice(0, PREVIEW_MAX_NODES / 4);
+    const rest = list.filter((c) => c.type !== 'note');
+    const room = PREVIEW_MAX_NODES - hubs.length;
+    const picked = rest.length <= room ? rest : Array.from({ length: room }, (_, k) => rest[Math.floor((k * rest.length) / room)]!);
+    const shown = [...hubs, ...picked];
     const idx = new Map(shown.map((c, i) => [c.id, i]));
-    o.preview.nodes = shown.map((c, i) => ({ x: (c.x - minX) / span, y: (c.y - minY) / span, state: st[i]! }));
+    o.preview.nodes = shown.map((c) => ({ x: (c.x - minX) / span, y: (c.y - minY) / span, state: st[pos.get(c)!]! }));
     for (const e of edgeRows) {
       const [i, j] = [idx.get(e.from_card_id), idx.get(e.to_card_id)];
       if (e.board_id === boardId && i !== undefined && j !== undefined) o.preview.edges.push([i, j]);
