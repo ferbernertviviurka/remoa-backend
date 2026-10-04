@@ -23,6 +23,8 @@ export const graderVerdictSchema = z.object({
   criticalError: z.boolean(),
   feedback: z.string(),
   model: z.string().min(1),
+  /** Set by the server from token usage. The model reply is not trusted for this. */
+  costCents: z.number().nonnegative().optional(),
 });
 export type GraderVerdict = z.infer<typeof graderVerdictSchema>;
 

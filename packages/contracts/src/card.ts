@@ -74,6 +74,8 @@ export const rubricSchema = z.object({
   version: z.number().int().positive(),
   status: z.enum(cardStatuses),
   reviewerId: idSchema.nullable(),
+  reviewerName: z.string().min(1).nullable().optional(),
+  reviewerCrm: z.string().min(1).nullable().optional(),
 });
 export type Rubric = z.infer<typeof rubricSchema>;
 

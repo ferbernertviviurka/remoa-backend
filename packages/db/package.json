@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "exports": { ".": "./src/index.ts" },
-  "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests", "generate": "drizzle-kit generate", "migrate": "drizzle-kit migrate", "seed": "tsx --env-file=../../.env src/seed.ts" },
+  "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests", "generate": "drizzle-kit generate", "migrate": "drizzle-kit migrate", "seed": "tsx --env-file=../../.env src/seed.ts", "seed:maps": "tsx --env-file=../../.env src/seed-maps-run.ts" },
   "dependencies": { "@remoa/contracts": "workspace:*", "drizzle-orm": "^0.45.3", "postgres": "^3.4.9" },
   "devDependencies": { "dotenv": "^17.0.0", "drizzle-kit": "^0.31.11", "tsx": "^4.23.15" }
 }

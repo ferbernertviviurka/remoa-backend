@@ -38,6 +38,7 @@ export const aiCalls = pgTable('ai_calls', {
   outputTokens: integer('output_tokens').notNull().default(0),
   costCents: integer('cost_cents').notNull().default(0),
   latencyMs: integer('latency_ms'),
+  promptVersion: text('prompt_version').notNull().default('legacy'),
   ...timestamps,
 });
 

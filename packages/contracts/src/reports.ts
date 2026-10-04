@@ -8,6 +8,8 @@ export type WeakCard = z.infer<typeof weakCardSchema>;
 export const areaAccuracySchema = z.object({
   area: z.enum(areas),
   matrixItemId: idSchema.nullable(), // null = whole area
+  /** Title of the matrix item, when the attempts were linked to one. */
+  label: z.string().min(1).nullable().optional(),
   attempts: z.number().int().nonnegative(),
   correct: z.number().int().nonnegative(),
   accuracy: probabilitySchema.nullable(), // null when attempts = 0

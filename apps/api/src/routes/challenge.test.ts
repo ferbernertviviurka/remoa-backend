@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
 import { err, ok, type GradeAnswer } from '@remoa/contracts';
 import { makeOptions } from '../challenge/build';
+import type { GradeStream } from '../challenge/session';
 
 config({ path: '../../.env' });
 
@@ -36,7 +37,7 @@ describe('makeOptions (pure)', () => {
 describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   const users: string[] = [];
   let dbm: typeof import('@remoa/db');
-  let mk: (grade?: GradeAnswer) => ReturnType<typeof import('../app').createApp>;
+  let mk: (grade?: GradeAnswer, stream?: GradeStream) => ReturnType<typeof import('../app').createApp>;
   let app: ReturnType<typeof import('../app').createApp>;
   let quota: typeof import('../challenge/quota');
 
@@ -85,7 +86,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     dbm = await import('@remoa/db');
     quota = await import('../challenge/quota');
     const { createApp } = await import('../app');
-    mk = (grade) => createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (users.includes(t) ? t : null), grade });
+    mk = (grade, stream) => createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (users.includes(t) ? t : null), grade, stream });
     app = mk(mockGrader);
   });
   afterAll(async () => {
@@ -302,6 +303,22 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     expect(row!.verdict).toMatchObject({ verdict: 'correct', disputed: false });
   });
 
+  it('voice and text with the same rubric and the same answer get the same verdict', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('draft'));
+    const s = await start(u, { kind: 'board', boardId: w.b });
+    const spoken = 'Coletar hemocultura';
+    const a = s.items.find((i) => i.subId === 's1')!;
+    const b = s.items.find((i) => i.subId === 's2')!;
+    const byText = await answer(u, s.sessionId, a.id, { inputKind: 'text', text: spoken });
+    const byVoice = await answer(u, s.sessionId, b.id, { inputKind: 'voice', text: spoken });
+    expect(byText.json.data.verdict.verdict).toBe(byVoice.json.data.verdict.verdict);
+    expect(byVoice.json.data.gradeLocked).toBe(byText.json.data.gradeLocked);
+    await rate(u, s.sessionId, b.id, 'good');
+    const [row] = await dbm.db.select().from(dbm.attempts).where(and(eq(dbm.attempts.userId, u), eq(dbm.attempts.subId, 's2')));
+    expect(row).toMatchObject({ inputKind: 'voice', answerText: spoken });
+  });
+
   it('approved rubric on a seed board grades for a non-owner (rubric_approved)', async () => {
     const owner = await newUser();
     const u = await newUser();
@@ -477,6 +494,59 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     expect((await post(b, '/start', { kind: 'board', boardId: w.b })).status).toBe(404);
     expect((await post(b, '/finish', { sessionId: 'not-a-uuid' })).status).toBe(422);
   });
+  it('streams feedback for a text answer, then returns the stored verdict without grading again', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    let calls = 0;
+    const fake: GradeStream = async function* () {
+      calls += 1;
+      yield { feedback: 'Faltou ' };
+      yield { feedback: 'volume.' };
+      yield { verdict: { verdict: 'partial', matched: [], missing: ['volume'], criticalError: false, feedback: 'Faltou volume.', model: 'stream-test' } };
+    };
+    const streaming = mk(mockGrader, fake);
+    const s = await start(u, { kind: 'board', boardId: w.b });
+    const it = s.items.find((i) => i.subId === 's1')!;
+    const ask = () => streaming.request('/v1/challenge/answer', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${u}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({ sessionId: s.sessionId, itemId: it.id, durationMs: 4000, inputKind: 'text', text: 'pouco volume' }),
+    });
+    const res = await ask();
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    const events = (await res.text()).trim().split('\n\n').map((block) => JSON.parse(block.replace(/^data: /, '')) as { feedback?: string; result?: { verdict: { verdict: string } | null; fallback: string | null } });
+    expect(events.filter((e) => e.feedback).map((e) => e.feedback).join('')).toBe('Faltou volume.');
+    expect(events.at(-1)?.result?.verdict?.verdict).toBe('partial');
+    const again = (await (await ask()).text()).trim().split('\n\n').map((block) => JSON.parse(block.replace(/^data: /, '')) as { feedback?: string; result?: { verdict: { verdict: string } | null } });
+    expect(again.some((e) => e.feedback)).toBe(false);
+    expect(again.at(-1)?.result?.verdict?.verdict).toBe('partial');
+    expect(calls).toBe(1);
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c!.aiGrades).toBe(1);
+  });
+
+  it('a grade stream that fails refunds the quota and still returns a result', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    const broken: GradeStream = async function* () {
+      yield { feedback: 'Quase' };
+      throw new Error('boom');
+    };
+    const streaming = mk(mockGrader, broken);
+    const s = await start(u, { kind: 'board', boardId: w.b });
+    const it = s.items.find((i) => i.subId === 's1')!;
+    const res = await streaming.request('/v1/challenge/answer', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${u}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({ sessionId: s.sessionId, itemId: it.id, durationMs: 4000, inputKind: 'text', text: 'quase' }),
+    });
+    const events = (await res.text()).trim().split('\n\n').map((block) => JSON.parse(block.replace(/^data: /, '')) as { feedback?: string; result?: { fallback: string | null; verdict: unknown } });
+    expect(events.some((e) => e.feedback === 'Quase')).toBe(true);
+    expect(events.at(-1)?.result).toMatchObject({ fallback: 'grader_error', verdict: null });
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c?.aiGrades ?? 0).toBe(0);
+  });
+
   it('D-200: a note is neither an item nor an edge neighbour / distractor source', async () => {
     const u = await newUser();
     const b = await board(u);

@@ -24,6 +24,8 @@ export const reviewDecisionSchema = z.object({
   reviewItemId: idSchema,
   decision: z.enum(['approved', 'changes_requested', 'rejected']),
   note: z.string().nullable(),
+  /** When present on approve, replaces the rubric points. */
+  rubricPoints: z.array(z.object({ text: z.string().min(1), essential: z.boolean() })).min(1).max(12).optional(),
 });
 export type ReviewDecision = z.infer<typeof reviewDecisionSchema>;
 
@@ -32,6 +34,8 @@ export const resolveDisputeInputSchema = z.object({
   reviewItemId: idSchema,
   outcome: z.enum(disputeOutcomes),
   note: z.string().nullable(),
+  /** When adjusting, these points replace the current rubric and the old ones stay as the diff. */
+  rubricPoints: z.array(z.object({ text: z.string().min(1), essential: z.boolean() })).min(1).max(12).optional(),
 });
 export type ResolveDisputeInput = z.infer<typeof resolveDisputeInputSchema>;
 

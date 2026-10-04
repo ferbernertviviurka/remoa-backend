@@ -58,3 +58,10 @@ export const refundQuota = async (userId: string, now = new Date()) => {
   const { db } = await dbm();
   await db.execute(sql`update usage_counters set ai_grades = ai_grades - 1 where user_id = ${userId} and period = ${period}::date and ai_grades > 0`);
 };
+
+/** Gives back the monthly generation when the PDF or the model produced no board. */
+export const refundGeneration = async (userId: string, now = new Date()) => {
+  const period = await localDay(userId, now);
+  const { db } = await dbm();
+  await db.execute(sql`update usage_counters set ai_generations = ai_generations - 1 where user_id = ${userId} and period = date_trunc('month', ${period}::date)::date and ai_generations > 0`);
+};
