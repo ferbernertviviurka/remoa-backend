@@ -49,7 +49,11 @@ export const attempts = pgTable('attempts', {
   gradeOverridden: boolean('grade_overridden').notNull().default(false),
   durationMs: integer('duration_ms'),
   ...timestamps,
-}, (t) => [index('attempts_user_card_idx').on(t.userId, t.cardId)]);
+}, (t) => [
+  index('attempts_user_card_idx').on(t.userId, t.cardId),
+  index('attempts_user_created_idx').on(t.userId, t.createdAt),
+  index('attempts_user_card_created_idx').on(t.userId, t.cardId, t.createdAt),
+]);
 
 export const reviewQueue = pgTable('review_queue', {
   id: uuid('id').primaryKey().defaultRandom(),

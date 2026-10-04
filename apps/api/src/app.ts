@@ -10,12 +10,13 @@ import { publicRoutes } from './routes/public';
 import { accountAvatarRoutes } from './routes/account-avatar';
 import { accountState } from './admin/core';
 import { adminRoutes } from './routes/admin';
+import { caller } from './ai/caller';
 import { billingRoutes } from './routes/billing';
 import { stripeRoutes } from './routes/stripe';
 import type { createMockStripe, StripePort } from './billing/stripe';
 import { boardsRoutes } from './routes/boards';
 import { cardsRoutes } from './routes/cards';
-import { challengeRoutes } from './routes/challenge';
+import { challengeRoutes, type GradeStream } from './routes/challenge';
 import { coverageRoutes } from './routes/coverage';
 import { homeRoutes } from './routes/home';
 import { importsRoutes } from './routes/imports';
@@ -23,10 +24,16 @@ import { createImports, type AnkiPort } from './imports/imports';
 import { ankiPort } from './imports/anki';
 import { matrixRoutes } from './routes/matrix';
 import { publicReferralRoutes, referralRoutes } from './routes/referral';
+import { aiRoutes } from './routes/ai';
+import { reportsRoutes } from './routes/reports';
+import { editorialRoutes } from './routes/editorial';
 import { reviewRoutes } from './routes/review';
 import { supportRoutes } from './routes/support';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
+import { serve as serveInngest } from 'inngest/hono';
+import { inngest } from './inngest/client';
+import { generateBoard } from './inngest/generate-board';
 
 /** Resolves a Supabase access token to a user id (+ JWT `session_id`, D-124), or null if invalid. A bare id = no session (tests). */
 export type VerifyToken = (token: string) => Promise<string | { userId: string; sessionId: string | null } | null>;
@@ -50,7 +57,7 @@ export type Env = { Variables: { requestId: string; log: Logger; userId: string;
 
 export const fail = (error: AppError) => Response.json({ error } satisfies HttpErrorBody, { status: errorHttpStatus[error.code] });
 
-export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, anki }: { verifyToken: VerifyToken; webOrigin: string; grade?: GradeAnswer; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe>; anki?: AnkiPort }) {
+export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockStripe, anki }: { verifyToken: VerifyToken; webOrigin: string; grade?: GradeAnswer; stream?: GradeStream; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe>; anki?: AnkiPort }) {
   const app = new Hono<Env>();
 
   app.use('*', async (c, next) => {
@@ -79,10 +86,12 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, a
     }
     c.set('userId', userId);
     c.set('sessionId', sessionId);
-    await next();
+    return caller.run(userId, () => next());
   });
 
   app.get('/health', (c) => c.json({ ok: true }));
+  const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard] });
+  app.on(['GET', 'POST', 'PUT'], '/api/inngest', (c) => inngestHandler(c));
   // Lane routes mount under /v1 with requireUser (F02 uploads, F05 ai, F08 stripe webhook is public + signature).
   app.get('/v1/me', requireUser, (c) => c.json({ ok: true, data: { userId: c.get('userId') } }));
 
@@ -102,9 +111,12 @@ export function createApp({ verifyToken, webOrigin, grade, stripe, mockStripe, a
   app.use('/v1/matrix/*', requireUser).route('/v1/matrix', matrixRoutes);
   app.use('/v1/coverage', requireUser).route('/v1/coverage', coverageRoutes);
   app.use('/v1/review', requireUser).use('/v1/review/*', requireUser).route('/v1/review', reviewRoutes);
-  app.use('/v1/challenge', requireUser).use('/v1/challenge/*', requireUser).route('/v1/challenge', challengeRoutes({ grade }));
+  app.use('/v1/challenge', requireUser).use('/v1/challenge/*', requireUser).route('/v1/challenge', challengeRoutes({ grade, stream }));
   app.use('/v1/uploads', requireUser).use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
   app.use('/v1/imports/*', requireUser).route('/v1/imports', importsRoutes(createImports({ anki: anki ?? ankiPort }))); // F06 Anki import
+  app.use('/v1/ai', requireUser).use('/v1/ai/*', requireUser).route('/v1/ai', aiRoutes);
+  app.use('/v1/reports', requireUser).use('/v1/reports/*', requireUser).route('/v1/reports', reportsRoutes);
+  app.use('/v1/editorial', requireUser).use('/v1/editorial/*', requireUser).route('/v1/editorial', editorialRoutes);
   app.use('/v1/assets', requireUser).use('/v1/assets/*', requireUser).route('/v1/assets', assetsRoutes);
 
   app.use('/v1/support/*', requireUser).route('/v1/support', supportRoutes); // F19

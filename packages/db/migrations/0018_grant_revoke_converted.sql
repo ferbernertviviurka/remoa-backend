@@ -1,1 +1,0 @@
-ALTER TYPE "public"."grant_revoke_reason" ADD VALUE 'converted';

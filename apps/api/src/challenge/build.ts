@@ -16,12 +16,14 @@ export type Answered = {
   verdict: import('@remoa/contracts').GraderVerdict | null;
   suggestedGrade: import('@remoa/contracts').Grade | null;
   gradeLocked: boolean;
-  fallback: 'no_rubric' | 'quota' | 'grader_error' | null;
+  fallback: 'no_rubric' | 'quota' | 'grader_error' | 'offline' | null;
 };
 /** Server-only per-item state, kept in `sessions.items` next to the public item (never serialised to the client). */
 export type Internal = {
   nb: string[]; // "A —label→ B" strings for the grader
   skips: number;
+  /** Set while a streamed grade is in flight, so a second request does not charge again. */
+  grading?: boolean;
   answered?: Answered;
   rated?: { grade: import('@remoa/contracts').Grade; due: string; overridden: boolean };
   disputed?: boolean;

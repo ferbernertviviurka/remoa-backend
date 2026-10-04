@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import {
-  MAX_SKIPS_PER_ITEM, challengeItemPublicSchema, err, idSchema, ok, rubricSchema, type Answer, type AnswerOutput, type Dispute, type FinishSession,
-  type FsrsMemory, type GradeAnswer, type Grade, type Rate, type Result, type Skip, type StartSession,
+  MAX_SKIPS_PER_ITEM, challengeItemPublicSchema, err, idSchema, ok, rubricSchema, type Answer, type AnswerInput, type AnswerOutput, type Dispute, type FinishSession,
+  type FsrsMemory, type GradeAnswer, type Grade, type GraderInput, type GraderVerdict, type Rate, type Result, type Skip, type StartSession,
 } from '@remoa/contracts';
 import { preview, verdictToGrade } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
+import { allowGrade } from '../ai/service';
 import { Abort, dbm, guard, run } from '../db';
 import { recordAttempt } from '../review/record-attempt';
 import { buildSession, type Answered, type StoredItem } from './build';
@@ -91,10 +92,11 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (item.x.answered) return outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)); // idempotent: no regrade, no quota
+    if (item.x.grading) throw fail('conflict', 'grade in progress');
     notEnded(row);
 
     const a: Answered = {
-      inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.inputKind === 'text' ? input.text : null,
+      inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.inputKind === 'text' || input.inputKind === 'voice' ? input.text : null,
       verdict: null, suggestedGrade: null, gradeLocked: false, fallback: null,
     };
     if (input.inputKind === 'mcq') {
@@ -106,7 +108,10 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
       if (item.grading === 'none' || !rubric.success) a.fallback = 'no_rubric';
       else if (!grade) a.fallback = 'grader_error'; // no grader wired (prod before F05): do not burn quota
       else if (!(await assertQuota(userId, 'ai_grades')).ok) a.fallback = 'quota';
-      else {
+      else if (!allowGrade(userId)) {
+        a.fallback = 'grader_error';
+        await refundQuota(userId);
+      } else {
         const g = await withTimeout(
           Promise.resolve().then(() => grade({ prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text })),
           GRADER_TIMEOUT_MS,
@@ -125,6 +130,123 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
     await save(tx, s, row.id, items);
     return outputOf(item, a, await previewOf(tx, s, userId, item));
   });
+
+// --- streamed answer (F05: feedback reaches the student while the model writes) -------------------------------------
+
+export type GradeStreamEvent = { feedback?: string; verdict?: GraderVerdict; meta?: { promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number } };
+export type GradeStream = (input: GraderInput) => AsyncIterable<GradeStreamEvent>;
+export type AnswerStreamEvent = { feedback: string } | { result: AnswerOutput } | { error: { code: string; message: string } };
+
+type Spoken = Extract<AnswerInput, { inputKind: 'text' | 'voice' }>;
+type Claim = { type: 'done'; output: AnswerOutput } | { type: 'delegate' } | { type: 'live'; input: GraderInput };
+
+async function* limitStream(source: AsyncIterable<GradeStreamEvent>, ms: number): AsyncGenerator<GradeStreamEvent> {
+  const iterator = source[Symbol.asyncIterator]();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('grader timeout')), ms);
+  });
+  try {
+    while (true) {
+      const next = await Promise.race([iterator.next(), timeout]);
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    clearTimeout(timer);
+    await iterator.return?.();
+  }
+}
+
+/** Reserves the quota and the row, then returns the grader input. The model call happens after the lock is released. */
+async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>> {
+  return locked(userId, input.sessionId, async (tx, s, row, items) => {
+    const idx = findItem(items, input.itemId);
+    const item = items[idx]!;
+    if (item.x.answered) return { type: 'done' as const, output: outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)) };
+    if (item.x.grading) throw fail('conflict', 'grade in progress');
+    notEnded(row);
+    const [card] = await tx.select({ rubric: s.cards.rubric }).from(s.cards).where(eq(s.cards.id, item.cardId));
+    const rubric = rubricSchema.safeParse(card?.rubric);
+    if (item.grading === 'none' || !rubric.success) return { type: 'delegate' as const };
+    const quota = await assertQuota(userId, 'ai_grades');
+    if (!quota.ok) return { type: 'delegate' as const };
+    if (!allowGrade(userId)) {
+      await refundQuota(userId);
+      const a: Answered = { inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.text, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: 'grader_error' };
+      items[idx] = { ...item, x: { ...item.x, answered: a } };
+      await save(tx, s, row.id, items);
+      return { type: 'done' as const, output: outputOf(item, a, await previewOf(tx, s, userId, item)) };
+    }
+    items[idx] = { ...item, x: { ...item.x, grading: true } };
+    await save(tx, s, row.id, items);
+    return { type: 'live' as const, input: { prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text } };
+  });
+}
+
+async function commitStream(userId: string, input: Spoken, verdict: GraderVerdict | null): Promise<Result<AnswerOutput>> {
+  return locked(userId, input.sessionId, async (tx, s, row, items) => {
+    const idx = findItem(items, input.itemId);
+    const item = items[idx]!;
+    if (item.x.answered) return outputOf(item, item.x.answered, await previewOf(tx, s, userId, item));
+    notEnded(row);
+    const a: Answered = { inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.text, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: null };
+    if (!verdict) {
+      a.fallback = 'grader_error';
+      await refundQuota(userId);
+    } else {
+      a.verdict = verdict;
+      a.gradeLocked = verdict.criticalError;
+      a.suggestedGrade = verdictToGrade(verdict, { durationMs: input.durationMs, medianMs: await medianMs(tx, userId, item.mode) });
+    }
+    items[idx] = { ...item, x: { ...item.x, grading: false, answered: a } };
+    await save(tx, s, row.id, items);
+    return outputOf(item, a, await previewOf(tx, s, userId, item));
+  });
+}
+
+/** Text and voice: feedback events, then one result. Anything else is the same JSON answer, as a single event. */
+export const createAnswerStream = (grade?: GradeAnswer, stream?: GradeStream) =>
+  async function* (userId: string, input: AnswerInput): AsyncGenerator<AnswerStreamEvent> {
+    const once = async (): Promise<AnswerStreamEvent> => {
+      const r = await createAnswer(grade)(userId, input);
+      return r.ok ? { result: r.data } : { error: r.error };
+    };
+    if (!stream || (input.inputKind !== 'text' && input.inputKind !== 'voice')) {
+      yield await once();
+      return;
+    }
+    const claim = await claimStream(userId, input);
+    if (!claim.ok) {
+      yield { error: claim.error };
+      return;
+    }
+    if (claim.data.type === 'delegate') {
+      yield await once();
+      return;
+    }
+    if (claim.data.type === 'done') {
+      yield { result: claim.data.output };
+      return;
+    }
+    let verdict: GraderVerdict | null = null;
+    let settled = false;
+    try {
+      try {
+        for await (const event of limitStream(stream(claim.data.input), GRADER_TIMEOUT_MS)) {
+          if (event.feedback) yield { feedback: event.feedback };
+          if (event.verdict) verdict = event.verdict;
+        }
+      } catch {
+        /* keep a verdict that already arrived; otherwise the commit refunds */
+      }
+      const saved = await commitStream(userId, input, verdict);
+      settled = true;
+      yield saved.ok ? { result: saved.data } : { error: saved.error };
+    } finally {
+      if (!settled) await commitStream(userId, input, verdict);
+    }
+  };
 
 /** `authenticated` cannot update review_queue: link the dispute to its attempt with the server connection. */
 const linkDispute = async (reviewItemId: string, attemptId: string) => {

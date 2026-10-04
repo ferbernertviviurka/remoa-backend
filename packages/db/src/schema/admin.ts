@@ -1,4 +1,4 @@
-// F19 Painel admin (CCR-011, D-428–D-430). RLS, REVOKEs and the append-only trigger in migrations/0017_f19_support_admin.sql.
+// F19 Painel admin (CCR-011, D-428–D-430). RLS, REVOKEs and the append-only trigger in migrations/0021_f19_support_admin.sql.
 import { sql } from 'drizzle-orm';
 import { bigint, date, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid, check } from 'drizzle-orm/pg-core';
 import { auditActorTypes, auditResults, paymentStatuses, type PaymentEventType } from '@remoa/contracts';

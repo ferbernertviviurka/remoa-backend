@@ -1,6 +1,6 @@
 {
-  "id": "a2e7356b-f1e9-4b46-ba61-513636e97e6e",
-  "prevId": "c046c262-aa4b-4067-bc30-c3ee7920bd4a",
+  "id": "e1872dfc-5840-4e86-a899-1fdef8a024f0",
+  "prevId": "a2e7356b-f1e9-4b46-ba61-513636e97e6e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3355,7 +3355,8 @@
       "values": [
         "account_deleted",
         "fraud",
-        "manual"
+        "manual",
+        "converted"
       ]
     },
     "public.grant_source": {

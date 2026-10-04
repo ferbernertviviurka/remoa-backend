@@ -11,6 +11,8 @@ export const profiles = pgTable('profiles', {
   school: text('school'),
   year: integer('year'),
   goal: text('goal'),
+  /** F10: council registration stamped on approved rubrics. */
+  crm: text('crm'),
   /** F13: y3_4 | y5_6 | graduated (stageSchema). */
   stage: text('stage'),
   /** F13: processed 512 px WebP key; server-owned (no GRANT to authenticated). */

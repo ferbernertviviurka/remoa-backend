@@ -70,7 +70,14 @@ export const getBoard: GetBoard = async (userId, boardId) => {
       sql`select e.id, e.board_id, e.from_card_id, e.to_card_id, e.label, e.question from edges e ${liveCardEnds} where e.board_id = ${boardId} order by e.created_at, e.id`,
     );
     const edges = edgeRows.map((e) => ({ id: e.id, boardId: e.board_id, fromCardId: e.from_card_id, toCardId: e.to_card_id, label: e.label, question: e.question }));
-    return ok({ board: toBoard(board), cards, edges });
+    const versionOf = board.sourceBoardId ?? board.id;
+    const [published] = await tx
+      .select({ changelog: s.boardVersions.changelog })
+      .from(s.boardVersions)
+      .where(eq(s.boardVersions.boardId, versionOf))
+      .orderBy(desc(s.boardVersions.version))
+      .limit(1);
+    return ok({ board: { ...toBoard(board), changelog: published?.changelog ?? null }, cards, edges });
   });
 };
 

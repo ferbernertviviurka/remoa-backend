@@ -4,16 +4,35 @@ import {
   answerInputSchema, errorHttpStatus, idSchema, itemRefSchema, parseWith, rateInputSchema, startSessionInputSchema, type GradeAnswer, type HttpErrorBody, type Result,
 } from '@remoa/contracts';
 import type { Env } from '../app';
-import { createAnswer, dispute, finishSession, rate, skip, startSession } from '../challenge/session';
+import { createAnswer, createAnswerStream, dispute, finishSession, rate, skip, startSession, type AnswerStreamEvent, type GradeStream } from '../challenge/session';
+
+export type { GradeStream };
 
 const send = <T>(r: Result<T>) =>
   r.ok ? Response.json({ ok: true, data: r.data }) : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
 
 const finishInput = z.object({ sessionId: idSchema });
 
-/** F04. `grade` is the F05 grader port (D-061); absent = text answers fall back to `grader_error`. */
-export const challengeRoutes = ({ grade }: { grade?: GradeAnswer }) => {
+function sse(events: AsyncGenerator<AnswerStreamEvent>) {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const event of events) controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
+      } catch {
+        controller.enqueue(enc.encode(`data: ${JSON.stringify({ error: { code: 'internal', message: 'grade failed' } })}\n\n`));
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' } });
+}
+
+/** F04. `grade` is the F05 grader port (D-061); absent = text answers fall back to `grader_error`. `stream` sends feedback before the verdict. */
+export const challengeRoutes = ({ grade, stream }: { grade?: GradeAnswer; stream?: GradeStream }) => {
   const answer = createAnswer(grade);
+  const streamed = createAnswerStream(grade, stream);
   const body = (c: { req: { json: () => Promise<unknown> } }) => c.req.json().catch(() => null);
   return new Hono<Env>()
     .post('/start', async (c) => {
@@ -22,7 +41,10 @@ export const challengeRoutes = ({ grade }: { grade?: GradeAnswer }) => {
     })
     .post('/answer', async (c) => {
       const i = parseWith(answerInputSchema, await body(c));
-      return send(i.ok ? await answer(c.get('userId'), i.data) : i);
+      if (!i.ok) return send(i);
+      const live = Boolean(stream) && (c.req.header('accept') ?? '').includes('text/event-stream');
+      if (!live) return send(await answer(c.get('userId'), i.data));
+      return sse(streamed(c.get('userId'), i.data));
     })
     .post('/rate', async (c) => {
       const i = parseWith(rateInputSchema, await body(c));

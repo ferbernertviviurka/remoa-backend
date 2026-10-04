@@ -3,8 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests" },
-  "dependencies": { "@remoa/contracts": "workspace:*", "@anthropic-ai/sdk": "^0.131.0" },
-  "devDependencies": {  }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "eval": "tsx scripts/eval.ts"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "1.1.4",
+    "@remoa/contracts": "workspace:*",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
 }

@@ -1,4 +1,4 @@
-// F19 Suporte (CCR-011, D-425–D-427). RLS and column grants in migrations/0017_f19_support_admin.sql (hand-appended).
+// F19 Suporte (CCR-011, D-425–D-427). RLS and column grants in migrations/0021_f19_support_admin.sql (hand-appended).
 import { sql } from 'drizzle-orm';
 import { boolean, check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { supportAuthorTypes, supportTicketStatuses, supportTicketTypes, type SupportContext } from '@remoa/contracts';

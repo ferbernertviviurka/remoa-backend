@@ -8,6 +8,8 @@ export type WeakCard = z.infer<typeof weakCardSchema>;
 export const areaAccuracySchema = z.object({
   area: z.enum(areas),
   matrixItemId: idSchema.nullable(), // null = whole area
+  /** Title of the matrix item, when the attempts were linked to one. */
+  label: z.string().min(1).nullable().optional(),
   attempts: z.number().int().nonnegative(),
   correct: z.number().int().nonnegative(),
   accuracy: probabilitySchema.nullable(), // null when attempts = 0
@@ -18,7 +20,8 @@ export const progressSummarySchema = z.object({
   /** correct ÷ attempts; null without attempts in the window. */
   retention7d: probabilitySchema.nullable(),
   retention30d: probabilitySchema.nullable(),
-  reviewsPerDay: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), count: z.number().int().nonnegative() })),
+  /** Exactly 30 days, oldest first. Days without a review count as zero. */
+  reviewsPerDay: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), count: z.number().int().nonnegative() })).length(30),
   streakDays: z.number().int().nonnegative(),
   weakCards: z.array(weakCardSchema).max(20),
   accuracy: z.array(areaAccuracySchema),

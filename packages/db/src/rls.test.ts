@@ -228,4 +228,19 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
       await m.db.delete(s.referralCodes).where(eq(s.referralCodes.userId, a));
     }
   });
+
+  it('F10: a reviewer reads another user seed_draft; a student does not', async () => {
+    const [draft] = await m.db.insert(s.boards).values({ userId: b, title: 'seed draft', status: 'seed_draft' }).returning();
+    const [card] = await m.db.insert(s.cards).values({ boardId: draft!.id, title: 'conceito' }).returning();
+    await m.db.update(s.profiles).set({ role: 'reviewer' }).where(eq(s.profiles.userId, a));
+    const asReviewer = await m.withUser(a, (tx) => tx.select({ id: s.boards.id }).from(s.boards).where(eq(s.boards.id, draft!.id)));
+    const cards = await m.withUser(a, (tx) => tx.select({ id: s.cards.id }).from(s.cards).where(eq(s.cards.id, card!.id)));
+    expect(asReviewer).toHaveLength(1);
+    expect(cards).toHaveLength(1);
+    await m.db.update(s.profiles).set({ role: 'student' }).where(eq(s.profiles.userId, a));
+    const asStudent = await m.withUser(a, (tx) => tx.select({ id: s.boards.id }).from(s.boards).where(eq(s.boards.id, draft!.id)));
+    const studentCards = await m.withUser(a, (tx) => tx.select({ id: s.cards.id }).from(s.cards).where(eq(s.cards.id, card!.id)));
+    expect(asStudent).toHaveLength(0);
+    expect(studentCards).toHaveLength(0);
+  });
 });

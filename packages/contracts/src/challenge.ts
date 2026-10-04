@@ -91,7 +91,7 @@ export const answerOutputSchema = z.object({
   /** true when criticalError locks the grade at `again`. */
   gradeLocked: z.boolean(),
   /** Why a text answer was not AI-graded (the UI falls back to self-assessment and says why); null otherwise. */
-  fallback: z.enum(['no_rubric', 'quota', 'grader_error']).nullable(),
+  fallback: z.enum(['no_rubric', 'quota', 'grader_error', 'offline']).nullable(),
   preview: intervalPreviewSchema,
 });
 export type AnswerOutput = z.infer<typeof answerOutputSchema>;

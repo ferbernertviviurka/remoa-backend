@@ -17,3 +17,4 @@ jobs:
       - run: supabase start
       - run: pnpm --silent db:env > .env && pnpm db:migrate
       - run: pnpm check # includes the RLS integration test (DATABASE_URL from .env)
+      - run: pnpm ai:eval # F05: concordance must stay within 3 points of the baseline

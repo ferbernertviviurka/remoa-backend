@@ -38,6 +38,8 @@ export const boardSchema = z.object({
   status: z.enum(boardStatuses),
   version: z.number().int().positive(),
   temporalMark: z.string().nullable(),
+  /** F10: texto do changelog da última versão publicada (deste mapa ou do seed de origem). */
+  changelog: z.string().nullable().optional(),
   reviewerId: idSchema.nullable(),
   sourceBoardId: idSchema.nullable(),
   archivedAt: timestampSchema.nullable(), // archived = hidden from "Meus mapas"

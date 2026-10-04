@@ -15,7 +15,8 @@
     "db:generate": "pnpm --filter @remoa/db generate",
     "db:migrate": "pnpm --filter @remoa/db migrate",
     "db:seed": "pnpm --filter @remoa/db seed",
-    "db:make-admin": "pnpm --silent --filter @remoa/db make-admin"
+    "db:make-admin": "pnpm --silent --filter @remoa/db make-admin",
+    "ai:eval": "pnpm --filter @remoa/ai eval"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

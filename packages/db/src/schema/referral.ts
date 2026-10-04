@@ -1,4 +1,4 @@
-// F18 Indicação de amigos (CCR-010, D-380–D-389). RLS, grants and referral_friends() in migrations/0015_f18_referral.sql (hand-appended).
+// F18 Indicação de amigos (CCR-010, D-380–D-389). RLS, grants and referral_friends() in migrations/0018_f18_referral.sql (hand-appended).
 import { sql } from 'drizzle-orm';
 import { check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { grantRevokeReasons, grantSources, referralChannels, referralRejectReasons, referralStatuses } from '@remoa/contracts';

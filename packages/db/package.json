@@ -3,8 +3,28 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests", "generate": "drizzle-kit generate", "migrate": "drizzle-kit migrate", "seed": "tsx --env-file=../../.env src/seed.ts", "make-admin": "tsx --env-file=../../.env src/make-admin.ts" },
-  "dependencies": { "@remoa/contracts": "workspace:*", "drizzle-orm": "^0.45.3", "postgres": "^3.4.9" },
-  "devDependencies": { "dotenv": "^17.0.0", "drizzle-kit": "^0.31.11", "tsx": "^4.23.15" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "generate": "drizzle-kit generate",
+    "migrate": "drizzle-kit migrate",
+    "seed": "tsx --env-file=../../.env src/seed.ts",
+    "seed:maps": "tsx --env-file=../../.env src/seed-maps-run.ts",
+    "make-admin": "tsx --env-file=../../.env src/make-admin.ts"
+  },
+  "dependencies": {
+    "@remoa/ai": "workspace:^",
+    "@remoa/contracts": "workspace:*",
+    "drizzle-orm": "^0.45.3",
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "dotenv": "^17.0.0",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15"
+  }
 }
