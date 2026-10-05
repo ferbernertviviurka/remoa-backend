@@ -1,0 +1,10 @@
+**/node_modules
+**/.turbo
+**/coverage
+.git
+.env
+.env.*
+!.env.example
+supabase/.temp
+docs
+.claude
