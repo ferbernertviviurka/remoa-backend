@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
 import { entitlementsSchema, planDefinition, planFeatureKeys, quotaKeySchema, type Entitlements, type PlanFeatureKey } from './billing';
-import { goalSchema, segmentSchema } from './onboarding';
+import { goalSchema, goalsSchema, segmentSchema, type Goal } from './onboarding';
 
 /** FR-1: /conta/[secao]. */
 export const accountSections = ['perfil', 'seguranca', 'plano', 'preferencias', 'dados'] as const;
@@ -43,15 +43,73 @@ export const nameSchema = z
   .pipe(z.string().min(2).max(60).regex(NAME_CHARS).regex(/\p{L}/u));
 export const isValidName = (s: string) => nameSchema.safeParse(s).success;
 
+// --- personal data (CCR-017, D-570/D-571) -------------------------------------
+// PII: owner-only (profiles RLS select = own row; written only by the API). Never in logs, Mixpanel/telemetry, admin views,
+// or the referral/share surfaces. Included in the LGPD export (whole profiles row) and gone with the account (cascade).
+export const userTypes = ['aluno', 'professor', 'medico_formado'] as const;
+export const userTypeSchema = z.enum(userTypes);
+export type UserType = z.infer<typeof userTypeSchema>;
+/** "Sexo" in the form; inclusive options + "Prefiro não dizer". Labels in @remoa/strings. */
+export const sexes = ['feminino', 'masculino', 'nao_binario', 'outro', 'prefiro_nao_dizer'] as const;
+export const sexSchema = z.enum(sexes);
+export type Sex = z.infer<typeof sexSchema>;
+export const brUfs = [
+  'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
+] as const;
+export const brUfSchema = z.enum(brUfs);
+export type BrUf = z.infer<typeof brUfSchema>;
+
+const digits = (s: string) => s.replace(/\D/g, '');
+/**
+ * BR phone → E.164 (`+55` + DDD + number), or null if invalid. Accepts any mask ("(11) 91234-5678", "+55 11 ...").
+ * DDD 11–99 without a 0; 11-digit numbers are mobiles (start with 9); 10-digit landlines start with 2–5.
+ */
+export function normalizeBrPhone(input: string): string | null {
+  let d = digits(input);
+  if ((d.length === 12 || d.length === 13) && d.startsWith('55')) d = d.slice(2);
+  if (!/^[1-9][1-9]/.test(d)) return null;
+  const n = d.slice(2);
+  if (n.length === 9 ? n[0] !== '9' : n.length !== 8 || !/^[2-5]/.test(n)) return null;
+  return `+55${d}`;
+}
+export const BR_PHONE_E164 = /^\+55[1-9]{2}(9\d{8}|[2-5]\d{7})$/;
+export const brPhoneSchema = z.string().max(30).transform((v, ctx) => normalizeBrPhone(v) ?? (ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid phone' }), z.NEVER));
+/** CEP → 8 digits ("01310-100" → "01310100"). The web fills the rest from ViaCEP; the server never calls it. */
+export const cepSchema = z.string().max(9).transform(digits).pipe(z.string().regex(/^\d{8}$/));
+const line = (max: number) => z.string().trim().min(1).max(max);
+export const addressSchema = z
+  .object({
+    cep: cepSchema,
+    street: line(120),
+    /** "S/N" allowed. */
+    number: line(10),
+    complement: z.string().trim().max(60).transform((v) => v || null).nullable().default(null),
+    district: line(80),
+    city: line(80),
+    uf: brUfSchema,
+  })
+  .strict();
+export type Address = z.infer<typeof addressSchema>;
+export type AddressInput = z.input<typeof addressSchema>;
+
 export const profileSchema = z.object({
   userId: idSchema,
   name: z.string().nullable(),
   /** Storage key of the processed 512 px avatar; server-owned (no column GRANT). */
   avatarKey: z.string().nullable(),
   avatarColor: avatarColorSchema,
+  /** Primary goal = `goals[0]` (kept for completeness and older readers; the server keeps both in sync). */
   goal: goalSchema.nullable(),
+  /** CCR-017: every selected objective, in the order picked. */
+  goals: z.array(goalSchema),
   stage: stageSchema.nullable(),
   timezone: z.string().min(1),
+  /** CCR-017 personal data (PII, owner-only). null = not given; users from before G14 have userType null (D-571). */
+  userType: userTypeSchema.nullable(),
+  sex: sexSchema.nullable(),
+  /** E.164 (+55…). */
+  phone: z.string().regex(BR_PHONE_E164).nullable(),
+  address: addressSchema.nullable(),
 });
 export type Profile = z.infer<typeof profileSchema>;
 
@@ -61,11 +119,37 @@ export type AvatarVariants = z.infer<typeof avatarVariantsSchema>;
 
 const nonEmpty = (v: object) => Object.keys(v).length > 0;
 export const updateProfileInputSchema = z
-  .object({ name: nameSchema, goal: goalSchema, stage: stageSchema, avatarColor: avatarColorSchema })
+  .object({
+    name: nameSchema,
+    /** Legacy single goal: the server stores it as `goals = [goal]`. Send `goals` instead. */
+    goal: goalSchema,
+    goals: goalsSchema,
+    stage: stageSchema,
+    avatarColor: avatarColorSchema,
+    // CCR-017 (D-571): userType can be changed, not cleared; null clears sex, phone or address.
+    userType: userTypeSchema,
+    sex: sexSchema.nullable(),
+    phone: brPhoneSchema.nullable(),
+    address: addressSchema.nullable(),
+  })
   .partial()
   .strict()
-  .refine(nonEmpty, 'nothing to update');
+  .refine(nonEmpty, 'nothing to update')
+  .refine((v) => v.goal === undefined || v.goals === undefined, 'send goal or goals, not both');
 export type UpdateProfileInput = z.input<typeof updateProfileInputSchema>;
+/** D-570: `goal`/`goals` in an update → both columns, kept in sync (goal = goals[0]). Used by the API and the mock. */
+export const syncGoals = (i: { goal?: Goal; goals?: Goal[] }): { goal?: Goal | null; goals?: Goal[] } =>
+  i.goals !== undefined ? { goals: i.goals, goal: i.goals[0] ?? null } : i.goal !== undefined ? { goals: [i.goal], goal: i.goal } : {};
+
+/**
+ * CCR-017 (D-570/D-571): the sign-up's "Sobre você" step. Only `userType` is required; sex, phone and address are optional.
+ * The web validates the form with this and sends it (without nulls) to PATCH /v1/account/profile right after sign-up.
+ * Goals, stage and area are no longer asked here: the onboarding (F12) asks them.
+ */
+export const signUpProfileInputSchema = z
+  .object({ userType: userTypeSchema, sex: sexSchema.optional(), phone: brPhoneSchema.optional(), address: addressSchema.optional() })
+  .strict();
+export type SignUpProfileInput = z.input<typeof signUpProfileInputSchema>;
 
 /** POST /v1/account/avatar: `key` returned by POST /v1/uploads/sign with kind 'avatar'. */
 export const confirmAvatarInputSchema = z.object({ key: z.string().min(1).max(300) });
@@ -121,8 +205,8 @@ export const preferencesSchema = z.object({
   reduceMotion: z.boolean().nullable(),
   reminderEnabled: z.boolean(),
   reminderHour: reminderHourSchema,
-  /** Effective value (already min'ed with the plan cap). */
-  newCardsPerDay: z.number().int().positive(),
+  /** Effective value (already min'ed with the plan cap); null = unlimited (D-647). */
+  newCardsPerDay: z.number().int().positive().nullable(),
   emailReviewReminders: z.boolean(),
   emailProductNews: z.boolean(),
 });
@@ -138,11 +222,12 @@ export const DEFAULT_PREFERENCES: Omit<Preferences, 'newCardsPerDay'> = {
   emailProductNews: false,
 };
 
-/** Stored choice (null = never chosen) capped by the plan; used by GET /me and the review queue. */
-export const effectiveNewCardsPerDay = (stored: number | null, planCap: number) => Math.min(stored ?? planCap, planCap);
+/** Stored choice (null = never chosen / no personal cap) capped by the plan (null = unlimited); used by GET /me and the review queue. */
+export const effectiveNewCardsPerDay = (stored: number | null, planCap: number | null) => (planCap === null ? stored : Math.min(stored ?? planCap, planCap));
 
 export const updatePreferencesInputSchema = preferencesSchema
-  .extend({ newCardsPerDay: newCardsPerDaySchema })
+  /** null = drop the personal cap and follow the plan (unlimited on Pro/Founder). */
+  .extend({ newCardsPerDay: newCardsPerDaySchema.nullable() })
   .partial()
   .strict()
   .refine(nonEmpty, 'nothing to update');

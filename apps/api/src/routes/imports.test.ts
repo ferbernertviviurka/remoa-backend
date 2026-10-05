@@ -38,6 +38,12 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
     return id;
   };
+  /** D-648: Free gets one completed Anki import; tests that import twice run on Pro. */
+  const proUser = async () => {
+    const id = await newUser();
+    await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan: 'pro', status: 'active' });
+    return id;
+  };
   /** `board` is required (D-291): starts without one get the F17 default (new map "Clínica Médica"). */
   const withBoard = (path: string, body: unknown) =>
     path === '/anki' && body && typeof body === 'object' && !('board' in body) ? { ...body, board: { title: 'Clínica Médica', target: 'new' } } : body;
@@ -106,7 +112,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
   });
 
   it('start: creates the board and cards, reports, and a re-import reuses the board and adds nothing (D-118)', async () => {
-    const u = await newUser();
+    const u = await proUser();
     const key = await putPkg(u);
     drafts = [draft(1), draft(2, { deckName: 'Clínica Médica::Choque' })];
     const first = await runImport(u, key);
@@ -187,7 +193,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const over = await call(u, 'POST', '/anki', { key, plan: plan(2) });
     expect(over.status).toBe(402);
     expect(over.json.error!.message).toBe('cards');
-    estimate = 5001;
+    estimate = 201;
     expect((await call(u, 'POST', '/anki', { key, plan: plan(0) })).json.error!.message).toBe('cards');
     estimate = null;
     const rows = await dbm.db.execute(sql`select 1 from imports where user_id = ${u}`);
@@ -244,7 +250,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     expect(p).toMatchObject({ status: 'failed', error: 'corrupt collection' });
   });
   it('image drafts with the same title on the same PNG but different masks are distinct; re-import skips them all', async () => {
-    const u = await newUser();
+    const u = await proUser();
     media['same.png'] = await sharp({ create: { width: 50, height: 50, channels: 3, background: '#369' } }).png().toBuffer();
     const sq = (o: number) => [{ x: o, y: o }, { x: o + 0.2, y: o }, { x: o + 0.2, y: o + 0.2 }];
     drafts = [0.1, 0.4, 0.7].map((o, i) => ({ ...draft(i), title: 'Card do Anki', type: 'image', front: null, back: null, media: ['same.png'], payload: { media: 'same.png', masks: [{ polygon: sq(o), label: `m${i}` }] } }) as AnkiDraft);
@@ -253,6 +259,34 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     expect(first.report).toMatchObject({ imported: 3, skippedDuplicate: 0 });
     const again = await runImport(u, key, plan(3), { title: 'Clínica Médica', target: { boardId: first.report.boardIds[0] } });
     expect(again.report).toMatchObject({ imported: 0, skippedDuplicate: 3 });
+  });
+
+  it('D-648: Free gets 1 completed Anki import (2nd is 402 "anki" at sign and start); failed ones do not count; Pro is unlimited', async () => {
+    const u = await newUser();
+    drafts = [draft(1)];
+    await dbm.db.insert(dbm.imports).values({ userId: u, kind: 'anki', status: 'failed' });
+    await runImport(u, await putPkg(u), plan(1));
+    const sign = await call(u, 'POST', '/anki/sign', { sizeBytes: 1000 });
+    expect(sign).toMatchObject({ status: 402, json: { error: { code: 'quota_exceeded', message: 'anki' } } });
+    const again = await call(u, 'POST', '/anki', { key: await putPkg(u), plan: plan(1) });
+    expect(again).toMatchObject({ status: 402, json: { error: { code: 'quota_exceeded', message: 'anki' } } });
+    const p = await proUser();
+    for (let i = 0; i < 2; i++) await runImport(p, await putPkg(p), plan(1), { title: `Pro ${i}`, target: 'new' });
+    expect((await call(p, 'POST', '/anki/sign', { sizeBytes: 1000 })).status).toBe(200);
+  });
+
+  it('D-647: Free deck of 201 cards is 402 "cards" even with room; Pro has no per-file cap', async () => {
+    const u = await newUser();
+    drafts = [draft(1)];
+    estimate = 201;
+    const r = await call(u, 'POST', '/anki', { key: await putPkg(u), plan: plan(0) });
+    expect(r).toMatchObject({ status: 402, json: { error: { message: 'cards' } } });
+    const p = await proUser();
+    estimate = 25_000;
+    const big = await call(p, 'POST', '/anki', { key: await putPkg(p), plan: plan(0) });
+    estimate = null;
+    expect(big.status).toBe(200);
+    await finish(p, big.json.data.importId);
   });
 
   it('quota: fresh Free user with 0 cards and estimatedCards 308 -> 402 "cards", no imports row', async () => {
@@ -326,7 +360,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
   });
 
   it('a failed image does not shadow a later identical card; non-parser errors are stored generic', async () => {
-    const u = await newUser();
+    const u = await proUser();
     const sq = [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.1 }, { x: 0.5, y: 0.5 }];
     const img = (i: number) => ({ ...draft(i), type: 'image', front: null, back: null, media: ['late.png'], payload: { media: 'late.png', masks: [{ polygon: sq, label: 'a' }] } }) as AnkiDraft;
     drafts = [img(1), img(2)];
@@ -394,7 +428,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
   });
 
   it('F17: target existing deduplicates (0 cards on re-import) and merges matrixItemIds', async () => {
-    const u = await newUser();
+    const u = await proUser();
     // Insert a real matrix item with a unique code to test merging
     const code = `T2-TST-${uuid().slice(0, 8)}`;
     const [item] = await dbm.db.execute<{ id: string }>(sql`insert into matrix_items (area, code, title) values ('CM', ${code}, 'T2 Test Item') returning id`);

@@ -10,7 +10,8 @@ export const quotaKeys = ['ai_grades', 'ai_generations', 'boards', 'cards'] as c
 export const quotaKeySchema = z.enum(quotaKeys);
 export type QuotaKey = z.infer<typeof quotaKeySchema>;
 
-export const paywallReasons = ['ai_quota', 'boards', 'cards', 'pdf'] as const;
+/** `anki` = per-account Anki import cap (D-648); the server answers `quota_exceeded` 'anki'. */
+export const paywallReasons = ['ai_quota', 'boards', 'cards', 'pdf', 'anki'] as const;
 export type PaywallReason = (typeof paywallReasons)[number];
 
 export const usageCountersSchema = z.object({
@@ -32,8 +33,14 @@ export const entitlementsSchema = z.object({
   status: z.enum(subscriptionStatuses).nullable(), // null = never subscribed
   limits: quotaRecord(z.number().int().nonnegative().nullable()),
   usage: quotaRecord(z.number().int().nonnegative()),
-  newCardsPerDay: z.number().int().positive(),
-  ankiImportMaxCards: z.number().int().positive(),
+  /** D-647: null = unlimited (Pro/Founder). */
+  newCardsPerDay: z.number().int().positive().nullable(),
+  /** Cards per Anki file; null = unlimited. */
+  ankiImportMaxCards: z.number().int().positive().nullable(),
+  /** D-648: completed Anki imports per account (lifetime); null = unlimited. */
+  ankiImports: z.number().int().nonnegative().nullable(),
+  /** Completed Anki imports so far (`imports` kind anki, status done). */
+  ankiImportsUsed: z.number().int().nonnegative(),
   renewsAt: timestampSchema.nullable(),
   /** F08: canceled in the portal, Pro until renewsAt. */
   cancelAtPeriodEnd: z.boolean(),
@@ -50,15 +57,16 @@ export const entitlementsSchema = z.object({
 });
 
 /**
- * F08 plan table (provisional, Q-002), shared by server (enforcement) and pricing page (display).
- * Windows: ai_grades per local study day; ai_generations per calendar month; boards/cards = live totals.
+ * D-647 plan table, shared by server (enforcement) and pricing page (display). null = unlimited.
+ * Windows: ai_grades per local study day; ai_generations per calendar month; boards/cards = live totals;
+ * newCardsPerDay per study day; ankiImportMaxCards per file; ankiImports per account (lifetime, completed imports).
  */
 export const PLAN_LIMITS = {
-  free: { limits: { ai_grades: 20, ai_generations: 1, boards: 2, cards: 50 }, newCardsPerDay: 10, ankiImportMaxCards: 5000 },
-  pro: { limits: { ai_grades: null, ai_generations: 20, boards: null, cards: null }, newCardsPerDay: 20, ankiImportMaxCards: 20000 },
-  /** D-375: lifetime one-time purchase = Pro + unlimited AI. Never renews, never lapses. */
-  founder: { limits: { ai_grades: null, ai_generations: null, boards: null, cards: null }, newCardsPerDay: 20, ankiImportMaxCards: 20000 },
-} as const satisfies Record<z.infer<typeof planSchema>, Pick<Entitlements, 'limits' | 'newCardsPerDay' | 'ankiImportMaxCards'>>;
+  free: { limits: { ai_grades: 20, ai_generations: 0, boards: 2, cards: 50 }, newCardsPerDay: 10, ankiImportMaxCards: 200, ankiImports: 1 },
+  pro: { limits: { ai_grades: 50, ai_generations: 5, boards: null, cards: null }, newCardsPerDay: null, ankiImportMaxCards: null, ankiImports: null },
+  /** D-375/D-647: lifetime one-time purchase = Pro + unlimited AI grades and PDF maps. Never renews, never lapses. */
+  founder: { limits: { ai_grades: null, ai_generations: null, boards: null, cards: null }, newCardsPerDay: null, ankiImportMaxCards: null, ankiImports: null },
+} as const satisfies Record<z.infer<typeof planSchema>, Pick<Entitlements, 'limits' | 'newCardsPerDay' | 'ankiImportMaxCards' | 'ankiImports'>>;
 export const PRO_GRACE_DAYS = 7;
 export const PRICES_BRL = { monthly: 39, annual: 349 } as const;
 /** D-375: Founder (lifetime) fallback/mock price in centavos; the real one comes from STRIPE_PRICE_LIFETIME. */
@@ -105,13 +113,13 @@ export type RedirectUrl = z.infer<typeof redirectUrlSchema>;
 
 // --- F15 planos e checkout (D-183–D-187) ------------------------------------
 /** F15 FR-4 matrix rows, in display order. Values derive from PLAN_LIMITS (still the single source). */
-export const planFeatureKeys = ['boards', 'cards', 'ai_grades', 'ai_generations', 'anki_import_cards', 'new_cards_per_day'] as const;
+export const planFeatureKeys = ['boards', 'cards', 'ai_grades', 'ai_generations', 'anki_imports', 'anki_import_cards', 'new_cards_per_day'] as const;
 export type PlanFeatureKey = (typeof planFeatureKeys)[number];
-/** null = unlimited. ai_grades = correções por IA/dia; ai_generations = mapas de PDF/mês; anki_import_cards = cards por arquivo (F06). */
+/** null = unlimited. ai_grades = correções por IA/dia; ai_generations = mapas de PDF/mês (0 = não incluso); anki_imports = importações Anki na conta; anki_import_cards = cards por arquivo (F06). */
 export type PlanDefinition = Record<PlanFeatureKey, number | null>;
 export const planDefinition = (plan: z.infer<typeof planSchema>): PlanDefinition => {
   const p = PLAN_LIMITS[plan];
-  return { ...p.limits, anki_import_cards: p.ankiImportMaxCards, new_cards_per_day: p.newCardsPerDay };
+  return { ...p.limits, anki_imports: p.ankiImports, anki_import_cards: p.ankiImportMaxCards, new_cards_per_day: p.newCardsPerDay };
 };
 
 const cents = z.number().int().nonnegative();

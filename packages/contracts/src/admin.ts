@@ -6,6 +6,7 @@ import { areas, boardStatuses, plans, profileRoles } from './enums';
 import { boardGraphSchema } from './board';
 import { paymentMethods } from './billing';
 import { referralChannels, referralRejectReasons } from './referral';
+import { segmentSchema } from './onboarding';
 import { supportAuthorTypes, supportAttachmentSchema, supportContextSchema, supportTicketStatuses, supportTicketTypes } from './support';
 
 // --- enums ------------------------------------------------------------------------------
@@ -35,6 +36,10 @@ export const adminActions = [
   'payment.webhook', 'referral.auto_reject',
   /** `pnpm db:make-admin <email>` (actor system). */
   'user.make_admin',
+  /** CCR-020: every GET /v1/admin/waitlist (e-mails are PII). Reason = ADMIN_AUTO_REASONS.waitlistView, target route. */
+  'waitlist.view',
+  /** CCR-030: every GET /v1/admin/store-waitlist (counts only). Reason = ADMIN_AUTO_REASONS.storeWaitlistView, target route. */
+  'store_waitlist.view',
 ] as const;
 export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route'] as const;
 /** List filters. `deleting` = account in the 7-day grace (F13); `pending` = e-mail not confirmed. */
@@ -46,7 +51,7 @@ export const adminMapStatuses = [...boardStatuses, 'archived'] as const;
 /** Admin view of a referral: `in_review` = rejected by velocity_limit/fraud_signals, awaiting a manual decision (P-190). */
 export const adminReferralStatuses = ['invited', 'signed_up', 'qualified', 'in_review', 'rejected', 'expired'] as const;
 export const overviewPeriods = [7, 30, 90] as const;
-export const adminExportResources = ['overview', 'users', 'payments', 'audit', 'maps', 'referrals'] as const;
+export const adminExportResources = ['overview', 'users', 'payments', 'audit', 'maps', 'referrals', 'waitlist', 'store_waitlist'] as const;
 /** "Plano" filter chips (CCR-014): `pro_grant` = Pro from a running grant ("Pro por indicação"), i.e. `grantUntil` not null. */
 export const adminUserPlanFilters = [...plans, 'pro_grant'] as const;
 
@@ -386,6 +391,31 @@ export type AdminTicketDetail = z.infer<typeof adminTicketDetailSchema>;
 /** Reply (e-mail + app) or internal note. Routine inbox actions take no typed reason (D-432). */
 export const adminTicketReplyInputSchema = z.object({ body: z.string().trim().min(1).max(5000), internal: z.boolean().default(false) });
 export type AdminTicketReplyInput = z.input<typeof adminTicketReplyInputSchema>;
+
+// --- waitlist (CCR-020, D-578) -------------------------------------------------------------------
+/**
+ * GET /v1/admin/waitlist: F16 sign-ups (`waitlist` table), newest first; `q` = e-mail contains (ILIKE). Behind requireAdmin
+ * (404 for non-admin). Read-only and not sensitive (no reauth), but every call writes one `waitlist.view` audit row
+ * (withAdmin, sensitive: false, reason ADMIN_AUTO_REASONS.waitlistView, target route '/v1/admin/waitlist'), counts in `after`.
+ * CSV: POST /v1/admin/export with resource 'waitlist' (typed reason, `export.csv` row), same filters as this query.
+ */
+export const ADMIN_AUTO_REASONS = { waitlistView: 'consulta da lista de espera', storeWaitlistView: 'consulta da lista de espera da loja' } as const;
+export const adminWaitlistListQuerySchema = adminListQuerySchema.extend({ segment: segmentSchema.optional() });
+export type AdminWaitlistListQuery = z.input<typeof adminWaitlistListQuerySchema>;
+export const adminWaitlistRowSchema = z.object({
+  id: idSchema,
+  email: z.string(),
+  /** Stored as text (pre-validation rows may hold anything); null = not given. */
+  segment: z.string().nullable(),
+  /** Price variant from ?v= (e.g. '29'). */
+  variant: z.string().nullable(),
+  /** `waitlist.source` (the landing origin). */
+  origin: z.string().nullable(),
+  createdAt: timestampSchema,
+});
+export type AdminWaitlistRow = z.infer<typeof adminWaitlistRowSchema>;
+export const adminWaitlistPageSchema = pageOf(adminWaitlistRowSchema);
+export type AdminWaitlistPage = z.infer<typeof adminWaitlistPageSchema>;
 
 // --- export (FR-13, FR-16, FR-19, FR-21) --------------------------------------------------------
 /** POST /v1/admin/export → text/csv; audited; users/payments also e-mail an alert to the admin. */

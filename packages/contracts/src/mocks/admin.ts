@@ -1,7 +1,10 @@
 // F19 admin mocks for the frontend (T7–T10) until T3–T5 land. Names and values are fictional (as in the *.dc.html mocks).
 import { err, ok, parseWith } from '../errors';
 import {
+  ADMIN_AUTO_REASONS,
   adminExportInputSchema,
+  adminWaitlistListQuerySchema,
+  type AdminWaitlistRow,
   adminTicketReplyInputSchema,
   markPaidInputSchema,
   reasonInputSchema,
@@ -94,6 +97,11 @@ const byId = <T extends { id: string }>(list: T[], id: string) => {
   return x ? ok(structuredClone(x)) : err<T>('not_found', 'not found');
 };
 
+export const adminWaitlistFixtures: AdminWaitlistRow[] = [
+  { id: fid(9101), email: 'carla@example.com', segment: 'y5_6', variant: '29', origin: 'landing', createdAt: at(-30) },
+  { id: fid(9102), email: 'diego@example.com', segment: 'graduated', variant: null, origin: null, createdAt: at(-50) },
+];
+
 export const adminMocks = {
   getAdminMe: (async () => ok(adminMeFixture)) satisfies Api.GetAdminMe,
   getAdminOverview: (async (_a, period) => ok({ ...adminOverviewFixture, period })) satisfies Api.GetAdminOverview,
@@ -107,6 +115,13 @@ export const adminMocks = {
   listAdminTickets: (async (_a, q) => ok({ ...page(adminTicketFixtures.map((t) => ({ id: t.id, number: t.number, user: t.user, type: t.type, subject: t.subject, status: t.status, assignedTo: t.assignedTo,
     preview: t.messages.filter((m) => !m.internal).at(-1)?.body.slice(0, 140) ?? '', lastUserMessageAt: t.lastUserMessageAt, createdAt: t.createdAt })), q), counts: { all: 1, open: 1, in_review: 0, answered: 0, resolved: 0, unassigned: 1 } })) satisfies Api.ListAdminTickets,
   getAdminTicket: (async (_a, id) => byId(adminTicketFixtures, id)) satisfies Api.GetAdminTicket,
+  listAdminWaitlist: (async (_a, raw) => {
+    const q = parseWith(adminWaitlistListQuerySchema, raw);
+    if (!q.ok) return q;
+    const rows = adminWaitlistFixtures.filter((r) => (!q.data.q || r.email.includes(q.data.q.toLowerCase())) && (!q.data.segment || r.segment === q.data.segment));
+    record('waitlist.view', 'route', '/v1/admin/waitlist', ADMIN_AUTO_REASONS.waitlistView);
+    return ok(page(rows, q.data));
+  }) satisfies Api.ListAdminWaitlist,
   listAudit: (async (_a, q) => ok({ ...page(audit, q), summary: { total: audit.length, admin: audit.filter((e) => e.actorType === 'admin').length, system: audit.filter((e) => e.actorType === 'system' || e.actorType === 'stripe').length, denied: audit.filter((e) => e.result === 'denied').length } })) satisfies Api.ListAudit,
   grantProMonth: action('user.grant_pro_month', 'user'),
   sendPasswordReset: action('user.password_reset', 'user'),

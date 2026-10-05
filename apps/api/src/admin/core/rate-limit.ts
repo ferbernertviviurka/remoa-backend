@@ -4,7 +4,7 @@ import type { AdminEnv } from './require-admin';
 import { fail } from './require-admin';
 
 const WINDOW_MS = 60_000;
-export const ADMIN_RATE = { read: 120, action: 30 } as const;
+export const ADMIN_RATE = { read: 600, action: 30 } as const;
 const hits = new Map<string, number[]>();
 
 /** ponytail: per-process, in memory; move to the DB/Redis if the API scales out (Q-008). */
@@ -19,6 +19,8 @@ export function takeAdminSlot(adminId: string, kind: keyof typeof ADMIN_RATE, no
 
 /** Mount after requireAdmin (needs c.get('userId')). GET/HEAD = reads, everything else = actions. */
 export const adminRateLimit = createMiddleware<AdminEnv>(async (c, next) => {
+  // D-567: the web layout gate (+ nav prefetches) calls /me on every render; it is not budgeted (still behind requireAdmin).
+  if (c.req.method === 'GET' && c.req.path.endsWith('/admin/me')) return next();
   const kind = c.req.method === 'GET' || c.req.method === 'HEAD' ? 'read' : 'action';
   if (!takeAdminSlot(c.get('userId'), kind)) return fail({ code: 'rate_limited', message: 'too many requests' });
   await next();

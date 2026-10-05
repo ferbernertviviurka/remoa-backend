@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { challengeModes, fsrsCardStates, grades, inputKinds, mapStates, verdicts } from './enums';
+import { areas, challengeModes, fsrsCardStates, grades, inputKinds, mapStates, verdicts } from './enums';
 import { idSchema, probabilitySchema, subIdSchema, timestampSchema } from './common';
 import { graderVerdictSchema } from './ai';
 
@@ -52,6 +52,21 @@ export const queueItemSchema = z.object({
   mode: z.enum(challengeModes).optional(),
 });
 export type QueueItem = z.infer<typeof queueItemSchema>;
+
+/**
+ * G15 (D-641): start a daily session "já filtrada". Same rule as the queue: `boardIds`/`area` restrict the candidate cards before the new-card
+ * budget is applied; `reasons` then keeps those kinds (default: due + new, "em atenção" only when asked).
+ * `ahead` = "Adiantar revisões": instead of the queue, items due within REVIEW_HUB_AHEAD_DAYS (does not change the schedule of the others).
+ */
+export const queueFilterSchema = z
+  .object({
+    reasons: z.array(z.enum(queueReasons)).min(1).max(3).optional(),
+    boardIds: z.array(idSchema).min(1).max(100).optional(),
+    area: z.enum(areas).optional(),
+    ahead: z.boolean().optional(),
+  })
+  .strict();
+export type QueueFilter = z.infer<typeof queueFilterSchema>;
 
 /** Default new items per day until entitlements (F08) set 20 Pro / 10 Free. */
 export const DEFAULT_NEW_PER_DAY = 20;

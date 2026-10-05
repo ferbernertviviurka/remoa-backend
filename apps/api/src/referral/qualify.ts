@@ -6,7 +6,6 @@ import { applyPendingCredits } from '../billing/credits';
 import { dbm } from '../db';
 import { rejectReason } from './fraud';
 import { grantBothSides, type GrantFn } from './grant';
-import { trackServer } from '../telemetry/server';
 import { notifyRewardGranted } from './notify';
 
 export type QualifyOutcome = 'none' | 'pending' | 'qualified' | 'rejected';
@@ -57,16 +56,12 @@ export async function maybeQualifyReferral(
 
     if (res.outcome === 'rejected') {
       log.warn('referral_rejected', { event: 'referral_rejected', reason: res.reason });
-      void trackServer('referral_rejected', { reason: res.reason }, userId);
     }
     if (res.outcome === 'qualified') {
       log.info('first_board_created', { event: 'first_board_created' });
       log.info('referral_qualified', { event: 'referral_qualified' });
-      void trackServer('first_board_created', {}, userId);
-      void trackServer('referral_qualified', {}, userId);
       for (const g of res.granted) {
         log.info('referral_reward_granted', { event: 'referral_reward_granted', side: g.side, kind: g.kind });
-        void trackServer('referral_reward_granted', { side: g.side, kind: g.kind }, g.userId);
       }
       // FR-19: Stripe only after commit; a failure leaves the credit pending for the sweep
       for (const g of res.granted) if (g.kind === 'credit') await applyPendingCredits(g.userId).catch(() => null);

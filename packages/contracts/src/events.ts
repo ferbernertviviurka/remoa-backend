@@ -38,6 +38,12 @@ export const eventSchemas = {
     .object({ grade: z.enum(grades), mode: z.enum(challengeModes), inputKind: z.enum(inputKinds), overridden: z.boolean() })
     .strict(),
   queue_opened: z.object({ due: count, new: count, weak: count }).strict(),
+  // F21 FR-19 (G15, D-644): /app/revisar; counts and enums only, never card text
+  revisar_opened: z.object({ due: count, new: count, weak: count }).strict(),
+  revisar_session_started: z.object({ count, reasons: z.array(z.enum(['due', 'new', 'weak'])), maps: count, ahead: z.boolean(), area: z.enum(areas).nullable() }).strict(),
+  revisar_chart_interacted: z.object({ chart: z.enum(['forecast', 'states', 'retention', 'activity']) }).strict(),
+  revisar_area_clicked: z.object({ area: z.enum(areas) }).strict(),
+  revisar_hard_card_opened: none,
   // F04
   challenge_started: z.object({ kind: z.enum(sessionKinds), items: count, modes: z.array(z.enum(challengeModes)) }).strict(),
   answer_submitted: z
@@ -90,6 +96,12 @@ export const eventSchemas = {
   dispute_resolved: z.object({ outcome: z.enum(disputeOutcomes) }).strict(),
   // F11
   progress_viewed: none,
+  // G16 store waitlist (FR-13): never e-mail or other PII in props
+  store_viewed: none,
+  store_waitlist_joined: z.object({ interest: z.enum(['buy', 'sell', 'both']), role: z.enum(['teacher', 'student_resident', 'physician']).nullable() }).strict(),
+  store_sell_cta_clicked: none,
+  store_simulator_used: z.object({ band: z.enum(['low', 'mid', 'high']) }).strict(),
+  store_faq_opened: z.object({ item: z.number().int().min(0).max(20) }).strict(),
   // F12
   waitlist_joined: z.object({ variant: z.string().regex(/^\d+$/).nullable(), segment: z.enum(segments) }).strict(),
   onboarding_step: z.object({ step: z.number().int().min(1).max(4) }).strict(),
@@ -169,7 +181,7 @@ export const eventSchemas = {
   referral_reward_granted: z.object({ side: z.enum(referralSides), kind: z.enum(['month', 'credit']) }).strict(),
   referral_reward_seen: none,
   referral_rejected: z.object({ reason: z.enum(referralRejectReasons) }).strict(),
-  // F19 support (D-433): no subject, description or context text, only enums/booleans. Admin actions never go to Mixpanel.
+  // F19 support (D-433): no subject, description or context text, only enums/booleans. Admin actions are never tracked.
   support_opened: z.object({ from: z.enum(['fab', 'command', 'account_menu', 'mobile_nav', 'email_link']) }).strict(),
   support_submitted: z.object({ type: z.enum(supportTicketTypes), hasAttachment: z.boolean(), context: z.boolean() }).strict(),
   support_replied: none,

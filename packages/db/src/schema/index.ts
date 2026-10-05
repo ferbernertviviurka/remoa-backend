@@ -6,3 +6,4 @@ export * from './account';
 export * from './referral';
 export * from './support';
 export * from './admin';
+export * from './store';

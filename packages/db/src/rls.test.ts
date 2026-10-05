@@ -282,4 +282,44 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await expect(m.withUser(a, (tx) => tx.select().from(s.emailSuppressions))).rejects.toThrow();
     await expect(m.withUser(a, (tx) => tx.update(s.profiles).set({ onboardingAnswers: { area: 'CM' } }).where(eq(s.profiles.userId, a)))).rejects.toThrow();
   });
+
+  it('CCR-017: personal data is owner-only and server-written; checks hold', async () => {
+    const pii = { userType: 'aluno', sex: 'outro', phone: '+5511912345678', address: { cep: '01310100', street: 'Av. Paulista', number: '1000', complement: null, district: 'Bela Vista', city: 'São Paulo', uf: 'SP' }, goals: ['enamed_2027_1', 'residencia_usp'] };
+    await m.db.update(s.profiles).set(pii).where(eq(s.profiles.userId, a));
+    // B never sees A's row (profiles_select = own row).
+    expect(await m.withUser(b, (tx) => tx.select({ phone: s.profiles.phone }).from(s.profiles).where(eq(s.profiles.userId, a)))).toHaveLength(0);
+    const [own] = await m.withUser(a, (tx) => tx.select({ phone: s.profiles.phone, goals: s.profiles.goals }).from(s.profiles).where(eq(s.profiles.userId, a)));
+    expect(own).toEqual({ phone: pii.phone, goals: pii.goals });
+    // No column GRANT: the owner cannot write them directly either (the API validates and writes).
+    for (const set of [{ phone: '+5511900000000' }, { userType: 'professor' }, { sex: 'feminino' }, { address: {} }, { goals: [] }])
+      await expect(m.withUser(a, (tx) => tx.update(s.profiles).set(set).where(eq(s.profiles.userId, a)))).rejects.toThrow();
+    for (const set of [{ phone: '11912345678' }, { userType: 'outro' }, { sex: 'x' }, { address: [] }, { goals: ['a', 'b', 'c', 'd', 'e', 'f'] }])
+      await expect(m.db.update(s.profiles).set(set).where(eq(s.profiles.userId, a))).rejects.toThrow();
+  });
+
+  it('CCR-018: deleting a board cascades to its cards, edges and study state; copies survive', async () => {
+    const [bd] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'apagar' }).returning());
+    const [c1] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: bd!.id, title: 'c1' }).returning());
+    const [c2] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: bd!.id, title: 'c2' }).returning());
+    await m.withUser(a, (tx) => tx.insert(s.edges).values({ boardId: bd!.id, fromCardId: c1!.id, toCardId: c2!.id }));
+    await m.withUser(a, (tx) => tx.insert(s.fsrsState).values({ userId: a, cardId: c1!.id, subId: '', due: new Date() }));
+    const [ses] = await m.withUser(a, (tx) => tx.insert(s.sessions).values({ userId: a, boardId: bd!.id, kind: 'board', options: { gradingMode: 'self', order: 'flow', answerMode: 'write' } }).returning());
+    await m.withUser(a, (tx) => tx.insert(s.attempts).values({ userId: a, cardId: c1!.id, sessionId: ses!.id, mode: 'hidden_card', inputKind: 'self', grade: 3 }));
+    const [copy] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'cópia', sourceBoardId: bd!.id }).returning());
+    // B cannot delete A's board (no row visible, nothing deleted).
+    expect(await m.withUser(b, (tx) => tx.delete(s.boards).where(eq(s.boards.id, bd!.id)).returning())).toHaveLength(0);
+    expect(await m.withUser(a, (tx) => tx.delete(s.boards).where(eq(s.boards.id, bd!.id)).returning())).toHaveLength(1);
+    const left = await m.db.execute<{ n: number }>(sql`select (select count(*) from cards where board_id = ${bd!.id})
+      + (select count(*) from edges where board_id = ${bd!.id}) + (select count(*) from fsrs_state where card_id = ${c1!.id})
+      + (select count(*) from attempts where card_id = ${c1!.id}) as n`);
+    expect(Number(left[0]!.n)).toBe(0);
+    const [sesAfter] = await m.db.select().from(s.sessions).where(eq(s.sessions.id, ses!.id));
+    expect(sesAfter?.boardId).toBeNull();
+    const [copyAfter] = await m.db.select().from(s.boards).where(eq(s.boards.id, copy!.id));
+    expect(copyAfter?.sourceBoardId).toBeNull();
+  });
+
+  it('CCR-020: waitlist stays unreadable by clients (admin reads it through the API)', async () => {
+    await expect(m.withUser(a, (tx) => tx.select().from(s.waitlist))).rejects.toThrow();
+  });
 });

@@ -6,6 +6,7 @@ import {
   computeCompleteness,
   updatePreferencesInputSchema,
   updateProfileInputSchema,
+  syncGoals,
   type AccountSnapshot,
   type LinkedIdentity,
   type SessionInfo,
@@ -29,18 +30,18 @@ export const identitiesFixture: LinkedIdentity[] = [
 
 const freeEntitlements: Entitlements = {
   plan: 'free', status: null, ...PLAN_LIMITS.free, limits: PLAN_LIMITS.free.limits,
-  usage: { ai_grades: 17, ai_generations: 1, boards: 2, cards: 120 },
+  usage: { ai_grades: 17, ai_generations: 0, boards: 2, cards: 120 }, ankiImportsUsed: 1,
   renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null,
 };
 const proEntitlements: Entitlements = {
   plan: 'pro', status: 'active', ...PLAN_LIMITS.pro, limits: PLAN_LIMITS.pro.limits,
-  usage: { ai_grades: 42, ai_generations: 3, boards: 7, cards: 830 },
+  usage: { ai_grades: 42, ai_generations: 3, boards: 7, cards: 830 }, ankiImportsUsed: 3,
   renewsAt: at(18), cancelAtPeriodEnd: false, graceUntil: null,
 };
 
 /** Free, 60% complete (no photo, reminder off). */
 export const accountFreeFixture: AccountSnapshot = {
-  profile: { userId: fixtureUserId, name: 'Ana Souza', avatarKey: null, avatarColor: 2, goal: 'enamed_2027_1', stage: 'y5_6', timezone: 'America/Sao_Paulo' },
+  profile: { userId: fixtureUserId, name: 'Ana Souza', avatarKey: null, avatarColor: 2, goal: 'enamed_2027_1', goals: ['enamed_2027_1'], stage: 'y5_6', timezone: 'America/Sao_Paulo', userType: 'aluno', sex: null, phone: null, address: null },
   email: 'ana@remoa.test',
   pendingEmail: null,
   emailConfirmed: true,
@@ -61,7 +62,7 @@ export const accountProFixture: AccountSnapshot = {
   ...accountFreeFixture,
   profile: { ...accountFreeFixture.profile, avatarKey: `avatars/${fixtureUserId}/1.webp` },
   identities: identitiesFixture,
-  preferences: { ...DEFAULT_PREFERENCES, reminderEnabled: true, reminderHour: 21, newCardsPerDay: 20 },
+  preferences: { ...DEFAULT_PREFERENCES, reminderEnabled: true, reminderHour: 21, newCardsPerDay: null },
   entitlements: proEntitlements,
   completeness: { percent: 100, missing: [] },
   avatarUrls: { large: 'https://storage.remoa.test/avatars/512.webp?sig=x', small: 'https://storage.remoa.test/avatars/96.webp?sig=x' },
@@ -91,7 +92,7 @@ export const getAccount: Api.GetAccount = async () => ok(structuredClone(account
 export const updateProfile: Api.UpdateProfile = async (_u, input) => {
   const p = parseWith(updateProfileInputSchema, input);
   if (!p.ok) return p;
-  Object.assign(account.profile, p.data);
+  Object.assign(account.profile, p.data, syncGoals(p.data));
   recompute();
   return ok(structuredClone(account.profile));
 };
@@ -146,8 +147,10 @@ export const unlinkIdentity: Api.UnlinkIdentity = async (_u, provider) => {
 export const updatePreferences: Api.UpdatePreferences = async (_u, input) => {
   const p = parseWith(updatePreferencesInputSchema, input);
   if (!p.ok) return p;
-  if ((p.data.newCardsPerDay ?? 0) > account.entitlements.newCardsPerDay) return err('forbidden', 'pro_required');
+  const cap = account.entitlements.newCardsPerDay;
+  if (cap !== null && (p.data.newCardsPerDay ?? 0) > cap) return err('forbidden', 'pro_required');
   Object.assign(account.preferences, p.data);
+  if (p.data.newCardsPerDay === null) account.preferences.newCardsPerDay = cap;
   recompute();
   return ok(structuredClone(account.preferences));
 };

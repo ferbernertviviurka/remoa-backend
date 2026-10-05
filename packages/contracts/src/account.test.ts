@@ -80,7 +80,7 @@ describe('usageTone', () => {
   ] as const)('%d/%s -> %s', (used, limit, tone) => expect(usageTone(used, limit)).toBe(tone));
   it('usageRows covers every quota key', () => {
     const rows = usageRows({ limits: PLAN_LIMITS.free.limits, usage: { ai_grades: 20, ai_generations: 0, boards: 2, cards: 42 } });
-    expect(rows.map((r) => [r.key, r.tone])).toEqual([['ai_grades', 'full'], ['ai_generations', 'normal'], ['boards', 'full'], ['cards', 'warn']]);
+    expect(rows.map((r) => [r.key, r.tone])).toEqual([['ai_grades', 'full'], ['ai_generations', 'full'], ['boards', 'full'], ['cards', 'warn']]); // D-647: Free has 0 PDF maps
   });
 });
 
@@ -95,6 +95,7 @@ describe('inputs', () => {
     expect(updatePreferencesInputSchema.safeParse({ newCardsPerDay: 15 }).success).toBe(true);
     expect(updatePreferencesInputSchema.safeParse({ newCardsPerDay: 12 }).success).toBe(false);
     expect(updatePreferencesInputSchema.safeParse({ newCardsPerDay: 25 }).success).toBe(false);
+    expect(updatePreferencesInputSchema.safeParse({ newCardsPerDay: null }).success).toBe(true); // D-647: follow the plan
     expect(updatePreferencesInputSchema.safeParse({ reminderHour: 9 }).success).toBe(false);
     expect(updatePreferencesInputSchema.safeParse({ reminderHour: 21, theme: 'system', reduceMotion: null }).success).toBe(true);
   });
@@ -102,6 +103,8 @@ describe('inputs', () => {
     expect(effectiveNewCardsPerDay(null, 20)).toBe(20);
     expect(effectiveNewCardsPerDay(20, 10)).toBe(10);
     expect(effectiveNewCardsPerDay(5, 10)).toBe(5);
+    expect(effectiveNewCardsPerDay(null, null)).toBeNull(); // D-647: Pro unlimited
+    expect(effectiveNewCardsPerDay(15, null)).toBe(15);
   });
   it('avatar upload capped at 5 MB', () => {
     expect(uploadSignInputSchema.safeParse({ mime: 'image/webp', sizeBytes: 6e6, kind: 'avatar' }).success).toBe(false);

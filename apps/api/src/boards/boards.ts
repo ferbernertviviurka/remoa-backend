@@ -1,8 +1,8 @@
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
   type Board, type CardMask, type MapOp,
-  type ListBoards, type GetBoard, type CreateBoard, type UpdateBoard, type DuplicateBoard, type ApplyMapOps,
-  MAX_CARDS_PER_BOARD, PLAN_LIMITS, err, idSchema, ok,
+  type ListBoards, type DeleteBoard, type GetBoard, type CreateBoard, type UpdateBoard, type DuplicateBoard, type ApplyMapOps,
+  MAX_CARDS_PER_BOARD, PLAN_LIMITS, boardListQuerySchema, err, idSchema, ok, parseWith,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { Abort, guard, run } from '../db';
@@ -31,24 +31,37 @@ export const toBoard = (r: typeof import('@remoa/db').boards.$inferSelect): Boar
 
 const liveCardEnds = sql`join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null`;
 
-export const listBoards: ListBoards = async (userId) =>
-  ok(
+/** G14 D-574: permanent, owner-only, own maps only (seed = 404). One row; FKs cascade (cards/edges/fsrs/attempts/queue) or set null (sessions, copies). */
+export const deleteBoard: DeleteBoard = async (userId, boardId) => {
+  if (!isUuid(boardId)) return notFound();
+  return run(userId, async (tx, s) => {
+    const [row] = await tx.delete(s.boards).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId), eq(s.boards.status, 'private'))).returning({ id: s.boards.id });
+    return row ? ok({ id: row.id }) : notFound();
+  });
+};
+
+export const listBoards: ListBoards = async (userId, query = {}) => {
+  const parsed = parseWith(boardListQuerySchema, query);
+  if (!parsed.ok) return parsed;
+  const { status } = parsed.data;
+  return ok(
     await run(userId, async (tx, s) => {
       const rows = await tx
         .select({
           id: s.boards.id, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, updatedAt: s.boards.updatedAt,
-          access: s.boards.access,
+          access: s.boards.access, archivedAt: s.boards.archivedAt,
           matrixItemIds: sql<string[]>`coalesce((select array_agg(bm.matrix_item_id order by bm.created_at, bm.matrix_item_id) from board_matrix_items bm where bm.board_id = boards.id), '{}')`,
           cardCount: sql<number>`(select count(*)::int from cards c where c.board_id = boards.id and c.deleted_at is null)`,
           edgeCount: sql<number>`(select count(*)::int from edges e ${liveCardEnds} where e.board_id = boards.id)`,
         })
         .from(s.boards)
-        .where(and(eq(s.boards.userId, userId), isNull(s.boards.archivedAt)))
+        .where(and(eq(s.boards.userId, userId), status === 'active' ? isNull(s.boards.archivedAt) : status === 'archived' ? isNotNull(s.boards.archivedAt) : undefined))
         .orderBy(desc(s.boards.updatedAt));
       const extra = await boardListExtras(tx, userId, new Date(), rows.map((r) => r.id)); // F03 FR-8 badge + G01 state bar/preview
       return rows.map((r) => ({ ...r, ...(extra.get(r.id) ?? { dueCount: 0, stateCounts: { review: 0, watch: 0, steady: 0, unknown: 0 }, preview: { nodes: [], edges: [] } }) }));
     }),
   );
+};
 
 export const getBoard: GetBoard = async (userId, boardId) => {
   if (!isUuid(boardId)) return notFound();

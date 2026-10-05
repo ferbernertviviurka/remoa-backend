@@ -13,6 +13,8 @@ import { usersRoutes } from '../admin/users/routes';
 import { mapsRoutes, seedsRoutes } from '../admin/maps/routes';
 import { paymentsRoutes } from '../admin/payments/routes';
 import { referralsRoutes } from '../admin/referrals/routes';
+import { waitlistRoutes } from '../admin/waitlist/routes';
+import { storeWaitlistRoutes } from '../admin/store-waitlist/routes';
 import { ticketsRoutes } from '../admin/tickets/routes';
 
 // ponytail: one CSV in memory, capped; stream it if exports ever need more rows.
@@ -76,5 +78,7 @@ export function adminRoutes({ verifyToken }: { verifyToken: VerifyToken }) {
     .route('/payments', paymentsRoutes)
     .route('/referrals', referralsRoutes)
     .route('/tickets', ticketsRoutes)
+    .route('/waitlist', waitlistRoutes)
+    .route('/store-waitlist', storeWaitlistRoutes)
     .all('*', () => notFound());
 }

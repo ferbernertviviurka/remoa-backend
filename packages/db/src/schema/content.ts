@@ -3,6 +3,7 @@ import { type AnyPgColumn, check, index, integer, jsonb, pgTable, primaryKey, sm
 import {
   areaEnum, authUsers, boardAccessEnum, boardStatusEnum, cardShapeEnum, cardStatusEnum, cardTypeEnum, licenseEnum, roleEnum, timestamps, userId,
 } from './common';
+import { MAX_GOALS, sexes, userTypes } from '@remoa/contracts';
 
 export const profiles = pgTable('profiles', {
   userId: uuid('user_id').primaryKey().references(() => authUsers.id, { onDelete: 'cascade' }),
@@ -11,6 +12,15 @@ export const profiles = pgTable('profiles', {
   school: text('school'),
   year: integer('year'),
   goal: text('goal'),
+  /** CCR-017 (D-570): every objective picked (goalSchema values); `goal` mirrors goals[0]. Server-owned (no column GRANT). */
+  goals: text('goals').array().notNull().default(sql`'{}'::text[]`),
+  // CCR-017 (D-571) personal data, PII: owner-only read (profiles_select), written only by the API (no column GRANT).
+  userType: text('user_type'),
+  sex: text('sex'),
+  /** E.164, +55 only. */
+  phone: text('phone'),
+  /** AddressSchema (cep, street, number, complement, district, city, uf). */
+  address: jsonb('address'),
   /** F10: council registration stamped on approved rubrics. */
   crm: text('crm'),
   /** F13: y3_4 | y5_6 | graduated (stageSchema). */
@@ -32,6 +42,11 @@ export const profiles = pgTable('profiles', {
 }, (t) => [
   check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`),
   check('profiles_suspended', sql`(${t.suspendedAt} is null) = (${t.suspendedReason} is null)`),
+  check('profiles_user_type', sql.raw(`user_type in (${userTypes.map((v) => `'${v}'`).join(', ')})`)),
+  check('profiles_sex', sql.raw(`sex in (${sexes.map((v) => `'${v}'`).join(', ')})`)),
+  check('profiles_phone', sql`${t.phone} ~ '^[+]55[1-9]{2}(9[0-9]{8}|[2-5][0-9]{7})$'`),
+  check('profiles_address', sql`jsonb_typeof(${t.address}) = 'object'`),
+  check('profiles_goals', sql`cardinality(${t.goals}) <= ${sql.raw(String(MAX_GOALS))}`),
   // F19 admin search by name (ILIKE).
   index('profiles_name_trgm_idx').using('gin', t.name.op('gin_trgm_ops')),
 ]);

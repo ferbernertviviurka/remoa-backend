@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { AI_DRAFT_SOURCE, generatePdfBoardInputSchema, graderInputSchema, rubricSchema, err, ok, parseWith, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput } from '@remoa/contracts';
-import { cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf, pdfPageCount, pdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent } from '@remoa/ai';
+import { aiMode, cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf, pdfPageCount, readPdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent } from '@remoa/ai';
 import { dispatchBoardJob } from '../inngest/client';
 import { assertQuota, refundGeneration, refundQuota } from '../billing/quota';
 import { dbm } from '../db';
@@ -10,6 +10,10 @@ import { initialShareColumns } from '../share/crypto';
 import type { z } from 'zod';
 import { getBytes } from '../storage/storage';
 import { caller } from './caller';
+import { createLogger } from '@remoa/log';
+
+/** D-582: a failed job answers 200 on /jobs/:id, so its reason only shows up in the API log through this line. */
+const logFailed = (jobId: string, error: string) => createLogger({ requestId: jobId }).warn('generation failed', { jobId, error });
 
 const hits = new Map<string, number[]>();
 
@@ -27,6 +31,8 @@ export const allowGrade = (userId: string, now = Date.now()) => allow('grade', u
 const RUBRIC_PER_MINUTE = 30;
 const GENERATE_PER_MINUTE = 5;
 const limited = { ok: false as const, error: { code: 'rate_limited' as const, message: 'rate_limited' } };
+/** D-580: no OPENROUTER_API_KEY and no AI=mock. 503 before anything is charged; the log line says which env var is missing. */
+const aiOff = { ok: false as const, error: { code: 'ai_unavailable' as const, message: 'ai_not_configured' } };
 
 /** F14 FR-19 (D-499): a generated map is a new board, so the Free 2-map cap applies before any AI is spent (402 like the other paths). */
 async function boardRoom(userId: string) {
@@ -237,7 +243,7 @@ async function saveBoard(userId: string, input: GenerateBoardInput, cards: CardD
 }
 
 async function readableText(bytes: Uint8Array): Promise<string> {
-  const literal = pdfText(bytes);
+  const literal = await readPdfText(bytes);
   return literal.length >= 40 ? literal : ocrPdf(bytes);
 }
 
@@ -253,6 +259,7 @@ async function pdfSource(userId: string, assetId: string): Promise<string> {
 function failJob(jobId: string, error: string) {
   const job = jobs.get(jobId);
   if (job) jobs.set(jobId, { ...job, status: 'failed', stage: job.stage, error });
+  logFailed(jobId, error);
 }
 
 /**
@@ -272,6 +279,7 @@ export async function startPdfGeneration(userId: string, board: z.output<typeof 
   }
   const extras: BoardExtras = { matrixItemIds: board.matrixItemIds, share: await initialShareColumns({ access: board.access, password: board.password }) };
   const { title } = board;
+  if (aiMode() === 'off') return aiOff;
   const charged = await chargeGeneration(userId);
   if (!charged.ok) return charged;
   const giveBack = async () => {
@@ -332,6 +340,7 @@ export async function startGeneration(userId: string, input: GenerateBoardInput)
     return { ok: false as const, error: { code: 'validation' as const, message: e instanceof Error ? e.message : 'failed' } };
   }
   if (input.kind === 'pdf' && text.length < 40) return { ok: false as const, error: { code: 'validation' as const, message: 'pdf_unreadable' } };
+  if (aiMode() === 'off') return aiOff;
   const charged = await chargeGeneration(userId);
   if (!charged.ok) return charged;
   const jobId = randomUUID();
@@ -371,7 +380,9 @@ async function executeGeneration(jobId: string) {
       await refundGeneration(item.userId).catch(() => undefined);
     }
     const failed = jobs.get(jobId);
-    if (failed) jobs.set(jobId, { ...failed, status: 'failed', progress: 100, stage: null, error: e instanceof Error ? e.message : 'failed' });
+    const error = e instanceof Error ? e.message : 'failed';
+    if (failed) jobs.set(jobId, { ...failed, status: 'failed', progress: 100, stage: null, error });
+    logFailed(jobId, error);
   }
 }
 

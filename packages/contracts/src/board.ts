@@ -88,10 +88,28 @@ export const updateBoardInputSchema = z
   .refine((v) => v.title !== undefined || v.archived !== undefined || v.area !== undefined, 'nothing to update');
 export type UpdateBoardInput = z.infer<typeof updateBoardInputSchema>;
 
+/**
+ * CCR-018 (D-573): GET /v1/boards?status=. `active` (default) = not archived ("Meus mapas", sidebar); `archived` = the
+ * "Arquivados" filter; `all` = both. Archived maps do not count toward the Free quota (D-167), live ones do.
+ */
+export const boardListStatuses = ['active', 'archived', 'all'] as const;
+export const boardListQuerySchema = z.object({ status: z.enum(boardListStatuses).default('active') });
+export type BoardListQuery = z.input<typeof boardListQuerySchema>;
+/**
+ * CCR-018 (D-574): DELETE /v1/boards/:id = permanent delete (no soft delete, no undo). Only the owner, only `private`
+ * boards (seeds: 404). Cascades in the same statement: cards → edges, fsrs_state, attempts, review_queue, board_matrix_items,
+ * board_versions; sessions.board_id → null; copies keep living (source_board_id → null); the share link dies with the row.
+ * Card images become orphans and are swept by `cleanup/assets`. Answer `{ id }`. Archived or not, it frees the quota slot.
+ */
+export const deleteBoardResultSchema = z.object({ id: idSchema });
+export type DeleteBoardResult = z.infer<typeof deleteBoardResultSchema>;
+
 /** Row in "Meus mapas" / sidebar. */
 export const boardSummarySchema = boardSchema
   .pick({ id: true, title: true, area: true, status: true, updatedAt: true })
   .extend({
+    /** CCR-018: null = live; the API always sends it (optional only for older fixtures). */
+    archivedAt: timestampSchema.nullable().optional(),
     cardCount: z.number().int().nonnegative(),
     edgeCount: z.number().int().nonnegative(),
     /** G01 v2: item da matriz do mapa (D-081). */
@@ -152,3 +170,33 @@ export type MapOp = z.infer<typeof mapOpSchema>;
 /** POST /v1/boards/ops body. Ops apply in order, each one idempotent (client-generated ids). */
 export const applyMapOpsInputSchema = z.object({ ops: z.array(mapOpSchema).min(1).max(200) });
 export type ApplyMapOpsInput = z.infer<typeof applyMapOpsInputSchema>;
+
+// --- F23 mapa no celular (D-664, D-665): preferências só do aparelho, em localStorage --------------
+export const MOBILE_MAP_PREFS_KEY = 'remoa:map-mobile-prefs';
+export const MOBILE_MAP_ZOOM_MIN = 0.4;
+export const MOBILE_MAP_ZOOM_MAX = 1.8;
+/** Abaixo disto o card entra na visão geral (FR-6). */
+export const MOBILE_MAP_SEMANTIC_ZOOM = 0.8;
+export const MOBILE_MAP_MAX_VIEWPORTS = 50;
+/** Última vista de um mapa; `x`/`y` em coordenadas do fluxo (centro), `zoom` já preso a 40%–180%. */
+export const mobileMapViewSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  zoom: z.number().min(MOBILE_MAP_ZOOM_MIN).max(MOBILE_MAP_ZOOM_MAX),
+});
+export type MobileMapView = z.infer<typeof mobileMapViewSchema>;
+/**
+ * Lido com `safeParse` e, se falhar, recai em `defaultMobileMapPrefs` (nunca lança). Sem dado de card, sem texto.
+ * `favorites` é por aparelho até existir coluna no servidor (CCR-032, D-665).
+ */
+export const mobileMapPrefsSchema = z.object({
+  version: z.literal(1).default(1),
+  heat: z.boolean().default(true),
+  labels: z.boolean().default(true),
+  view: z.enum(['canvas', 'list']).default('canvas'),
+  /** boardId → última vista. O cliente poda para os 50 mais recentes. */
+  viewports: z.record(idSchema, mobileMapViewSchema).default({}),
+  favorites: z.array(idSchema).max(200).default([]),
+});
+export type MobileMapPrefs = z.infer<typeof mobileMapPrefsSchema>;
+export const defaultMobileMapPrefs: MobileMapPrefs = mobileMapPrefsSchema.parse({});

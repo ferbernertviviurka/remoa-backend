@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { allowGrade, generationOf, startPdfGeneration } from './service';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { allowGrade, generationOf, startGeneration, startPdfGeneration } from './service';
+
+const env = { ...process.env };
+beforeEach(() => {
+  process.env.AI = 'mock'; // D-580: offline drafts are an explicit dev/test mode
+});
+afterEach(() => {
+  process.env = { ...env };
+  vi.restoreAllMocks();
+});
 
 const pdfBoard = { title: 'Sepse', area: 'CM' as const, access: 'owner' as const, matrixItemIds: [] };
 
@@ -10,6 +19,37 @@ describe('grade rate limit', () => {
     for (let i = 0; i < 30; i++) expect(allowGrade(user, start)).toBe(true);
     expect(allowGrade(user, start + 1_000)).toBe(false);
     expect(allowGrade(user, start + 61_000)).toBe(true);
+  });
+});
+
+describe('AI not configured (D-580)', () => {
+  it('no OPENROUTER_API_KEY and no AI=mock: 503 ai_unavailable before any job starts', async () => {
+    delete process.env.AI;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.DATABASE_URL;
+    const pdf = await startPdfGeneration('ai-off-user', pdfBoard, new TextEncoder().encode('%PDF-1.4 (Sepse grave com hipotensao refrataria) Tj'));
+    expect(pdf).toEqual({ ok: false, error: { code: 'ai_unavailable', message: 'ai_not_configured' } });
+    const text = await startGeneration('ai-off-user', { kind: 'text', title: 'Sepse', area: 'CM', text: 'Sepse. '.repeat(20) } as Parameters<typeof startGeneration>[1]);
+    expect(text).toMatchObject({ ok: false, error: { code: 'ai_unavailable' } });
+  });
+
+  it('AI=mock wins over a configured key: deterministic draft, no provider call', async () => {
+    process.env.OPENROUTER_API_KEY = 'would-call-openrouter';
+    delete process.env.DATABASE_URL;
+    delete process.env.INNGEST_EVENT_KEY;
+    delete process.env.INNGEST_DEV;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const started = await startGeneration('ai-mock-user', { kind: 'text', title: 'Sepse', area: 'CM', text: 'Sepse. Disfuncao organica por infeccao.\n\nChoque septico. Hipotensao refrataria a volume.' } as Parameters<typeof startGeneration>[1]);
+    expect(started.ok).toBe(true);
+    if (!started.ok || !('data' in started)) return;
+    let job = generationOf('ai-mock-user', started.data.jobId);
+    for (let i = 0; i < 100 && job?.status !== 'done' && job?.status !== 'failed'; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      job = generationOf('ai-mock-user', started.data.jobId);
+    }
+    expect(job).toMatchObject({ status: 'done', error: null });
+    expect(job?.cards).toBeGreaterThan(0);
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('openrouter'))).toBe(false);
   });
 });
 

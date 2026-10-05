@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { trackServer } from '../telemetry/server';
 import { billingPeriods, subscriptionStatuses, type CheckoutInput } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
 import { and, eq, ne } from 'drizzle-orm';
@@ -36,7 +35,6 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
 
   // Network before the transaction: card checkouts need the live subscription period.
   let write: ((tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>) | null = null;
-  let tracked: (() => Promise<void>) | null = null; // P-054: Mixpanel after commit
   let creditsFor: string | null = null; // F18: user whose pending credits are pushed to Stripe after commit
   switch (event.type) {
     case 'checkout.session.completed':
@@ -79,7 +77,6 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
         if (perMonth) await convertGrantsToCredits(tx, userId, perMonth);
       };
       if (perMonth) creditsFor = userId;
-      tracked = () => trackServer('subscription_started', {}, userId, { plan: 'pro' });
       log.info('subscription_started', { userId: s.client_reference_id, method: s.mode === 'payment' ? 'pix' : 'card', period });
       break;
     }
@@ -105,9 +102,6 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
       write = (tx) => tx.update(subscriptions).set({ status: status(next.status), cancelAtPeriodEnd: next.cancelAtPeriodEnd, renewsAt: next.renewsAt, updatedAt: new Date() }).where(bySub(s.id));
       if (next.cancelAtPeriodEnd) {
         log.info('subscription_canceled', { subscriptionId: s.id });
-        // only the transition: later updates of an already-canceling subscription must not fire again
-        const [prev] = await db.select({ userId: subscriptions.userId, was: subscriptions.cancelAtPeriodEnd }).from(subscriptions).where(bySub(s.id)).limit(1);
-        if (prev && !prev.was) tracked = () => trackServer('subscription_canceled', {}, prev.userId, { plan: 'pro' });
       }
       break;
     }
@@ -133,7 +127,6 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
     return 'applied' as const;
   });
   // After commit; failures stay pending for the daily sweep and never fail the webhook.
-  if (result === 'applied') await tracked?.();
   if (result === 'applied' && creditsFor) await applyPendingCredits(creditsFor, stripe);
   return result;
 }

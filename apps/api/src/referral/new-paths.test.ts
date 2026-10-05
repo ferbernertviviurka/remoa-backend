@@ -51,9 +51,11 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 qualification on generation and 
 
   it('F05 generation (inline job, draft cards) with >= 3 cards qualifies the referral', async () => {
     const { referee } = await pair();
+    await dbm.db.execute(sql`insert into subscriptions (user_id, plan, status) values (${referee}, 'pro', 'active')`); // D-647: Free has no generations
     const keys = ['OPENROUTER_API_KEY', 'INNGEST_EVENT_KEY', 'INNGEST_DEV'] as const;
     const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     for (const k of keys) delete process.env[k];
+    process.env.AI = 'mock'; // D-580
     try {
       const { startGeneration, generationOf } = await import('../ai/service');
       const text = [

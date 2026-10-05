@@ -9,7 +9,7 @@ import {
 } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
 import { getBytes, headObject, presignPut, putBytes } from '../storage/storage';
-import { limitFor, overTotal } from '../billing/quota';
+import { limitFor, overAnkiImports, overTotal } from '../billing/quota';
 import { planOf } from '../billing/plan';
 import { dbm, run } from '../db';
 import { initialShareColumns } from '../share/crypto';
@@ -104,6 +104,7 @@ export function createImports({ anki }: { anki: AnkiPort }) {
   };
 
   const sign: SignImportUpload = async (userId, input) => {
+    if (await overAnkiImports(userId)) return err('quota_exceeded', 'anki'); // D-648: before the upload, not after it
     const key = `imports/${userId}/${crypto.randomUUID()}.apkg`;
     return ok({ url: await presignPut(key, 'application/octet-stream', input.sizeBytes), key });
   };
@@ -144,7 +145,9 @@ export function createImports({ anki }: { anki: AnkiPort }) {
         .where(and(eq(s.imports.userId, userId), inArray(s.imports.status, ['queued', 'running']), gt(s.imports.updatedAt, new Date(Date.now() - STALLED_MS)))).limit(1));
     if (busy.length) return err('conflict', 'Já existe uma importação em andamento. Espere terminar e tente de novo.');
     const { db } = await dbm();
-    if (plan.estimatedCards > PLAN_LIMITS[(await planOf(userId)).plan].ankiImportMaxCards) return err('quota_exceeded', 'cards');
+    if (await overAnkiImports(userId)) return err('quota_exceeded', 'anki'); // D-648
+    const maxCards = PLAN_LIMITS[(await planOf(userId)).plan].ankiImportMaxCards;
+    if (maxCards !== null && plan.estimatedCards > maxCards) return err('quota_exceeded', 'cards');
     const hubs = hubCount(summary.data.decks.filter((d) => plan.deckIds.includes(d.id)).map((d) => d.name));
     if (await overTotal(db, userId, 'cards', await limitFor(userId, 'cards'), plan.estimatedCards + hubs)) return err('quota_exceeded', 'cards');
 

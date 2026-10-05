@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
-  PLAN_LIMITS, PREVIEW_MAX_NODES, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
+  PLAN_LIMITS, PREVIEW_MAX_NODES, REVIEW_HUB_AHEAD_DAYS, type Area, type QueueFilter, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
   type BoardSummary, type GetDailyQueue, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
 } from '@remoa/contracts';
 import { aggregate, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
@@ -12,13 +12,13 @@ const ROLLOVER_HOUR = 4; // FRD: the study day rolls over at 04:00 local
 const DEFAULT_TZ = 'America/Sao_Paulo';
 const MODE: Record<CardType, ChallengeMode> = { concept: 'hidden_card', case: 'case', flow: 'next_step', image: 'occlusion', note: 'hidden_card' /* never used: D-200 notes are filtered out in loadCards */ };
 
-type CardRow = { id: string; boardId: string; type: CardType; order: number; boardMs: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean };
-type StateRow = FsrsMemory & { cardId: string; subId: string; createdMs: number };
-type Item = { cardId: string; boardId: string; subId: string; mode: ChallengeMode; order: number; boardMs: number; idx: number; newAllowed: boolean };
+export type CardRow = { id: string; boardId: string; area: Area; type: CardType; order: number; boardMs: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean };
+export type StateRow = FsrsMemory & { cardId: string; subId: string; createdMs: number };
+export type Item = { cardId: string; boardId: string; subId: string; mode: ChallengeMode; order: number; boardMs: number; idx: number; newAllowed: boolean };
 
-const stateKey = (cardId: string, subId: string) => `${cardId}\u0000${subId}`;
+export const stateKey = (cardId: string, subId: string) => `${cardId}\u0000${subId}`;
 const cmp = (a: string | number, b: string | number) => (a < b ? -1 : a > b ? 1 : 0);
-const isDue = (m: FsrsMemory, endMs: number) => m.due.getTime() < endMs;
+export const isDue = (m: FsrsMemory, endMs: number) => m.due.getTime() < endMs;
 
 // --- loading (set-based: one query for cards, one for states) ---------------------------------------------------
 
@@ -27,23 +27,23 @@ const subIds = (key: 'steps' | 'masks') => sql`case when jsonb_typeof(c.payload-
 ), '[]'::jsonb) else '[]'::jsonb end`;
 
 /** RLS (withUser) decides what is readable. `boardId` null = daily scope: live cards of non-archived boards the user owns or has study state on. */
-async function loadCards(tx: Tx, userId: string, boardId: string | null, withNotes = false): Promise<CardRow[]> {
+export async function loadCards(tx: Tx, userId: string, boardId: string | null, withNotes = false): Promise<CardRow[]> {
   const scope = boardId
     ? sql`c.board_id = ${boardId}`
     : sql`b.archived_at is null and (b.user_id = ${userId} or exists (select 1 from fsrs_state s where s.user_id = ${userId} and s.card_id = c.id))`;
-  const rows = await tx.execute<{ id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean }>(sql`
-    select (c.suspended_at is not null) as suspended, c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
+  const rows = await tx.execute<{ id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean; area: Area }>(sql`
+    select (c.suspended_at is not null) as suspended, b.area::text as area, c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
       case c.type when 'flow' then ${subIds('steps')} when 'image' then ${subIds('masks')} else '[""]'::jsonb end as subs
     from cards c join boards b on b.id = c.board_id
     where c.deleted_at is null and (${withNotes}::boolean or c.type <> 'note') and ${scope}`); // D-200: notes are never scheduled, counted, or in the recall map (absent = no state); only the Hoje thumbnail asks for them (D-334)
-  return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y, suspended: r.suspended }));
+  return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y, suspended: r.suspended, area: r.area }));
 }
 
 /**
  * `cardIds` null = every state of the user. Scoping by ids (PK lookups) instead of a subquery on `cards`: the cards RLS
  * subquery isn't leakproof, so `card_id in (select … from cards)` planned as a nested loop (~200 ms for 500 cards).
  */
-async function loadStates(tx: Tx, userId: string, cardIds: string[] | null) {
+export async function loadStates(tx: Tx, userId: string, cardIds: string[] | null) {
   const scope = cardIds ? sql`and card_id = any(${`{${cardIds.join(',')}}`}::uuid[])` : sql``;
   const rows = await tx.execute<{
     card_id: string; sub_id: string; stability: number; difficulty: number; due_ms: number; reps: number; lapses: number;
@@ -82,7 +82,7 @@ export async function dayWindow(tx: Tx, userId: string, now: Date) {
 }
 
 /** D-057: concept/case = the card; flow = one item per step; image = one per mask. */
-const itemsOf = (cards: CardRow[], boardScope: boolean): Item[] =>
+export const itemsOf = (cards: CardRow[], boardScope: boolean): Item[] =>
   cards.flatMap((c) =>
     c.subs.map((subId, idx) => ({
       cardId: c.id, boardId: c.boardId, subId, mode: MODE[c.type], order: c.order, boardMs: c.boardMs, idx, newAllowed: boardScope || c.own,
@@ -118,9 +118,21 @@ export function buildQueue(
   return o.limit === undefined ? all : all.slice(0, o.limit);
 }
 
-const active = (cards: CardRow[]) => cards.filter((c) => !c.suspended); // F03 FR-9 (D-522): suspended cards stay on the map but are never queued or counted as due
+export const active = (cards: CardRow[]) => cards.filter((c) => !c.suspended); // F03 FR-9 (D-522): suspended cards stay on the map but are never queued or counted as due
 
-const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number }) => {
+/** G15 "Adiantar revisões" (Q-034): items not due today but due within REVIEW_HUB_AHEAD_DAYS, soonest first. Does not touch the schedule. */
+export function aheadItems(items: Item[], states: Map<string, StateRow>, endMs: number): QueueItem[] {
+  const max = endMs + REVIEW_HUB_AHEAD_DAYS * DAY_MS;
+  return items
+    .flatMap((it) => {
+      const m = states.get(stateKey(it.cardId, it.subId));
+      return m && !isDue(m, endMs) && m.due.getTime() < max ? [{ it, at: m.due.getTime() }] : [];
+    })
+    .sort((a, b) => a.at - b.at || cmp(a.it.cardId, b.it.cardId) || cmp(a.it.subId, b.it.subId))
+    .map(({ it }) => ({ cardId: it.cardId, boardId: it.boardId, subId: it.subId || null, reason: 'due' as const, mode: it.mode }));
+}
+
+const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number; filter?: QueueFilter }) => {
   const [cards, states, win, plan, [pref]] = await Promise.all([
     loadCards(tx, userId, boardId), loadStates(tx, userId, null), dayWindow(tx, userId, opts.now), planOf(userId, opts.now), // F08: newCardsPerDay by plan (P-027)
     tx.execute<{ n: number | null }>(sql`select new_cards_per_day as n from user_preferences where user_id = ${userId}`), // F13 D-122: the user's choice, capped by the plan
@@ -130,10 +142,20 @@ const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { 
   for (const s of states.values()) if (s.createdMs >= win.startMs) introduced++;
   const ids = boardId ? new Set(cards.map((c) => c.id)) : null;
   const scoped = ids ? new Map([...states].filter(([, s]) => ids.has(s.cardId))) : states;
-  return buildQueue(itemsOf(active(cards), boardId !== null), scoped, { now: opts.now, endMs: win.endMs, newBudget: effectiveNewCardsPerDay(pref?.n ?? null, PLAN_LIMITS[plan.plan].newCardsPerDay) - introduced, limit: opts.limit });
+  const f = opts.filter;
+  const live = active(cards).filter((c) => (!f?.boardIds || f.boardIds.includes(c.boardId)) && (!f?.area || c.area === f.area)); // G15: scope first, so the new-card budget goes to the chosen boards
+  const items = itemsOf(live, boardId !== null);
+  if (f?.ahead) return aheadItems(items, scoped, win.endMs).slice(0, opts.limit);
+  const reasons = f ? (f.reasons ?? ['due', 'new']) : null;
+  const q = buildQueue(items, scoped, { now: opts.now, endMs: win.endMs, newBudget: (effectiveNewCardsPerDay(pref?.n ?? null, PLAN_LIMITS[plan.plan].newCardsPerDay) ?? Infinity) - introduced }); // null = unlimited (D-647)
+  const kept = reasons ? q.filter((i) => reasons.includes(i.reason)) : q;
+  return opts.limit === undefined ? kept : kept.slice(0, opts.limit);
 };
 
 export const getDailyQueue: GetDailyQueue = async (userId, opts) => ok(await run(userId, (tx) => queueFor(tx, userId, null, opts)));
+
+/** G15 (D-641): the daily queue narrowed by the Revisar chips/boards. Same rule and order as `getDailyQueue`. */
+export const getFilteredQueue = async (userId: string, filter: QueueFilter, opts: { now: Date; limit?: number }) => ok(await run(userId, (tx) => queueFor(tx, userId, null, { ...opts, filter })));
 
 export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) => {
   if (!idSchema.safeParse(boardId).success) return err('not_found', 'board not found');
@@ -230,7 +252,7 @@ export async function boardCardStats(tx: Tx, userId: string, now: Date) {
 const unreviewed = { r: 0, state: 'unknown' as MapState };
 
 /** Per-card map state (D-057): concept/case from its '' state; flow/image = aggregate of steps/masks; no state = unknown. Single rule for the map and the list. */
-function cardState(c: CardRow, states: Map<string, StateRow>, now: Date) {
+export function cardState(c: CardRow, states: Map<string, StateRow>, now: Date) {
   let earliest: Date | null = null;
   const one = (subId: string): { r: number; state: MapState } => {
     const m = states.get(stateKey(c.id, subId));

@@ -169,6 +169,20 @@
       "when": 1791126730416,
       "tag": "0023_f02_f12_source_card_onboarding_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791161278674,
+      "tag": "0024_g14_profile_personal_challenge_options",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791162096817,
+      "tag": "0025_g16_store_waitlist",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import { createLogger } from '@remoa/log';
 import { createMockStripe, createStripe, installStripe } from './billing/stripe';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
 import { gradeAnswer, streamGradeAnswer } from './ai/service';
+import { aiMode } from '@remoa/ai';
 
 const env = (k: string) => {
   const v = process.env[k];
@@ -15,10 +16,12 @@ const env = (k: string) => {
 
 const supabase = createClient(env('NEXT_PUBLIC_SUPABASE_URL'), env('NEXT_PUBLIC_SUPABASE_ANON_KEY'), { auth: { persistSession: false } });
 
-// ponytail: one Auth round-trip per request; switch to local JWKS verification (jose) when latency matters.
+// D-565: local JWT verification (JWKS from NEXT_PUBLIC_SUPABASE_URL/auth/v1/.well-known/jwks.json) + one DB session query per request.
 // Mocks are fail-closed (G05 M3): only with NODE_ENV=development|test (the `dev` script sets it); an unset NODE_ENV counts as production.
 const devLike = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
-for (const k of ['GRADER', 'STRIPE'] as const) if (process.env[k] === 'mock' && !devLike) throw new Error(`${k}=mock requires NODE_ENV=development or test`);
+for (const k of ['GRADER', 'STRIPE', 'AI'] as const) if (process.env[k] === 'mock' && !devLike) throw new Error(`${k}=mock requires NODE_ENV=development or test`);
+// D-580: map generation without OPENROUTER_API_KEY answers 503 ai_unavailable unless AI=mock (deterministic offline drafts). Said once at boot.
+if (aiMode() !== 'live') createLogger({ requestId: 'boot' }).warn(aiMode() === 'mock' ? 'AI=mock: generated maps are offline drafts' : 'AI off: set OPENROUTER_API_KEY (or AI=mock in dev) to generate maps');
 // F05: OpenRouter when OPENROUTER_API_KEY is set; rubric-only grader otherwise. GRADER=mock keeps the deterministic test double.
 const grade = process.env.GRADER === 'mock' ? mockGrader : gradeAnswer;
 const stream = process.env.GRADER === 'mock' ? undefined : streamGradeAnswer;

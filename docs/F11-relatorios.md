@@ -38,7 +38,7 @@ A rota de relatório mapeia falha inesperada de `getProgress` para HTTP 500. `ge
 
 Os schemas em `packages/contracts` (eventos) são `.strict()`. O cliente valida o corpo do evento e só depois acrescenta `plan`, `platform` e `appVersion`. Colocar esses três dentro do schema do evento quebraria os testes que comparam o payload exato.
 
-Os eventos que o produto dispara, e que os contratos aceitam, incluem `signup`, `board_created`, `board_generated_from_pdf`, `card_created`, `anki_imported`, `challenge_started`, `answer_submitted`, `grade_overridden`, `review_completed`, `paywall_viewed`, `subscription_started`, `subscription_canceled`, `ai_graded` e `rubric_generated`, além dos da fila, da disputa, da publicação e do progresso. O servidor não regrava esses eventos: o Mixpanel é chamado no browser, e sem token o frontend só acumula `window.__remoaEvents` para o teste.
+Os eventos que o produto dispara, e que os contratos aceitam, incluem `signup`, `board_created`, `board_generated_from_pdf`, `card_created`, `anki_imported`, `challenge_started`, `answer_submitted`, `grade_overridden`, `review_completed`, `paywall_viewed`, `subscription_started`, `subscription_canceled`, `ai_graded` e `rubric_generated`, além dos da fila, da disputa, da publicação e do progresso. Não há analytics de produto externo: o servidor não regrava esses eventos, o frontend só os acumula em `window.__remoaEvents` para o teste, e o dado de estudo fica em `attempts`.
 
 ## Concordância do grader
 
@@ -48,4 +48,4 @@ Está em `graderAgreement`, documentada no arquivo da F10. Revisor ou admin. Fó
 
 - Passo de fluxo e máscara não entram nos cards fracos.
 - Não há consulta duplicada dentro do Next.
-- Telemetria sem `NEXT_PUBLIC_MIXPANEL_TOKEN` não sai do browser.
+- Telemetria de eventos não sai do browser (sem analytics externo).

@@ -25,6 +25,12 @@ export const flagSources = ['ai', 'user_disagree'] as const;
 export const areas = ['CM', 'CIR', 'GO', 'PED', 'MP'] as const;
 /** Areas with an Enamed matrix, coverage and seeds (MVP: CM only). Lists that mean "the matrix" iterate this, not `areas`. */
 export const matrixAreas = ['CM'] as const satisfies readonly Area[];
+/**
+ * CCR-017 (D-572): every grande área with its availability, in UI order. `available: false` = the web shows "Em breve" and
+ * the server refuses it where a user picks an area to study (onboarding). Names live in @remoa/strings (`boards.area.<id>`).
+ */
+export const AREA_OPTIONS = areas.map((id) => ({ id, available: (matrixAreas as readonly string[]).includes(id) }));
+export const isAreaAvailable = (a: Area) => (matrixAreas as readonly string[]).includes(a);
 /** D-281/D-285: `owner` = Só eu (no link) · `password` = Privado (link + senha) · `public` = Público (link). */
 export const boardAccess = ['owner', 'password', 'public'] as const;
 

@@ -2,7 +2,7 @@
 // `mocks/` implements every one of them; real implementations should `satisfies` these types.
 import type { Grade, MapState } from './enums';
 import type { Result } from './errors';
-import type { Board, BoardGraph, BoardSummary, CreateBoardInput, MapOp, UpdateBoardInput } from './board';
+import type { Board, BoardGraph, BoardListQuery, BoardSummary, CreateBoardInput, DeleteBoardResult, MapOp, UpdateBoardInput } from './board';
 import type { AssetRef, AssetView, CardDetail, Rubric, SaveCardInput, UploadCompleteInput, UploadSignInput, UploadSignOutput } from './card';
 import type { Attempt, CardStudyAction, CardStudyState, FsrsMemory, IntervalPreview, QueueItem, RecordAttemptOutput, RetrievabilityMap } from './review';
 import type {
@@ -34,7 +34,9 @@ import type { BoardVersion, PublishVersionInput, ResolveDisputeInput, ReviewDeci
 import type { AnkiDraft, ApkgSummary, ExistingBoard, FieldMapping, ImportPlan, ImportProgress, ImportReport, ImportKeyInput, ImportUploadSignInput, StartImportInput } from './import';
 import type { CopyBoardInput, ShareState, SharedAccessGrant, SharedBoardResponse, UnlockInput, UpdateShareInput } from './share';
 import type { HomeSummary, ProgressSummary } from './reports';
+import type { ReviewHub } from './review-hub';
 import type { OnboardingAnswersPatch, OnboardingState, WaitlistEntry } from './onboarding';
+import type { AdminStoreWaitlistSummary, StoreConfig, StoreWaitlistEntry, StoreWaitlistInput } from './store';
 import type {
   AccountSnapshot,
   AvatarVariants,
@@ -54,14 +56,17 @@ import type { SupportAttachmentSignInput, SupportReplyInput, SupportTicketCreate
 import type {
   AdminActionResult, AdminExportInput, AdminMapListQuery, AdminMapPage, AdminMe, AdminOverview, AdminPaymentDetail, AdminPaymentListQuery,
   AdminPaymentPage, AdminReferralDetail, AdminReferralListQuery, AdminReferralPage, AdminTicketDetail, AdminTicketListQuery, AdminTicketPage,
-  AdminTicketReplyInput, AdminUserDetail, AdminUserListQuery, AdminUserPage, AuditEntry, AuditListQuery, AuditPage, MarkPaidInput,
+  AdminTicketReplyInput, AdminUserDetail, AdminWaitlistListQuery, AdminWaitlistPage, AdminUserListQuery, AdminUserPage, AuditEntry, AuditListQuery, AuditPage, MarkPaidInput,
   OverviewPeriod, ReasonInput, RevokeGrantInput,
 } from './admin';
 
 type Async<T> = Promise<Result<T>>;
 
 // F01 board (apps/web features/map)
-export type ListBoards = (userId: string) => Async<BoardSummary[]>;
+/** CCR-018: `query` absent = `{ status: 'active' }` (the old behavior). */
+export type ListBoards = (userId: string, query?: BoardListQuery) => Async<BoardSummary[]>;
+/** CCR-018 (D-574): DELETE /v1/boards/:id, permanent. */
+export type DeleteBoard = (userId: string, boardId: string) => Async<DeleteBoardResult>;
 export type GetBoard = (userId: string, boardId: string) => Async<BoardGraph>;
 export type CreateBoard = (userId: string, input: CreateBoardInput) => Async<Board>;
 export type UpdateBoard = (userId: string, boardId: string, input: UpdateBoardInput) => Async<Board>;
@@ -150,6 +155,8 @@ export type LinkBoardMatrix = (userId: string, link: BoardMatrixLink) => Async<B
 export type UnlinkBoardMatrix = (userId: string, link: BoardMatrixLink) => Async<null>;
 /** G01 v2 "Hoje" (GET /v1/home). */
 export type GetHomeSummary = (userId: string, now: Date) => Async<HomeSummary>;
+/** G15 "Revisar" (GET /v1/review/hub): queue panel, indicators and charts in one call. */
+export type GetReviewHub = (userId: string, now: Date) => Async<ReviewHub>;
 
 // F08 billing
 export type GetEntitlements = (userId: string) => Async<Entitlements>;
@@ -260,6 +267,13 @@ export type ListAdminPayments = (adminId: string, q: AdminPaymentListQuery) => A
 export type GetAdminPayment = (adminId: string, paymentId: string) => Async<AdminPaymentDetail>;
 export type ListAdminReferrals = (adminId: string, q: AdminReferralListQuery) => Async<AdminReferralPage>;
 export type GetAdminReferral = (adminId: string, referralId: string) => Async<AdminReferralDetail>;
+// G16 store waitlist (CCR-030): GET /v1/store/config · GET|PUT|DELETE /v1/store/waitlist · GET /v1/admin/store-waitlist
+export type GetStoreConfig = () => Async<StoreConfig>;
+export type GetStoreWaitlist = (userId: string) => Async<StoreWaitlistEntry | null>;
+export type PutStoreWaitlist = (userId: string, input: StoreWaitlistInput) => Async<StoreWaitlistEntry>;
+export type LeaveStoreWaitlist = (userId: string) => Async<null>;
+export type GetAdminStoreWaitlist = (adminId: string) => Async<AdminStoreWaitlistSummary>;
+export type ListAdminWaitlist = (adminId: string, q: AdminWaitlistListQuery) => Async<AdminWaitlistPage>;
 export type ListAdminTickets = (adminId: string, q: AdminTicketListQuery) => Async<AdminTicketPage>;
 export type GetAdminTicket = (adminId: string, ticketId: string) => Async<AdminTicketDetail>;
 export type ListAudit = (adminId: string, q: AuditListQuery) => Async<AuditPage>;

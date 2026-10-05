@@ -83,7 +83,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     await dbm.db.update(dbm.profiles).set({ suspendedAt: new Date(), suspendedReason: 'teste de suspensão' }).where(eq(dbm.profiles.userId, pro.id));
     expect((await call(pro.id, 'GET', '/account/me')).json.data.isAdmin).toBe(false); // same gate as requireAdmin
     await dbm.db.update(dbm.profiles).set({ role: 'student', suspendedAt: null, suspendedReason: null }).where(eq(dbm.profiles.userId, pro.id));
-    expect(p.preferences.newCardsPerDay).toBe(20);
+    expect(p.preferences.newCardsPerDay).toBeNull(); // D-647: Pro unlimited
     expect(p.profile).toMatchObject({ name: 'Ana Souza', goal: 'enamed_2027_1', stage: 'y5_6' });
     expect(p.completeness.percent).toBe(80); // email + name + goal + reminder
   });
@@ -221,6 +221,10 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     expect((await q(pro.id)).data).toHaveLength(20);
     await call(pro.id, 'PATCH', '/account/preferences', { newCardsPerDay: 5 });
     expect((await q(pro.id)).data).toHaveLength(5);
+    // D-647: null drops the personal cap; Pro has no plan cap
+    expect((await call(pro.id, 'PATCH', '/account/preferences', { newCardsPerDay: null })).json.data.newCardsPerDay).toBeNull();
+    expect((await q(pro.id)).data).toHaveLength(25);
+    await call(pro.id, 'PATCH', '/account/preferences', { newCardsPerDay: 5 });
     // downgrade: a stored 20 no longer counts above the Free cap
     await dbm.db.update(dbm.subscriptions).set({ plan: 'free' }).where(eq(dbm.subscriptions.userId, pro.id));
     await dbm.db.update(dbm.userPreferences).set({ newCardsPerDay: 20 }).where(eq(dbm.userPreferences.userId, pro.id));

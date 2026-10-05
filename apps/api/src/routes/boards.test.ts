@@ -10,7 +10,8 @@ config({ path: '../../.env' });
 describe.skipIf(!process.env.DATABASE_URL)('/v1/boards', () => {
   const a = uuid();
   const b = uuid();
-  const tokens: Record<string, string> = { ta: a, tb: b };
+  const c = uuid(); // free plan
+  const tokens: Record<string, string> = { ta: a, tb: b, tc: c };
   let dbm: typeof import('@remoa/db');
   let app: ReturnType<typeof import('../app').createApp>;
 
@@ -32,13 +33,14 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/boards', () => {
     dbm = await import('@remoa/db');
     const { createApp } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => tokens[t] ?? null });
-    for (const id of [a, b]) {
+    for (const id of [a, b, c]) {
       await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+      if (id === c) continue;
       await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan: 'pro', status: 'active' }); // F08: these tests are not about plan limits
     }
   });
   afterAll(async () => {
-    if (dbm) await dbm.db.execute(sql.raw(`delete from auth.users where id in ('${a}', '${b}')`));
+    if (dbm) await dbm.db.execute(sql.raw(`delete from auth.users where id in ('${a}', '${b}', '${c}')`));
   });
 
   it('create, list, get, rename, archive, unarchive', async () => {
@@ -59,6 +61,61 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/boards', () => {
     expect((await call('ta', 'GET', `/${id}`)).status).toBe(200);
     expect((await call('ta', 'PATCH', `/${id}`, { archived: false })).json.data.archivedAt).toBeNull();
     expect((await call('ta', 'GET', '')).json.data.map((x: { id: string }) => x.id)).toContain(id);
+  });
+
+  it('GET ?status= filters active, archived and all; bad value is 422', async () => {
+    const live = await newBoard('ta', 'Viva');
+    const old = await newBoard('ta', 'Velha');
+    await call('ta', 'PATCH', `/${old}`, { archived: true });
+    const ids = async (q: string) => (await call('ta', 'GET', q)).json.data.map((x: { id: string }) => x.id) as string[];
+    expect(await ids('')).toContain(live);
+    expect(await ids('')).not.toContain(old);
+    expect(await ids('?status=active')).not.toContain(old);
+    const arch = await ids('?status=archived');
+    expect(arch).toContain(old);
+    expect(arch).not.toContain(live);
+    expect((await call('ta', 'GET', '?status=archived')).json.data.find((x: { id: string }) => x.id === old).archivedAt).toBeTruthy();
+    expect(await ids('?status=all')).toEqual(expect.arrayContaining([live, old]));
+    expect((await call('ta', 'GET', '?status=x')).status).toBe(422);
+  });
+
+  it('DELETE: owner removes the map for good, with cards, edges, review state and attempts; copies lose the source', async () => {
+    const id = await newBoard('ta', 'Apagar');
+    const [c1, c2] = [uuid(), uuid()];
+    await ops('ta', [mkCard(id, c1), mkCard(id, c2), mkEdge(id, c1, c2, 'x')]);
+    await dbm.db.execute(sql`insert into fsrs_state (user_id, card_id, due) values (${a}, ${c1}, now())`);
+    await dbm.db.execute(sql`insert into attempts (user_id, card_id, mode, input_kind, grade) values (${a}, ${c1}, 'hidden_card', 'text', 3)`);
+    const dup = (await call('ta', 'POST', `/${id}/duplicate`, { title: 'Cópia viva' })).json.data.id as string;
+    const r = await call('ta', 'DELETE', `/${id}`);
+    expect(r.status).toBe(200);
+    expect(r.json.data).toEqual({ id });
+    expect((await call('ta', 'GET', `/${id}`)).status).toBe(404);
+    expect((await call('ta', 'DELETE', `/${id}`)).status).toBe(404); // second time
+    for (const t of ['cards', 'edges', 'fsrs_state', 'attempts']) {
+      const [n] = await dbm.db.execute<{ n: number }>(sql.raw(`select count(*)::int n from ${t} where ${t === 'fsrs_state' || t === 'attempts' ? `card_id = '${c1}'` : t === 'cards' ? `id in ('${c1}','${c2}')` : `board_id = '${id}'`}`));
+      expect(n!.n).toBe(0);
+    }
+    const copy = await graph('ta', dup);
+    expect(copy.board.sourceBoardId).toBeNull();
+    expect(copy.cards).toHaveLength(2);
+  });
+
+  it('DELETE: non-owner 404 (map stays), seed 404, bad id 404', async () => {
+    const id = await newBoard('ta', 'Meu');
+    expect((await call('tb', 'DELETE', `/${id}`)).status).toBe(404);
+    expect((await call('ta', 'GET', `/${id}`)).status).toBe(200);
+    const [seed] = await dbm.db.insert(dbm.boards).values({ userId: a, title: 'seed-del', status: 'seed_approved' }).returning();
+    expect((await call('ta', 'DELETE', `/${seed!.id}`)).status).toBe(404);
+    expect((await call('tb', 'GET', `/${seed!.id}`)).status).toBe(200);
+    expect((await call('ta', 'DELETE', '/nao-uuid')).status).toBe(404);
+  });
+
+  it('DELETE: a shared map dies with its link; the quota slot comes back on the Free plan', async () => {
+    const [x, y] = [await newBoard('tc', 'Um'), await newBoard('tc', 'Dois')];
+    expect((await call('tc', 'POST', '', { title: 'Três' })).json.error?.code).toBe('quota_exceeded');
+    expect((await call('tc', 'DELETE', `/${x}`)).status).toBe(200);
+    expect((await call('tc', 'POST', '', { title: 'Três' })).status).toBe(201);
+    expect((await call('tc', 'GET', `/${y}`)).status).toBe(200);
   });
 
   it('ops: build, move, label, soft delete hides edge, re-create restores; replay is a no-op', async () => {

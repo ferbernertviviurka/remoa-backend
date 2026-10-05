@@ -1,13 +1,13 @@
-import { pdfText } from './pdf';
+import { readPdfText } from './pdf';
 
 type OcrPage = { markdown?: string };
 type OcrBody = { pages?: OcrPage[] };
 
 /** Mistral OCR when MISTRAL_API_KEY is set. Otherwise the literal strings already in the file. */
 export async function ocrPdf(bytes: Uint8Array, fetchImpl: typeof fetch = fetch): Promise<string> {
-  const literal = pdfText(bytes);
+  const literal = await readPdfText(bytes);
   const key = process.env.MISTRAL_API_KEY;
-  if (!key) return literal;
+  if (!key || process.env.AI === 'mock') return literal; // D-580: the mock never calls a provider
   try {
     const document = Buffer.from(bytes).toString('base64');
     const res = await fetchImpl('https://api.mistral.ai/v1/ocr', {

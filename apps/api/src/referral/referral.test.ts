@@ -3,7 +3,7 @@
 import { config } from 'dotenv';
 import { sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateReferralCode, REFERRAL_LIMITS, type MapOp } from '@remoa/contracts';
 import type { Logger } from '@remoa/log';
 import { DISPOSABLE_DOMAINS, flagWeakSignals, isDisposable } from './fraud';
@@ -13,8 +13,6 @@ config({ path: '../../.env' });
 // D-537: XFF counts only through trusted hops; these requests model 1 proxy(ies) in front of the API.
 vi.stubEnv('TRUSTED_PROXY_HOPS', '1');
 
-const track = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock('../telemetry/server', () => ({ trackServer: track }));
 
 const memLog = () => {
   const lines: { level: string; msg: string; extra?: Record<string, unknown> }[] = [];
@@ -103,7 +101,6 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     const { createApp } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => tokens[t] ?? null });
   });
-  beforeEach(() => track.mockClear());
   afterAll(async () => {
     if (!dbm || !users.length) return;
     await dbm.db.execute(sql`delete from auth.users where id in (${sql.join(users.map((u) => sql`${u}`), sql`, `)})`);
@@ -195,15 +192,10 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     expect((await req('POST', '/v1/boards/ops', { u: referee, body: { ops } })).status).toBe(200);
     const row = (await referral(referee))!;
     expect(row.status).toBe('qualified');
-    // P-184: server events once (re-runs below emit nothing), ids and enums only
-    const ev = track.mock.calls.map((c: unknown[]) => [c[0], c[1], c[2]]);
-    expect(ev).toHaveLength(4);
-    expect(ev).toEqual(expect.arrayContaining([['first_board_created', {}, referee], ['referral_qualified', {}, referee], ['referral_reward_granted', { side: 'referrer', kind: expect.any(String) }, row.referrer_id], ['referral_reward_granted', { side: 'referee', kind: expect.any(String) }, referee]]));
     expect((await grants(row.id)).map((g) => g.user_id).sort()).toEqual([row.referrer_id, referee].sort());
     // idempotent: sequential and concurrent re-runs create nothing
     expect(await q.maybeQualifyReferral(referee)).toBe('none');
     await Promise.all([1, 2, 3].map(() => q.maybeQualifyReferral(referee)));
-    expect(track).toHaveBeenCalledTimes(4);
     expect(await grants(row.id)).toHaveLength(2);
     // the referrer's Pro is in force through getEntitlements (T4)
     const ent = await req('GET', '/v1/billing/entitlements', { u: row.referrer_id });
@@ -247,13 +239,11 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
       const { referee } = await pair(o);
       await board(referee, 3);
       const { log, lines } = memLog();
-      track.mockClear();
       expect(await q.maybeQualifyReferral(referee, { log })).toBe('rejected');
       const row = (await referral(referee))!;
       expect([row.status, row.reject_reason]).toEqual(['rejected', reason]);
       expect(await grants(row.id)).toHaveLength(0);
       expect(lines.find((l) => l.msg === 'referral_rejected')?.extra).toEqual({ event: 'referral_rejected', reason });
-      expect(track.mock.calls).toEqual([['referral_rejected', { reason }, referee]]);
       expect(await q.maybeQualifyReferral(referee)).toBe('none'); // final
     }
   });
@@ -401,6 +391,5 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     expect(await att.attributeReferral(r, code, { log, ip: '1.1.1.1', ua: 'x' })).toEqual({ attributed: false });
     expect(lines[0]).toMatchObject({ msg: 'referral_rejected', extra: { event: 'referral_rejected', reason: 'self_referral' } });
     expect(JSON.stringify(lines)).not.toContain(code);
-    expect(track.mock.calls).toEqual([['referral_rejected', { reason: 'self_referral' }, r]]);
   });
 });

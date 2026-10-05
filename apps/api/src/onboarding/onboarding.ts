@@ -3,7 +3,6 @@ import { ACTIVATION_TARGETS, activationItems, ok, onboardingAnswersSchema, type 
 import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
 import { sendEmail } from '../account/mailer';
-import { trackServer } from '../telemetry/server';
 import { welcomeEmail } from './email-copy';
 
 const log = createLogger({ requestId: 'onboarding' });
@@ -42,10 +41,14 @@ export async function claimEmail(userId: string, key: 'welcome' | 'mapReady' | '
 
 export const saveOnboarding: SaveOnboarding = async (userId, patch: OnboardingAnswersPatch) => {
   const { db } = await dbm();
-  // Server connection: goal/stage have no client GRANT. `||` merges and keeps `_emails`.
+  // CCR-017 (D-570): goals (multi) win over the legacy single goal; goal mirrors goals[0].
+  const goals = patch.goals ?? (patch.goal ? [patch.goal] : null);
+  // Server connection: goal/goals/stage have no client GRANT. `||` merges and keeps `_emails`.
   await db.execute(sql`
     update profiles set onboarding_answers = onboarding_answers || ${JSON.stringify(patch)}::jsonb,
-      goal = coalesce(${patch.goal ?? null}::text, goal), stage = coalesce(${patch.segment ?? null}::text, stage)
+      goal = coalesce(${goals?.[0] ?? null}::text, goal), stage = coalesce(${patch.segment ?? null}::text, stage),
+      goals = case when ${goals ? JSON.stringify(goals) : null}::jsonb is null then goals
+        else array(select jsonb_array_elements_text(${JSON.stringify(goals ?? [])}::jsonb)) end
     where user_id = ${userId}`);
   try {
     if (await claimEmail(userId, 'welcome')) {
@@ -60,11 +63,7 @@ export const saveOnboarding: SaveOnboarding = async (userId, patch: OnboardingAn
 
 export const completeOnboarding: CompleteOnboarding = async (userId) => {
   const { db } = await dbm();
-  const r = await db.execute<{ path: string | null }>(sql`
-    update profiles set onboarding_done_at = now() where user_id = ${userId} and onboarding_done_at is null returning onboarding_answers->>'startPath' as path`);
-  if (r[0]) {
-    const path = r[0].path;
-    await trackServer('onboarding_completed', { path: path === 'pdf' || path === 'anki' || path === 'seed' ? path : 'skipped' }, userId);
-  }
+  await db.execute(sql`
+    update profiles set onboarding_done_at = now() where user_id = ${userId} and onboarding_done_at is null`);
   return ok(await load(userId));
 };

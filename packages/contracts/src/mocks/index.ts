@@ -1,14 +1,15 @@
 // In-memory implementations of every signature in ../api. State is module-level; call resetMocks() between tests.
 import { err, ok, parseWith } from '../errors';
 import type { Board, Edge } from '../board';
-import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, createBoardInputSchema, mapOpSchema, normalizeBoardTitle } from '../board';
+import { MAX_CARDS_PER_BOARD, PREVIEW_MAX_NODES, boardListQuerySchema, createBoardInputSchema, mapOpSchema, normalizeBoardTitle } from '../board';
 import { SHARE_LIMITS, sharedBoardSchema, updateShareInputSchema, type ShareState } from '../share';
 import { cardDetailSchema, cardSchema, saveCardInputSchema, type Card, type CardDetail } from '../card';
-import { challengeItemPublicSchema, type ChallengeItem } from '../challenge';
+import { challengeItemPublicSchema, challengeOptionsSchema, unavailableChallengeOption, type ChallengeItem } from '../challenge';
 import type { Grade } from '../enums';
 import { PLAN_LIMITS, type Entitlements } from '../billing';
 import type { ReviewItem } from '../editorial';
 import { startImportInputSchema, type ApkgSummary, type ImportReport } from '../import';
+import { storeWaitlistInputSchema, type StoreWaitlistEntry } from '../store';
 import { ACTIVATION_TARGETS, activationItems, onboardingAnswersPatchSchema, waitlistEntrySchema, type OnboardingState } from '../onboarding';
 import { cardStudyActionSchema } from '../review';
 import type * as Api from '../api';
@@ -18,6 +19,7 @@ import * as ai from './ai';
 
 export * from './fixtures';
 export * from './review';
+export * from './review-hub';
 export * from './ai';
 export * from './account';
 export * from './billing';
@@ -40,6 +42,7 @@ let shares = new Map<string, ShareRow>();
 let unlockFails = new Map<string, number>();
 let onboarding: Pick<OnboardingState, 'doneAt' | 'answers'> = { doneAt: null, answers: {} };
 let seq = 0;
+const storeWaitlistRows = new Map<string, StoreWaitlistEntry>();
 const nextId = () => fid(10_000 + seq++);
 
 export function resetMocks() {
@@ -66,6 +69,7 @@ export function resetMocks() {
   shares = new Map();
   unlockFails = new Map();
   seq = 0;
+  storeWaitlistRows.clear();
   review.resetReviewMocks();
   ai.resetAiMocks();
 }
@@ -97,10 +101,13 @@ function boardOverview(boardId: string) {
   };
 }
 
-export const listBoards: Api.ListBoards = async (userId) =>
-  ok(
+export const listBoards: Api.ListBoards = async (userId, query = {}) => {
+  const q = parseWith(boardListQuerySchema, query);
+  if (!q.ok) return q;
+  const keep = (b: Board) => q.data.status === 'all' || (q.data.status === 'archived') === !!b.archivedAt;
+  return ok(
     boards
-      .filter((b) => b.userId === userId && !b.archivedAt)
+      .filter((b) => b.userId === userId && keep(b))
       .map((b) => ({
         id: b.id,
         title: b.title,
@@ -108,6 +115,7 @@ export const listBoards: Api.ListBoards = async (userId) =>
         status: b.status,
         updatedAt: b.updatedAt,
         matrixItemId: b.matrixItemId,
+        archivedAt: b.archivedAt,
         access: b.access,
         cardCount: cards.filter((c) => c.boardId === b.id).length,
         edgeCount: edges.filter((e) => e.boardId === b.id).length,
@@ -115,6 +123,18 @@ export const listBoards: Api.ListBoards = async (userId) =>
         ...boardOverview(b.id),
       })),
   );
+};
+
+/** CCR-018: permanent; cascades like the database (cards, edges, review state of those cards). */
+export const deleteBoard: Api.DeleteBoard = async (userId, boardId) => {
+  const board = findBoard(boardId);
+  if (!board || board.userId !== userId || board.status !== 'private') return err('not_found', 'board not found');
+  boards.splice(boards.indexOf(board), 1);
+  for (const list of [cards, edges] as { boardId: string }[][])
+    for (let i = list.length - 1; i >= 0; i--) if (list[i]!.boardId === boardId) list.splice(i, 1);
+  for (const b of boards) if (b.sourceBoardId === boardId) b.sourceBoardId = null;
+  return ok({ id: boardId });
+};
 
 export const getBoard: Api.GetBoard = async (userId, boardId) => {
   const board = findBoard(boardId);
@@ -290,11 +310,17 @@ function buildItem(q: (typeof reviewQueueFixture)[number], i: number): Challenge
   return { ...base, prompt: card.front ?? card.title, canonical: card.back ?? card.title };
 }
 
-export const startSession: Api.StartSession = async () => {
+export const startSession: Api.StartSession = async (_userId, input) => {
+  const p = parseWith(challengeOptionsSchema, input.options ?? {}); // only the options: web tests send fixture board ids
+  if (!p.ok) return p;
+  const options = p.data;
+  const unavailable = unavailableChallengeOption(options);
+  if (unavailable) return err('validation', unavailable);
+  // CHALLENGE_MIN_CARDS is not enforced here: the Sepse fixture has 6 cards and the web tests challenge it. The API enforces it.
   const items = reviewQueueFixture.map(buildItem).filter((x): x is ChallengeItem => x !== null);
   const sessionId = nextId();
   sessions.set(sessionId, { items, grades: new Map(), skips: 0 });
-  return ok({ sessionId, items: items.map((x) => challengeItemPublicSchema.parse(x)) });
+  return ok({ sessionId, items: items.map((x) => challengeItemPublicSchema.parse(x)), options });
 };
 
 const findItem = (sessionId: string, itemId: string) => {
@@ -612,7 +638,7 @@ export const getHomeSummary: Api.GetHomeSummary = async (_userId, now) => {
 const FREE_LIMITS: Entitlements['limits'] = PLAN_LIMITS.free.limits;
 
 export const getEntitlements: Api.GetEntitlements = async () =>
-  ok({ plan: 'free', status: null, ...PLAN_LIMITS.free, limits: FREE_LIMITS, usage: { ...usage }, renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null, referralPending: false });
+  ok({ plan: 'free', status: null, ...PLAN_LIMITS.free, limits: FREE_LIMITS, usage: { ...usage }, ankiImportsUsed: 0, renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null, referralPending: false });
 
 export const assertQuota: Api.AssertQuota = async (_userId, key) => {
   const limit = FREE_LIMITS[key];
@@ -710,6 +736,23 @@ const onboardingState = (): OnboardingState => {
     checklist: activationItems.map((id) => ({ id, current: current[id], target: ACTIVATION_TARGETS[id], done: current[id] >= ACTIVATION_TARGETS[id] })),
   };
 };
+// --- G16 store waitlist (CCR-030) --------------------------------------------
+export const getStoreConfig: Api.GetStoreConfig = async () => ok({ status: 'soon', splitSellerPct: 85 });
+export const getStoreWaitlist: Api.GetStoreWaitlist = async (userId) => ok(storeWaitlistRows.get(userId) ?? null);
+export const putStoreWaitlist: Api.PutStoreWaitlist = async (userId, input) => {
+  const p = parseWith(storeWaitlistInputSchema, input);
+  if (!p.ok) return p;
+  const now = new Date(FIXTURE_NOW);
+  const row: StoreWaitlistEntry = { email: p.data.email, interest: p.data.interest, sellerRole: p.data.sellerRole, updatedAt: now };
+  storeWaitlistRows.set(userId, row);
+  return ok(clone(row));
+};
+export const leaveStoreWaitlist: Api.LeaveStoreWaitlist = async (userId) => (storeWaitlistRows.delete(userId), ok(null));
+export const getAdminStoreWaitlist: Api.GetAdminStoreWaitlist = async () => {
+  const rows = [...storeWaitlistRows.values()];
+  const role = (r: string) => rows.filter((x) => x.interest.includes('sell') && x.sellerRole === r).length;
+  return ok({ total: rows.length, buy: rows.filter((x) => x.interest.includes('buy')).length, sell: rows.filter((x) => x.interest.includes('sell')).length, both: rows.filter((x) => x.interest.length === 2).length, byRole: { teacher: role('teacher'), student_resident: role('student_resident'), physician: role('physician') } });
+};
 export const getOnboarding: Api.GetOnboarding = async () => ok(onboardingState());
 export const saveOnboarding: Api.SaveOnboarding = async (_userId, answers) => {
   const parsed = parseWith(onboardingAnswersPatchSchema, answers);
@@ -734,6 +777,7 @@ export const setCardStudy: Api.SetCardStudy = async (_userId, cardId, action) =>
 
 export const mocks = {
   listBoards,
+  deleteBoard,
   getBoard,
   createBoard,
   updateBoard,
@@ -791,12 +835,18 @@ export const mocks = {
   copySeedBoard,
   getProgress,
   joinWaitlist,
+  getStoreConfig,
+  getStoreWaitlist,
+  putStoreWaitlist,
+  leaveStoreWaitlist,
+  getAdminStoreWaitlist,
   saveOnboarding,
   getOnboarding,
   completeOnboarding,
   setCardStudy,
 } satisfies {
   listBoards: Api.ListBoards;
+  deleteBoard: Api.DeleteBoard;
   getBoard: Api.GetBoard;
   createBoard: Api.CreateBoard;
   updateBoard: Api.UpdateBoard;
@@ -854,6 +904,11 @@ export const mocks = {
   copySeedBoard: Api.CopySeedBoard;
   getProgress: Api.GetProgress;
   joinWaitlist: Api.JoinWaitlist;
+  getStoreConfig: Api.GetStoreConfig;
+  getStoreWaitlist: Api.GetStoreWaitlist;
+  putStoreWaitlist: Api.PutStoreWaitlist;
+  leaveStoreWaitlist: Api.LeaveStoreWaitlist;
+  getAdminStoreWaitlist: Api.GetAdminStoreWaitlist;
   saveOnboarding: Api.SaveOnboarding;
   getOnboarding: Api.GetOnboarding;
   completeOnboarding: Api.CompleteOnboarding;

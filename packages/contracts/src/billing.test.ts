@@ -63,6 +63,7 @@ describe('F15 plan definition and matrix', () => {
   it('derives from PLAN_LIMITS', () => {
     expect(planDefinition('free')).toEqual({
       ...PLAN_LIMITS.free.limits,
+      anki_imports: PLAN_LIMITS.free.ankiImports,
       anki_import_cards: PLAN_LIMITS.free.ankiImportMaxCards,
       new_cards_per_day: PLAN_LIMITS.free.newCardsPerDay,
     });
@@ -142,6 +143,14 @@ describe('F15 schemas', () => {
     expect(eventSchemas.checkout_started.safeParse({ period: 'annual', method: 'pix' }).success).toBe(true);
     expect(eventSchemas.plans_viewed.safeParse({ from: 'boards' }).success).toBe(true);
     expect(eventSchemas.plans_viewed.safeParse({ from: 'evil' }).success).toBe(false);
+  });
+});
+
+describe('plan table (D-647)', () => {
+  it('free / pro / founder', () => {
+    expect(planDefinition('free')).toEqual({ boards: 2, cards: 50, ai_grades: 20, ai_generations: 0, anki_imports: 1, anki_import_cards: 200, new_cards_per_day: 10 });
+    expect(planDefinition('pro')).toEqual({ boards: null, cards: null, ai_grades: 50, ai_generations: 5, anki_imports: null, anki_import_cards: null, new_cards_per_day: null });
+    expect(Object.values(planDefinition('founder')).every((v) => v === null)).toBe(true);
   });
 });
 

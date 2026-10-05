@@ -5,16 +5,18 @@ import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 config({ path: '../../.env' });
+process.env.AI = 'mock'; // D-580: generation without a key needs the explicit mock
 
 describe.skipIf(!process.env.DATABASE_URL)('/v1/ai abuse limits', () => {
   const users: string[] = [];
   let dbm: typeof import('@remoa/db');
   let app: ReturnType<typeof import('../app').createApp>;
 
-  const newUser = async () => {
+  const newUser = async (plan?: 'pro' | 'founder') => {
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    if (plan) await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan, status: 'active' }); // D-647: Free has no PDF maps
     return id;
   };
   const req = (user: string, path: string, body: BodyInit, type = 'application/json') =>
@@ -81,8 +83,42 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/ai abuse limits', () => {
     expect(boards).toHaveLength(2);
   });
 
-  it('generate-pdf: an unreadable PDF gives the monthly generation back', async () => {
+  it('generate-pdf without a key or AI=mock is 503 ai_unavailable and spends no generation (D-580)', async () => {
     const me = await newUser();
+    const key = process.env.OPENROUTER_API_KEY;
+    delete process.env.AI;
+    delete process.env.OPENROUTER_API_KEY;
+    try {
+      const res = await genPdf(me, { title: 'Sem IA', area: 'CM', access: 'owner', matrixItemIds: [] }, pdf('Sepse grave com hipotensao refrataria a volume'));
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: { code: 'ai_unavailable', message: 'ai_not_configured' } });
+      expect(await generations(me)).toBe(0);
+    } finally {
+      process.env.AI = 'mock';
+      if (key) process.env.OPENROUTER_API_KEY = key;
+    }
+  });
+
+  it('D-647: Free generate-pdf is 402 "ai_generations"; Pro 6th of the month is 402; Founder unlimited', async () => {
+    const free = await newUser();
+    const f = await genPdf(free, { title: 'Livre' }, pdf('Sepse. '.repeat(20)));
+    expect(f.status).toBe(402);
+    expect(((await f.json()) as { error: { message: string } }).error.message).toBe('ai_generations');
+    expect(await generations(free)).toBe(0);
+    const [pro, founder] = [await newUser('pro'), await newUser('founder')];
+    const { localDay } = await import('../billing/quota');
+    for (const u of [pro, founder]) {
+      const day = await localDay(u, new Date());
+      await dbm.db.insert(dbm.usageCounters).values({ userId: u, period: `${day.slice(0, 8)}01`, aiGenerations: 5 });
+    }
+    const p = await genPdf(pro, { title: 'Sexto' }, pdf('Sepse. '.repeat(20)));
+    expect(p.status).toBe(402);
+    expect(((await p.json()) as { error: { message: string } }).error.message).toBe('ai_generations');
+    expect((await genPdf(founder, { title: 'Sexto' }, pdf('x'))).status).toBe(200); // unreadable: fails later and refunds
+  });
+
+  it('generate-pdf: an unreadable PDF gives the monthly generation back', async () => {
+    const me = await newUser('pro');
     const bad = await genPdf(me, { title: 'Ilegivel' }, pdf('x'));
     expect(bad.status).toBe(200);
     const { data } = (await bad.json()) as { data: { jobId: string } };
@@ -95,7 +131,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/ai abuse limits', () => {
   });
 
   it('generate-pdf multipart (D-532): board is validated like createBoard before anything is charged', async () => {
-    const me = await newUser();
+    const me = await newUser('pro');
     const form = (board: unknown, body = pdf('x')) => {
       const f = new FormData();
       f.set('file', new Blob([body as BlobPart], { type: 'application/pdf' }), 'a.pdf');

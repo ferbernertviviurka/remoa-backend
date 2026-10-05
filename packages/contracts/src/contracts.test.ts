@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   answerInputSchema,
   boardSchema,
+  mobileMapPrefsSchema,
   cardDetailSchema,
   saveCardInputSchema,
   cardDraftSchema,
@@ -136,5 +137,12 @@ describe('events', () => {
     track('signup', { method: 'sms' });
     expectTypeOf<EventProps['queue_opened']>().toEqualTypeOf<{ due: number; new: number; weak: number }>();
     expect(calls).toHaveLength(3);
+  });
+});
+
+describe('mobileMapPrefsSchema (F23)', () => {
+  it('fills defaults and rejects out-of-range zoom', () => {
+    expect(mobileMapPrefsSchema.parse({})).toEqual({ version: 1, heat: true, labels: true, view: 'canvas', viewports: {}, favorites: [] });
+    expect(mobileMapPrefsSchema.safeParse({ viewports: { [crypto.randomUUID()]: { x: 0, y: 0, zoom: 3 } } }).success).toBe(false);
   });
 });

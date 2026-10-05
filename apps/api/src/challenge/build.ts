@@ -1,10 +1,10 @@
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
-  challengeItemSchema, ok, type CardType, type CaseStage, type ChallengeItem, type ChallengeMode, type FsrsMemory, type QueueItem, type Result,
+  challengeItemSchema, ok, type CardType, type CaseStage, type QueueFilter, type ChallengeItem, type ChallengeMode, type FsrsMemory, type QueueItem, type Result,
 } from '@remoa/contracts';
 import { retrievability } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
-import { getBoardQueue, getDailyQueue } from '../review/queue';
+import { getBoardQueue, getDailyQueue, getFilteredQueue } from '../review/queue';
 import { run } from '../db';
 
 // --- stored shape ---------------------------------------------------------------------------------------------------
@@ -202,11 +202,42 @@ export async function loadCtx(tx: Tx, userId: string, queue: QueueItem[]): Promi
   return ctx;
 }
 
+/** D-577: card ids in arrow order (Kahn): a card comes after every card pointing at it; ties by `cardIds` order. When only cycles are left, the first unvisited card (in `cardIds` order) is emitted to break it. Pure and deterministic. */
+export function flowOrder(cardIds: string[], edges: { from: string; to: string }[]): string[] {
+  const known = new Set(cardIds);
+  const next = new Map<string, string[]>();
+  const indeg = new Map(cardIds.map((id) => [id, 0]));
+  for (const e of edges) {
+    if (e.from === e.to || !known.has(e.from) || !known.has(e.to)) continue;
+    next.set(e.from, [...(next.get(e.from) ?? []), e.to]);
+    indeg.set(e.to, indeg.get(e.to)! + 1);
+  }
+  const done = new Set<string>();
+  const out: string[] = [];
+  const queue = cardIds.filter((id) => indeg.get(id) === 0);
+  while (out.length < cardIds.length) {
+    const id = queue.shift() ?? cardIds.find((c) => !done.has(c))!;
+    if (done.has(id)) continue;
+    done.add(id);
+    out.push(id);
+    for (const n of next.get(id) ?? []) {
+      indeg.set(n, indeg.get(n)! - 1);
+      if (indeg.get(n) === 0) queue.push(n);
+    }
+  }
+  return out;
+}
+
 /** FR-1: queue (F03) -> frozen items. Board sessions respect the daily new limit (FRD open question, provisional yes). */
-export async function buildSession(userId: string, kind: 'daily' | 'board', boardId: string | undefined, limit: number, now: Date): Promise<Result<StoredItem[]>> {
+export async function buildSession(userId: string, kind: 'daily' | 'board', boardId: string | undefined, limit: number, now: Date, order: 'random' | 'flow' = 'random', filter?: QueueFilter): Promise<Result<StoredItem[]>> {
   const opts = { now, limit };
-  const q = kind === 'board' ? await getBoardQueue(userId, boardId!, opts) : await getDailyQueue(userId, opts);
+  const q = kind === 'board' ? await getBoardQueue(userId, boardId!, opts) : filter ? await getFilteredQueue(userId, filter, opts) : await getDailyQueue(userId, opts);
   if (!q.ok) return q;
   const ctx = await run(userId, (tx) => loadCtx(tx, userId, q.data));
-  return ok(q.data.map((i) => buildItem(i, ctx)).filter((x): x is StoredItem => x !== null));
+  const items = q.data.map((i) => buildItem(i, ctx)).filter((x): x is StoredItem => x !== null);
+  if (kind === 'board' && order === 'flow') {
+    const rank = new Map(flowOrder([...ctx.cards.values()].sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : 1)).map((c) => c.id), ctx.edges).map((id, i) => [id, i]));
+    items.sort((a, b) => (rank.get(a.cardId) ?? 0) - (rank.get(b.cardId) ?? 0)); // stable: sub-items keep queue order
+  }
+  return ok(items);
 }
