@@ -286,6 +286,16 @@ max_frequency = "5s"
 # enabled = true
 # uri = "pg-functions://<database>/<schema>/<hook_name>"
 
+# G18 F24 (D-798): Send Email hook -> the API sends account-confirm / password-reset via @remoa/emails.
+# Off here because enabling it needs `supabase stop && supabase start` (shared local stack) and the API running; when on,
+# Supabase sends no e-mail itself. To turn on locally: export SEND_EMAIL_HOOK_URI=http://host.docker.internal:4000/v1/auth/send-email
+# and SEND_EMAIL_HOOK_SECRET="v1,whsec_<base64>" (the same value in .env), set enabled = true and restart. Production: dashboard
+# Auth > Hooks > Send Email (docs/runbooks/emails.md, step 6).
+[auth.hook.send_email]
+enabled = false
+uri = "env(SEND_EMAIL_HOOK_URI)"
+secrets = "env(SEND_EMAIL_HOOK_SECRET)"
+
 # Configure one of the supported SMS providers: `twilio`, `twilio_verify`, `messagebird`, `textlocal`, `vonage`.
 [auth.sms.twilio]
 enabled = false

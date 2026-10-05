@@ -2,7 +2,8 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { err, ok, parseWith, reviewDecisionSchema, resolveDisputeInputSchema, publishVersionInputSchema } from '@remoa/contracts';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
 import { dbm } from '../db';
-import { sendEmail } from '../account/mailer';
+import { firstNameOf } from '../notifications/names';
+import { notify } from '../notifications/notify';
 import { maybeQualifyReferral } from '../referral/qualify';
 
 async function reviewer(userId: string) {
@@ -237,8 +238,7 @@ export async function resolveDispute(userId: string, body: unknown) {
   if (item.attemptId) {
     const [attempt] = await db.select().from(attempts).where(eq(attempts.id, item.attemptId));
     if (attempt) {
-      const [owner] = await db.execute<{ email: string }>(sql`select email from auth.users where id = ${attempt.userId}`);
-      if (owner?.email) await sendEmail({ to: owner.email, subject: 'Sua discordância foi revista', text: 'Um revisor registrou a decisão sobre a rubrica deste card.' });
+      await notify(attempt.userId, 'dispute_resolved', { reference: item.id, email: { name: await firstNameOf(attempt.userId) } });
     }
   }
   return ok({ outcome: input.data.outcome });

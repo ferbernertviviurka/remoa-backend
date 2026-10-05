@@ -5,8 +5,9 @@ import type { Tx } from '@remoa/db';
 import { planOf } from '../billing/plan';
 import { dbm } from '../db';
 import { attachmentsOf } from './attachments';
-import { supportTicketAnsweredEmail } from './email-copy';
-import { notify, ticketUrl, userContact } from './tickets';
+import { firstNameOf } from '../notifications/names';
+import { notify } from '../notifications/notify';
+import { ticketUrl } from './tickets';
 
 const UUID = /^[0-9a-f-]{36}$/i;
 const ref = (id: string | null, name: string | null, email: string | null) => (id ? { id, name, email } : null);
@@ -79,20 +80,24 @@ type Locked = { id: string; number: number; user_id: string | null; status: stri
 const lock = async (tx: Tx, ticketId: string) => (await tx.execute<Locked>(sql`select id, number, user_id, status from support_tickets where id = ${ticketId} for update`))[0];
 
 /** Reply -> status answered, unread for the user. Internal note -> a hidden message only: no status change, no unread, no e-mail. */
-export async function replyAsAdmin(tx: Tx, adminId: string, ticketId: string, input: AdminTicketReplyInput): Promise<Result<{ number: number; userId: string | null; internal: boolean; before: string; after: string }>> {
+export async function replyAsAdmin(tx: Tx, adminId: string, ticketId: string, input: AdminTicketReplyInput): Promise<Result<{ number: number; userId: string | null; messageId: string; internal: boolean; before: string; after: string }>> {
   const t = UUID.test(ticketId) ? await lock(tx, ticketId) : undefined;
   if (!t) return notFound();
   const internal = input.internal ?? false;
-  await tx.execute(sql`insert into support_messages (ticket_id, author_type, author_id, body, internal) values (${ticketId}, 'admin', ${adminId}, ${input.body}, ${internal})`);
+  const [msg] = await tx.execute<{ id: string }>(sql`insert into support_messages (ticket_id, author_type, author_id, body, internal) values (${ticketId}, 'admin', ${adminId}, ${input.body}, ${internal}) returning id`);
   if (!internal) await tx.execute(sql`update support_tickets set status = 'answered', resolved_at = null, last_admin_reply_at = now(), updated_at = now() where id = ${ticketId}`);
-  return ok({ number: t.number, userId: t.user_id, internal, before: t.status, after: internal ? t.status : 'answered' });
+  return ok({ number: t.number, userId: t.user_id, messageId: msg!.id, internal, before: t.status, after: internal ? t.status : 'answered' });
 }
 
-/** Call after withAdmin commits. */
-export async function notifyAnswered(userId: string | null, ticketId: string, number: number) {
+/** Call after withAdmin commits. One notice per admin message (reference = message id). */
+export async function notifyAnswered(userId: string | null, ticketId: string, number: number, messageId: string) {
   if (!userId) return;
-  const { email, name } = await userContact(userId);
-  notify(email, supportTicketAnsweredEmail({ userName: name, ticketNumber: number, ticketUrl: ticketUrl(ticketId), unsubscribeUrl: `${(process.env.WEB_ORIGIN ?? 'http://localhost:3000').replace(/\/$/, '')}/app/conta` }));
+  await notify(userId, 'support_reply', {
+    reference: messageId,
+    href: `/app/hoje?suporte=${ticketId}`,
+    data: { ticketId, ticketNumber: number },
+    email: { version: 'answered', name: await firstNameOf(userId), ticketNumber: number, ticketUrl: ticketUrl(ticketId) },
+  });
 }
 
 export async function assignTicket(tx: Tx, adminId: string, ticketId: string): Promise<Result<{ before: string; after: string }>> {

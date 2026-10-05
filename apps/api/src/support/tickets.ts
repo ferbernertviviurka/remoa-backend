@@ -5,30 +5,15 @@ import {
   type GetMyTicket, type GetSupportUnread, type ListMyTickets, type MarkTicketRead, type ReplyToTicket, type SubmitSupportTicket, type SupportTicketDetail,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { createLogger } from '@remoa/log';
-import { sendEmail } from '../account/mailer';
+import { env } from '@remoa/config';
+import { notify } from '../notifications/notify';
+import { firstNameOf } from '../notifications/names';
 import { dbm } from '../db';
 import { deleteObject } from '../storage/storage';
 import { attachmentsOf, processAttachments, type StoredAttachment } from './attachments';
-import { supportTicketReceivedEmail } from './email-copy';
 
-const log = createLogger({ requestId: 'support' });
 const DAY = 86_400_000;
-const origin = () => (process.env.WEB_ORIGIN ?? 'http://localhost:3000').replace(/\/$/, '');
-export const ticketUrl = (id: string) => `${origin()}/app/hoje?suporte=${id}`;
-
-export async function userContact(userId: string) {
-  const { db } = await dbm();
-  const [r] = await db.execute<{ email: string | null; name: string | null }>(
-    sql`select u.email, p.name from auth.users u left join profiles p on p.user_id = u.id where u.id = ${userId}`,
-  );
-  return { email: r?.email ?? null, name: r?.name?.trim().split(/\s+/)[0] || 'por aí' };
-}
-
-/** E-mail failures never fail the request (row is already committed). Subject carries only the number (FR-8). */
-export const notify = (to: string | null, mail: { subject: string; text: string }) => {
-  if (to) void sendEmail({ to, ...mail }).catch((e: unknown) => log.error('support email failed', { error: e instanceof Error ? e.message : String(e) }));
-};
+export const ticketUrl = (id: string) => `${env().appUrl}/app/hoje?suporte=${id}`;
 
 const dropFiles = (files: StoredAttachment[]) => Promise.all(files.map((f) => deleteObject(f.key))).catch(() => undefined);
 
@@ -64,8 +49,8 @@ export const submitSupportTicket: SubmitSupportTicket = async (userId, input) =>
     await cleanup();
     return out;
   }
-  const { email, name } = await userContact(userId);
-  notify(email, supportTicketReceivedEmail({ userName: name, ticketNumber: out.data.number, ticketUrl: ticketUrl(out.data.id), unsubscribeUrl: `${origin()}/app/conta` }));
+  // Rows are committed; notify() never throws. One "received" notice per ticket.
+  await notify(userId, 'support_received', { reference: out.data.id, email: { version: 'received', name: await firstNameOf(userId), ticketNumber: out.data.number, ticketUrl: ticketUrl(out.data.id) } });
   return out;
 };
 

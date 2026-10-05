@@ -1,12 +1,12 @@
 // F13 FR-9: change password with reauthentication, 5 failures/hour, other sessions revoked, notice by e-mail.
 import { eq } from 'drizzle-orm';
 import { ACCOUNT_LIMITS, changePasswordInputSchema, err, ok, parseWith, type ChangePassword } from '@remoa/contracts';
-import { createLogger } from '@remoa/log';
+import { randomUUID } from 'node:crypto';
+import { env } from '@remoa/config';
 import { dbm } from '../db';
+import { notify } from '../notifications/notify';
 import { anonClient, loadAuthUser } from './auth-admin';
-import { passwordChangedEmail } from './email-copy';
 import { recordEvent, releaseSlot, takeSlot, type EventMeta } from './events';
-import { sendEmail } from './mailer';
 import { countSessions, deleteSessions } from './sessions';
 
 const HOUR = 3_600_000;
@@ -75,11 +75,10 @@ export const changePassword = async (
   const { db, profiles } = await dbm();
   await recordEvent(db, userId, 'password_changed', { ...meta, revokedSessions });
   const [p] = await db.select({ name: profiles.name, tz: profiles.timezone }).from(profiles).where(eq(profiles.userId, userId));
-  const date = new Date().toLocaleString('pt-BR', { timeZone: p?.tz ?? 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' });
-  // The password is already changed: a mail outage is logged, not returned as a failure.
-  await sendEmail({
-    to: user.email,
-    ...passwordChangedEmail({ name: p?.name?.split(' ')[0] || 'tudo bem', date, resetUrl: `${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}/entrar` }),
-  }).catch((e: unknown) => createLogger({ requestId: 'password' }).error('password notice not sent', { error: String(e) }));
+  // The password is already changed: notify() never throws, and a mail outage is logged there.
+  await notify(userId, 'password_changed', {
+    reference: randomUUID(),
+    email: { name: p?.name?.split(' ')[0] || null, changedAt: new Date().toISOString(), timezone: p?.tz ?? 'America/Sao_Paulo', resetUrl: `${env().appUrl}/entrar` },
+  });
   return ok({ revokedSessions });
 };

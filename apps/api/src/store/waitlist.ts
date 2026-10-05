@@ -2,9 +2,9 @@
 import { eq, getTableColumns, sql } from 'drizzle-orm';
 import { createLogger } from '@remoa/log';
 import { err, ok, storeConfigSchema, storeErrors, storeStatusSchema, storeWaitlistInputSchema, type StoreConfig, type StoreWaitlistEntry, type Result } from '@remoa/contracts';
-import { sendEmail } from '../account/mailer';
+import { env } from '@remoa/config';
+import { notify } from '../notifications/notify';
 import { dbm } from '../db';
-import { storeWaitlistSubject, storeWaitlistText } from './copy';
 
 /** D-654: status and split % are config (env), never copy. Invalid env falls back to the safe defaults. */
 export function getStoreConfig(env: NodeJS.ProcessEnv = process.env): StoreConfig {
@@ -54,11 +54,13 @@ export async function putStoreWaitlist(userId: string, input: unknown, requestId
   const log = createLogger({ requestId });
   log.info('store_waitlist_saved', { wantsBuy, wantsSell, sellerRole: v.sellerRole, created: row.inserted }); // no e-mail in logs
   if (row.inserted) {
-    try {
-      await sendEmail({ to: v.email, subject: storeWaitlistSubject, text: storeWaitlistText });
-    } catch {
-      log.warn('store waitlist confirmation failed'); // signed up anyway; same degradation as the landing waitlist
-    }
+    // G18: now to the account address (auth.users.email), not the address typed in the form; notify() never throws.
+    await notify(userId, 'waitlist_joined', {
+      reference: userId,
+      href: '/app/loja',
+      data: { interest: v.interest },
+      email: { version: wantsSell ? 'vender' : 'comprar', name: null, sellerRole: wantsSell ? v.sellerRole ?? null : null, storeUrl: `${env().appUrl}/app/loja` },
+    });
   }
   return ok(toEntry(row));
 }

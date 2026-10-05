@@ -62,7 +62,7 @@ export const accountProFixture: AccountSnapshot = {
   ...accountFreeFixture,
   profile: { ...accountFreeFixture.profile, avatarKey: `avatars/${fixtureUserId}/1.webp` },
   identities: identitiesFixture,
-  preferences: { ...DEFAULT_PREFERENCES, reminderEnabled: true, reminderHour: 21, newCardsPerDay: null },
+  preferences: { ...DEFAULT_PREFERENCES, reminderEnabled: true, reminderHour: 20, newCardsPerDay: null },
   entitlements: proEntitlements,
   completeness: { percent: 100, missing: [] },
   avatarUrls: { large: 'https://storage.remoa.test/avatars/512.webp?sig=x', small: 'https://storage.remoa.test/avatars/96.webp?sig=x' },

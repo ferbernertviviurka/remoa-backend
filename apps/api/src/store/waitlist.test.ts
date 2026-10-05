@@ -3,6 +3,7 @@ import { config } from 'dotenv';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { adminStoreWaitlistSummarySchema, storeConfigSchema, storeWaitlistEntrySchema } from '@remoa/contracts';
+import { captureEmails, templateOf } from '../test-email';
 import { kit, type Kit } from '../admin/users/test-kit';
 import { getStoreConfig, takeStoreWaitlistSlot } from './waitlist';
 
@@ -40,15 +41,15 @@ describe.skipIf(!process.env.DATABASE_URL)('G16 store waitlist routes', () => {
     for (const bad of [{ ...body, consent: false }, { ...body, interest: [], sellerRole: null }, { ...body, sellerRole: null }, { ...body, interest: ['buy'] }, { ...body, email: 'nope' }]) {
       expect((await k.call('/v1/store/waitlist', { method: 'PUT', as: u.id, body: bad })).status).toBe(422);
     }
-    const { sentEmails } = await import('../account/mailer');
-    const mails = sentEmails().length;
+    const sent = captureEmails();
+    const mails = () => sent.filter((m) => m.to === u.email && templateOf(m) === 'waitlist-confirm').length; // G18: to the account address, not the form's
     const put = await k.call('/v1/store/waitlist', { method: 'PUT', as: u.id, body });
     expect(put.status).toBe(200);
     expect(storeWaitlistEntrySchema.parse(put.json.data)).toMatchObject({ email: 'aluno@teste.com', interest: ['buy', 'sell'], sellerRole: 'teacher' });
-    expect(sentEmails().length).toBe(mails + 1);
+    expect(mails()).toBe(1);
     const again = await k.call('/v1/store/waitlist', { method: 'PUT', as: u.id, body: { ...body, interest: ['buy'], sellerRole: null } });
     expect(again.json.data).toMatchObject({ interest: ['buy'], sellerRole: null });
-    expect(sentEmails().length).toBe(mails + 1);
+    expect(mails()).toBe(1);
     expect((await k.dbm.db.execute(sql`select 1 from store_waitlist where user_id = ${u.id}`)).length).toBe(1);
     expect((await k.call('/v1/store/waitlist', { method: 'DELETE', as: u.id })).status).toBe(200);
     expect((await k.call('/v1/store/waitlist', { method: 'DELETE', as: u.id })).status).toBe(200);

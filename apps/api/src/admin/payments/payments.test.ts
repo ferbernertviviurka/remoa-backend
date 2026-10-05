@@ -10,6 +10,7 @@ import { adminPaymentDetailSchema, adminPaymentPageSchema } from '@remoa/contrac
 import type { AdminEnv } from '../core';
 import type { StripePort } from '../../billing/stripe';
 import type { PaymentsPort } from './port';
+import { templateOf } from '../../test-email';
 
 config({ path: '../../.env' });
 type Json = { data?: any; error?: { code: string; message: string } }; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -18,7 +19,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 payments (mirror + /v1/admin/pay
   let dbm: typeof import('@remoa/db');
   let webhook: typeof import('../../billing/webhook');
   let portMod: typeof import('./port');
-  let mailer: typeof import('../../account/mailer');
+  let sent: Awaited<ReturnType<typeof import('../../test-email')['captureEmails']>>;
   let core: typeof import('../core');
   let app: Hono<AdminEnv>;
   const users: string[] = [];
@@ -76,7 +77,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 payments (mirror + /v1/admin/pay
     dbm = await import('@remoa/db');
     webhook = await import('../../billing/webhook');
     portMod = await import('./port');
-    mailer = await import('../../account/mailer');
+    sent = (await import('../../test-email')).captureEmails();
     core = await import('../core');
     const { paymentsRoutes } = await import('./routes');
     portMod.setPaymentsPort(fake);
@@ -263,17 +264,34 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 payments (mirror + /v1/admin/pay
     expect((await row(pi))!.events.map((e) => e.type)).not.toContain('plan_released');
   });
 
+  it('G18: one purchase notice per confirmed payment, values from the event; a replay or a late duplicate adds none', async () => {
+    const u = await mk('Davi Pagante');
+    const pi = newPi();
+    await apply(ev('checkout.session.completed', pixSession(u, pi, false)));
+    const mine = () => dbm.db.execute<{ data: { orderId: string; planName: string } }>(sql`select data from notifications where user_id = ${u} and type = 'purchase'`);
+    expect(await mine()).toHaveLength(0); // pending Pix: nothing yet
+    const paid = ev('checkout.session.async_payment_succeeded', pixSession(u, pi, true));
+    await apply(paid);
+    await apply(paid); // same event id
+    await apply(ev('checkout.session.async_payment_succeeded', pixSession(u, pi, true))); // another event, same payment: already paid
+    expect((await mine()).map((r) => r.data.orderId)).toEqual([pi]);
+    const mails = sent.filter((m) => m.to === `${u}@test.local` && templateOf(m) === 'purchase-success');
+    expect(mails).toHaveLength(1);
+    expect(mails[0]!.text).toContain('42,00'); // 4200 cents from the event, formatted by @remoa/emails
+  });
+
   it('resend-receipt: e-mails the Stripe receipt to the account; pending is 409', async () => {
     const u = await mk('Carla Souza');
     const pi = await paidPix(u);
-    const before = mailer.sentEmails().length;
+    const receipts = () => sent.filter((m) => m.to === `${u}@test.local` && templateOf(m) === 'payment-receipt');
     const r = await req(`/${pi}/resend-receipt`, 'POST', { reason: 'Aluno pediu o recibo' });
     expect(r.status).toBe(200);
-    const mail = mailer.sentEmails().at(-1)!;
-    expect(mailer.sentEmails().length).toBe(before + 1);
-    expect(mail.to).toBe(`${u}@test.local`);
+    const mail = receipts().at(-1)!;
+    expect(receipts()).toHaveLength(1);
     expect(mail.text).toContain(`https://pay.stripe.test/receipts/${pi}`);
     expect(JSON.stringify(r.json.data.audit.after)).not.toContain('@');
+    expect((await req(`/${pi}/resend-receipt`, 'POST', { reason: 'Aluno pediu de novo' })).status).toBe(200); // a new reference each time: a second copy goes out
+    expect(receipts()).toHaveLength(2);
     const pend = newPi();
     await apply(ev('checkout.session.completed', pixSession(u, pend, false)));
     expect((await req(`/${pend}/resend-receipt`, 'POST', { reason: 'Aluno pediu o recibo' })).status).toBe(409);

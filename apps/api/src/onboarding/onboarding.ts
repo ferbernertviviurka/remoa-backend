@@ -2,11 +2,10 @@ import { sql } from 'drizzle-orm';
 import { ACTIVATION_TARGETS, activationItems, ok, onboardingAnswersSchema, type ActivationItem, type GetOnboarding, type CompleteOnboarding, type OnboardingAnswersPatch, type OnboardingState, type SaveOnboarding } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
-import { sendEmail } from '../account/mailer';
-import { welcomeEmail } from './email-copy';
+import { env } from '@remoa/config';
+import { notify } from '../notifications/notify';
 
 const log = createLogger({ requestId: 'onboarding' });
-const web = () => process.env.WEB_ORIGIN ?? 'http://localhost:3000';
 
 type Row = { done_at: string | null; answers: Record<string, unknown>; cards: number; edges: number; sessions: number };
 
@@ -52,8 +51,8 @@ export const saveOnboarding: SaveOnboarding = async (userId, patch: OnboardingAn
     where user_id = ${userId}`);
   try {
     if (await claimEmail(userId, 'welcome')) {
-      const [u] = await db.execute<{ email: string | null; name: string | null }>(sql`select u.email, p.name from auth.users u join profiles p on p.user_id = u.id where u.id = ${userId}`);
-      if (u?.email) await sendEmail({ to: u.email, ...welcomeEmail({ name: u.name?.split(' ')[0] ?? 'estudante', url: `${web()}/app` }) });
+      const [u] = await db.execute<{ name: string | null }>(sql`select name from profiles where user_id = ${userId}`);
+      await notify(userId, 'welcome', { reference: userId, email: { name: u?.name?.split(' ')[0] || null, startUrl: `${env().appUrl}/app` } });
     }
   } catch (e) {
     log.error('welcome email failed', { userId, error: e instanceof Error ? e.message : String(e) });

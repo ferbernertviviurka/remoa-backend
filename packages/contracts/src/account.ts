@@ -118,6 +118,15 @@ export const avatarVariantsSchema = z.object({ large: z.string().url(), small: z
 export type AvatarVariants = z.infer<typeof avatarVariantsSchema>;
 
 const nonEmpty = (v: object) => Object.keys(v).length > 0;
+/** CCR-037 (P-323): an IANA zone the runtime knows ("America/Sao_Paulo"); aliases like "UTC" pass, offsets ("-03:00") do not. */
+export const ianaTimezoneSchema = z.string().min(1).max(64).regex(/^[A-Za-z][\w+-]*(\/[\w+-]+)*$/).refine((tz) => {
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'unknown timezone');
 export const updateProfileInputSchema = z
   .object({
     name: nameSchema,
@@ -131,6 +140,8 @@ export const updateProfileInputSchema = z
     sex: sexSchema.nullable(),
     phone: brPhoneSchema.nullable(),
     address: addressSchema.nullable(),
+    /** CCR-037 (P-323): editable profile timezone; the server replans pending calendar reminders in the same transaction. */
+    timezone: ianaTimezoneSchema,
   })
   .partial()
   .strict()
@@ -194,8 +205,9 @@ export type RequestEmailChangeInput = z.input<typeof requestEmailChangeInputSche
 
 // --- preferences -------------------------------------------------------------
 export const themes = ['light', 'dark', 'system'] as const;
-export const REMINDER_HOURS = [8, 12, 19, 21] as const;
-export const reminderHourSchema = z.union([z.literal(8), z.literal(12), z.literal(19), z.literal(21)]);
+/** G18 (D-744): 07:00 · 08:00 · 12:00 · 20:00 (F26 FR-6); 19 and 21 were migrated to 20. Same column as NotificationPrefs.reviewReminderTime. */
+export const REMINDER_HOURS = [7, 8, 12, 20] as const;
+export const reminderHourSchema = z.union([z.literal(7), z.literal(8), z.literal(12), z.literal(20)]);
 /** FR-13: 5–20 step 5. Free is capped at PLAN_LIMITS.free.newCardsPerDay by the server (D-122). */
 export const newCardsPerDaySchema = z.number().int().min(5).max(20).multipleOf(5);
 
@@ -203,10 +215,12 @@ export const preferencesSchema = z.object({
   theme: z.enum(themes),
   /** null = follow the system's prefers-reduced-motion. */
   reduceMotion: z.boolean().nullable(),
+  /** @deprecated G18 (D-743, P-301): the review reminder e-mail is now notification_preferences 'review_reminder'.email; kept until F13 code moves. */
   reminderEnabled: z.boolean(),
   reminderHour: reminderHourSchema,
   /** Effective value (already min'ed with the plan cap); null = unlimited (D-647). */
   newCardsPerDay: z.number().int().positive().nullable(),
+  /** @deprecated G18 (D-743, P-301): see reminderEnabled. */
   emailReviewReminders: z.boolean(),
   emailProductNews: z.boolean(),
 });
@@ -217,7 +231,7 @@ export const DEFAULT_PREFERENCES: Omit<Preferences, 'newCardsPerDay'> = {
   theme: 'light',
   reduceMotion: null,
   reminderEnabled: false,
-  reminderHour: 19,
+  reminderHour: 20,
   emailReviewReminders: true,
   emailProductNews: false,
 };

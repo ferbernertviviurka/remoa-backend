@@ -5,6 +5,8 @@ import { disputeOutcomes } from './editorial';
 import { segments, startPaths } from './onboarding';
 import { friendStatuses, referralEntryPoints, referralRejectReasons, referralShareChannels, referralSides } from './referral';
 import { supportTicketTypes } from './support';
+import { calendarReminderKinds, calendarSystemLabels, calendarViews } from './calendar';
+import { notificationPrefKeys, notificationTypes } from './notifications';
 import { accountSections, completenessItems, identityProviders, passwordLabels, preferencesSchema, reminderHourSchema, themes } from './account';
 
 // Rule (F11): events carry counts and enums only, never answer text or card content.
@@ -188,6 +190,25 @@ export const eventSchemas = {
   support_ticket_resolved: z.object({ type: z.enum(supportTicketTypes) }).strict(),
   first_board_created: none,
   scroll_depth: z.object({ depth: z.union([z.literal(25), z.literal(50), z.literal(75), z.literal(100)]) }).strict(),
+  // G18 F26 central de notificações (CCR-036): counts and enums only, never the notice text.
+  notif_bell_opened: z.object({ unread: count }).strict(),
+  notif_clicked: z.object({ type: z.enum(notificationTypes) }).strict(),
+  notif_marked_read: z.object({ scope: z.enum(['one', 'all']) }).strict(),
+  notif_removed: none,
+  notif_pref_changed: z.object({ key: z.enum(notificationPrefKeys), channel: z.enum(['in_app', 'email']), value: z.boolean() }).strict(),
+  notif_pause_toggled: z.object({ on: z.boolean() }).strict(),
+  // G18 F25 calendário FR-26 (CCR-036): never the title, place or description.
+  calendar_opened: z.object({ view: z.enum(calendarViews) }).strict(),
+  calendar_view_changed: z.object({ view: z.enum(calendarViews) }).strict(),
+  calendar_event_created: z.object({ hasImage: z.boolean(), hasLocation: z.boolean(), label: z.enum([...calendarSystemLabels, 'custom']) }).strict(),
+  calendar_event_edited: z.object({ hasImage: z.boolean(), hasLocation: z.boolean() }).strict(),
+  calendar_event_deleted: none,
+  calendar_label_created: none,
+  calendar_label_toggled: z.object({ visible: z.boolean() }).strict(),
+  calendar_tour_step: z.object({ step: z.number().int().min(1).max(5) }).strict(),
+  calendar_tour_finished: z.object({ how: z.enum(['finish', 'skip', 'create']) }).strict(),
+  calendar_reminder_toggled: z.object({ kind: z.enum(calendarReminderKinds), on: z.boolean() }).strict(),
+  calendar_home_card_clicked: z.object({ target: z.enum(['banner', 'card']) }).strict(),
 } as const;
 
 export type EventName = keyof typeof eventSchemas;

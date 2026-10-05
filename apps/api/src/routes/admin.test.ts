@@ -15,7 +15,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin core', () => {
   let dbm: typeof import('@remoa/db');
   let supa: ReturnType<typeof import('../account/auth-admin').adminClient>;
   let app: ReturnType<typeof import('../app').createApp>;
-  let mailer: typeof import('../account/mailer');
+  let sent: Awaited<ReturnType<typeof import('../test-email')['captureEmails']>>;
   let core: typeof import('../admin/core');
 
   const newUser = async (role: 'admin' | 'student' = 'student', name = 'Pessoa Teste') => {
@@ -41,7 +41,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin core', () => {
   beforeAll(async () => {
     dbm = await import('@remoa/db');
     supa = (await import('../account/auth-admin')).adminClient();
-    mailer = await import('../account/mailer');
+    sent = (await import('../test-email')).captureEmails();
     core = await import('../admin/core');
     const { createApp } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: fakeVerifier(users) });
@@ -180,7 +180,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin core', () => {
     try {
       const r = await call('/v1/admin/export', { method: 'POST', token: fakeToken(a.id), body: { reason: 'Conciliação do mês', resource: 'payments' } });
       expect(r.status).toBe(200);
-      const mail = mailer.sentEmails().filter((m) => m.to === a.email);
+      const mail = sent.filter((m) => m.to === a.email);
       expect(mail).toHaveLength(1);
       expect(mail[0]!.subject).toBe('Alerta: exportação de dados');
       expect(mail[0]!.text).toContain('2 transações');

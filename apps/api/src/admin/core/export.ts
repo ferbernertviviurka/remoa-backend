@@ -6,8 +6,9 @@ import { adminExportResources } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import type { Logger } from '@remoa/log';
 import { dbm } from '../../db';
-import { sendEmail } from '../../account/mailer';
-import { adminExportPaymentsEmail, adminExportUsersEmail } from '../../support/email-copy';
+import { randomUUID } from 'node:crypto';
+import { env } from '@remoa/config';
+import { notify } from '../../notifications/notify';
 
 export type ExportResource = (typeof adminExportResources)[number];
 export type Cell = string | number | boolean | Date | null | undefined;
@@ -31,14 +32,15 @@ export const toCsv = (header: string[], rows: Cell[][]) => `\ufeff${[header, ...
 export async function sendExportAlert(resource: ExportResource, rows: number, log: Logger, at = new Date()) {
   if (resource !== 'users' && resource !== 'payments') return;
   try {
-    const { db, profiles, authUsers } = await dbm();
-    const admins = await db.select({ name: profiles.name, email: authUsers.email }).from(profiles)
-      .innerJoin(authUsers, eq(authUsers.id, profiles.userId)).where(eq(profiles.role, 'admin'));
-    const copy = resource === 'users' ? adminExportUsersEmail : adminExportPaymentsEmail;
-    const web = (process.env.WEB_ORIGIN ?? 'http://localhost:3000').replace(/\/$/, '');
-    const exportDate = at.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    await Promise.all(admins.filter((a) => a.email).map((a) =>
-      sendEmail({ to: a.email!, ...copy({ adminName: a.name ?? 'admin', exportCount: rows, exportDate, adminDashboardUrl: `${web}/admin/auditoria` }) })));
+    const { db, profiles } = await dbm();
+    const admins = await db.select({ id: profiles.userId, name: profiles.name }).from(profiles).where(eq(profiles.role, 'admin'));
+    const version = resource === 'users' ? 'export_users' : 'export_payments';
+    const auditUrl = `${env().appUrl}/admin/auditoria`;
+    const ref = randomUUID(); // one per export, so two exports in a row both alert
+    await Promise.all(admins.map((a) => notify(a.id, 'admin_alert', {
+      reference: `${ref}:${a.id}`,
+      email: { version, name: a.name?.trim().split(/\s+/)[0] || null, count: rows, at: at.toISOString(), timezone: 'America/Sao_Paulo', auditUrl },
+    })));
   } catch (e) {
     log.error('export alert failed', { resource, error: e instanceof Error ? e.message : String(e) });
   }

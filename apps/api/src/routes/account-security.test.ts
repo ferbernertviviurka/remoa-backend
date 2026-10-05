@@ -5,6 +5,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseUserAgent } from '../account/events';
+import { templateOf } from '../test-email';
 
 config({ path: '../../.env' });
 
@@ -30,7 +31,7 @@ describe.skipIf(!live)('/v1/account password, sessions, D-123, export limit', ()
   const admin = createClient(url, process.env.SUPABASE_SERVICE_ROLE!, opts);
   const users: string[] = [];
   let dbm: typeof import('@remoa/db');
-  let mailer: typeof import('../account/mailer');
+  let sent: Awaited<ReturnType<typeof import('../test-email')['captureEmails']>>;
   let app: ReturnType<typeof import('../app').createApp>;
 
   const PW = 'senha-antiga-1';
@@ -64,7 +65,7 @@ describe.skipIf(!live)('/v1/account password, sessions, D-123, export limit', ()
 
   beforeAll(async () => {
     dbm = await import('@remoa/db');
-    mailer = await import('../account/mailer');
+    sent = (await import('../test-email')).captureEmails();
     const { createApp, supabaseVerifier } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: supabaseVerifier(createClient(url, anonKey, opts)) });
   });
@@ -101,7 +102,7 @@ describe.skipIf(!live)('/v1/account password, sessions, D-123, export limit', ()
     const u = await newUser();
     const a = await signIn(u.email);
     const b = await signIn(u.email);
-    const sent = mailer.sentEmails().length;
+    const before = sent.length;
     expect((await call(a.token, 'GET', '/account/me')).json.data.passwordChangedAt).toBeNull();
     const r = await call(a.token, 'POST', '/account/password', { currentPassword: PW, newPassword: 'senha-nova-123' });
     expect(r.status).toBe(200);
@@ -111,8 +112,8 @@ describe.skipIf(!live)('/v1/account password, sessions, D-123, export limit', ()
     expect(await refreshFails(a.client)).toBe(false);
     expect((await call(a.token, 'GET', '/account/sessions')).status).toBe(200);
     expect(await sessionsOf(u.id)).toHaveLength(1);
-    const mail = mailer.sentEmails().slice(sent).find((m) => m.to === u.email);
-    expect(mail?.subject).toBe('Sua senha do Remoa foi alterada');
+    const mail = sent.slice(before).find((m) => m.to === u.email);
+    expect(mail && templateOf(mail)).toBe('password-changed');
     expect(await events(u.id, 'password_changed')).toBe(1);
     expect((await call(a.token, 'GET', '/account/me')).json.data.passwordChangedAt).toEqual(expect.any(String)); // "Última alteração" (F13 FR-9)
     expect(await events(u.id, 'password_change_failed')).toBe(0); // success gives the slot back

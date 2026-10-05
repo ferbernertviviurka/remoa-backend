@@ -10,9 +10,10 @@ export const ORPHAN_ASSET_HOURS = 24;
 const BATCH = 200;
 const MAX_BATCHES = 50; // per run; the rest goes tomorrow
 
-/** Every uuid a card payload (any nesting: steps, cases, masks) or a board snapshot mentions, plus the FK columns. One linear scan, not one LIKE per asset.
+/** Every uuid a card payload (any nesting: steps, cases, masks) or a board snapshot mentions, plus the FK columns (G18: calendar covers too). One linear scan, not one LIKE per asset.
  * Only flat `assets` rows are candidates: avatars and support attachments live in other tables/prefixes and are never touched. */
 const referenced = sql`select front_asset_id::text id from cards union select back_asset_id::text from cards union select asset_id::text from masks
+  union select cover_asset_id::text from calendar_events
   union select (regexp_matches(payload::text, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'g'))[1] from cards
   union select (regexp_matches(snapshot::text, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'g'))[1] from board_versions`;
 

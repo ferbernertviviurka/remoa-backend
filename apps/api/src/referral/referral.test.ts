@@ -335,12 +335,11 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
 
   it('invites: the response never waits for the e-mail provider (no timing oracle on existing accounts)', async () => {
     const { sendInvites } = await import('./invites');
+    const { setEmailTestHooks } = await import('../emails/send');
     const referrer = await user();
-    const realFetch = globalThis.fetch;
     let release!: () => void;
-    const hang = new Promise<Response>((res) => (release = () => res(new Response('{}', { status: 200 }))));
-    process.env.RESEND_API_KEY = 'test-key';
-    globalThis.fetch = (() => hang) as typeof fetch;
+    const hang = new Promise<{ id: string }>((res) => (release = () => res({ id: 'late' })));
+    setEmailTestHooks({ transport: () => hang, sleep: async () => undefined });
     try {
       const out = await Promise.race([
         sendInvites(referrer, [`${uuid()}@example.com`], memLog().log),
@@ -348,9 +347,8 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
       ]);
       expect(out).not.toBe('timeout');
     } finally {
-      globalThis.fetch = realFetch;
-      delete process.env.RESEND_API_KEY;
       release();
+      setEmailTestHooks({});
     }
   });
 
@@ -358,7 +356,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     process.env.UNSUBSCRIBE_SECRET ||= 'test-secret-test-secret';
     const { sendInvites } = await import('./invites');
     const { inviteeUnsubscribeToken } = await import('../account/reminders');
-    const mailer = await import('../account/mailer');
+    const sent = (await import('../test-email')).captureEmails();
     const { getEntitlements } = await import('../billing/entitlements');
     const referrer = await user();
     const pending = async () => ((await getEntitlements(referrer)) as { data: { referralPending: boolean } }).data.referralPending;
@@ -373,12 +371,12 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     expect(await exec(sql`select 1 from email_suppressions where email_hash = ${emailHash(b)}`)).toHaveLength(1);
     const out = await sendInvites(referrer, [a, b], memLog().log);
     expect(out).toEqual({ ok: true, data: { sent: 2, invitesLeftToday: out.ok ? out.data.invitesLeftToday : -1 } });
-    await new Promise((r) => setTimeout(r, 50));
+    await (await import('../test-email')).settle();
     expect(await exec(sql`select 1 from referrals where referrer_id = ${referrer} and invited_email_hash = ${emailHash(b)}`)).toHaveLength(0);
-    expect(mailer.sentEmails().filter((m) => m.to === b)).toHaveLength(0);
-    const sentA = mailer.sentEmails().filter((m) => m.to === a);
+    expect(sent.filter((m) => m.to === b)).toHaveLength(0);
+    const sentA = sent.filter((m) => m.to === a);
     expect(sentA).toHaveLength(1);
-    expect(sentA[0]!.text).toContain(`/v1/public/unsubscribe?token=${inviteeUnsubscribeToken(emailHash(a))}`);
+    expect(sentA[0]!.text).toContain(`/v1/emails/unsubscribe?token=${emailHash(a)}.referral_invite.`); // address-scoped (D-386 hash), list class
     expect(await pending()).toBe(true);
     await dbm.db.execute(sql`update referrals set status = 'expired' where referrer_id = ${referrer}`);
     expect(await pending()).toBe(false);

@@ -1,35 +1,23 @@
 import { Hono } from 'hono';
 import { clientIp } from '../client-ip';
-import { errorHttpStatus, parseWith, unsubscribeQuerySchema } from '@remoa/contracts';
-import { unsubscribeButton, unsubscribeConfirm, unsubscribedPage } from '../account/email-copy';
+import { errorHttpStatus, parseWith } from '@remoa/contracts';
+import { unsubscribeApply, unsubscribePage } from '../emails/routes';
 import { getPublicPriceBook } from '../public/pricebook';
 import { joinWaitlist, takeWaitlistSlot } from '../public/waitlist';
 import { waitlistRateLimited } from '../public/waitlist-copy';
 import type { StripePort } from '../billing/stripe';
-import { isValidUnsubscribeToken, unsubscribeReminder } from '../account/reminders';
 import { SHARE_ACCESS_HEADER, unlockInputSchema, type AppError, type HttpErrorBody } from '@remoa/contracts';
 import { SHARED_ASSET_TTL_SECONDS, getSharedBoard, ipBucket, sharedAssetBytes, takeViewSlot, unlockShared } from '../public/shared';
-
-const page = (inner: string) => `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remoa</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">${inner}</body></html>`;
 
 /**
  * No auth: the signed token in the e-mail is the credential. Unaffected by requireUser and D-123.
  * GET only renders a confirm button (link scanners prefetch GETs); POST to the same URL changes state (RFC 8058 one-click).
  */
 export const publicRoutes = ({ stripe, viewer }: { stripe?: StripePort; viewer?: Viewer } = {}) => {
-  const token = (c: { req: { query: (k: string) => string | undefined } }) => parseWith(unsubscribeQuerySchema, { token: c.req.query('token') });
   return new Hono()
-    .get('/unsubscribe', (c) => {
-      const q = token(c);
-      if (!q.ok || !isValidUnsubscribeToken(q.data.token)) return Response.json({ error: { code: 'validation', message: 'invalid token' } }, { status: 422 });
-      return c.html(page(`<form method="post" action="?token=${encodeURIComponent(q.data.token)}"><p>${unsubscribeConfirm}</p><button type="submit" style="min-height:44px;padding:0 1rem;font-size:1rem">${unsubscribeButton}</button></form>`));
-    })
-    .post('/unsubscribe', async (c) => {
-      const q = token(c);
-      const r = q.ok ? await unsubscribeReminder(q.data.token) : q;
-      if (!r.ok) return Response.json({ error: r.error }, { status: errorHttpStatus[r.error.code] });
-      return c.html(page(`<p>${unsubscribedPage}</p>`));
-    })
+    // G18 (P-316): same handlers and token check as /v1/emails/unsubscribe (old F13/F18 links keep working).
+    .get('/unsubscribe', unsubscribePage)
+    .post('/unsubscribe', unsubscribeApply)
     // F16 FR-14: landing waitlist (rate limited by IP, honeypot `website`, duplicate looks like success)
     .post('/waitlist', async (c) => {
       if (!takeWaitlistSlot(clientIp(c))) return Response.json({ error: { code: 'rate_limited', message: waitlistRateLimited } }, { status: 429 });

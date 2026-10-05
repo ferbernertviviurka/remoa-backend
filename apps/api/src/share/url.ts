@@ -1,5 +1,7 @@
-const webOrigin = () => process.env.WEB_ORIGIN ?? 'http://localhost:3000';
-const apiOrigin = () => process.env.API_ORIGIN ?? `http://localhost:${process.env.PORT ?? 4000}`;
+import { env } from '@remoa/config';
+
+const webOrigin = () => env().appUrl;
+const apiOrigin = () => env().apiOrigin;
 
 /** FR-12: the link the owner shares. */
 export const shareUrlOf = (token: string | null) => (token ? `${webOrigin()}/m/${token}` : null);

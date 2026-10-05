@@ -1,7 +1,7 @@
 // F18 Indicação de amigos (CCR-010, D-380–D-389). RLS, grants and referral_friends() in migrations/0018_f18_referral.sql (hand-appended).
 import { sql } from 'drizzle-orm';
 import { check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
-import { grantRevokeReasons, grantSources, referralChannels, referralRejectReasons, referralStatuses } from '@remoa/contracts';
+import { emailSuppressionReasons, grantRevokeReasons, grantSources, referralChannels, referralRejectReasons, referralStatuses } from '@remoa/contracts';
 import { authUsers, planEnum, userId } from './common';
 
 export const referralStatusEnum = pgEnum('referral_status', referralStatuses);
@@ -102,5 +102,10 @@ export const billingCredits = pgTable('billing_credits', {
  */
 export const emailSuppressions = pgTable('email_suppressions', {
   emailHash: text('email_hash').primaryKey(),
+  /** G18 (D-737): invite_opt_out (F18, stops invites only) | hard_bounce | complaint (stop reminder and list mail). One row per address: upgrade the reason, never downgrade. */
+  reason: text('reason').notNull().default('invite_opt_out'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`now()`),
-}, (t) => [check('email_suppressions_hash', sql`${t.emailHash} ~ '^[0-9a-f]{64}$'`)]);
+}, (t) => [
+  check('email_suppressions_hash', sql`${t.emailHash} ~ '^[0-9a-f]{64}$'`),
+  check('email_suppressions_reason', sql.raw(`reason in (${emailSuppressionReasons.map((r) => `'${r}'`).join(', ')})`)),
+]);

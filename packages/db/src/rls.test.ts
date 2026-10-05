@@ -100,7 +100,7 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await expect(m.withUser(a, (tx) => tx.update(s.userPreferences).set({ reminderLastSentOn: '2026-10-02' }).where(eq(s.userPreferences.userId, a)))).rejects.toThrow();
     await expect(m.withUser(a, (tx) => tx.update(s.userPreferences).set({ reminderHour: 9 }).where(eq(s.userPreferences.userId, a)))).rejects.toThrow(); // check
     const [row] = await m.db.select().from(s.userPreferences).where(eq(s.userPreferences.userId, a));
-    expect(row).toMatchObject({ theme: 'system', reduceMotion: true, reminderEnabled: true, newCardsPerDay: 15, reminderHour: 19 });
+    expect(row).toMatchObject({ theme: 'system', reduceMotion: true, reminderEnabled: true, newCardsPerDay: 15, reminderHour: 20 });
   });
 
   it('F13: account_events readable by owner, never written by the client', async () => {

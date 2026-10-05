@@ -1,0 +1,10 @@
+{
+  "name": "@remoa/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/env.ts" },
+  "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests" },
+  "dependencies": { "zod": "^3.25.76" },
+  "devDependencies": {  }
+}

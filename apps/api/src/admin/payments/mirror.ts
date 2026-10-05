@@ -10,7 +10,9 @@ import { writeAudit } from '../core';
 import { paymentsPort } from './port';
 
 type Event = { id: string; type: string; created?: number; data: { object: unknown } };
-type Mirror = (tx: Tx) => Promise<void>;
+/** A payment that just became `paid` in this transaction: the webhook sends the purchase notice after commit (G18). */
+export type PaidNotice = { paymentId: string; userId: string; amountCents: number; method: 'pix' | 'card'; item: PaymentItem; paidAt: string };
+type Mirror = (tx: Tx) => Promise<PaidNotice | null>;
 type Upsert = {
   id: string; userId: string | null; customer: string | null; subscription: string | null; paymentIntent: string | null; invoice: string | null;
   amountCents: number; method: PaymentRecordMethod; item: PaymentItem; coupon: string | null; status: Exclude<PaymentStatus, 'refunded'>; events: PaymentEventType[];
@@ -83,7 +85,7 @@ export async function mirrorPayment(event: Event, opts: { released: boolean }): 
       return async (tx) => {
         const { subscriptions: s } = await dbm();
         const [owner] = await tx.select({ userId: s.userId }).from(s).where(or(eq(s.stripeSubscriptionId, sub), eq(s.stripeCustomerId, i.customer))).limit(1);
-        await upsert(tx, at, {
+        return upsert(tx, at, {
           id: pi ?? i.id, userId: owner?.userId ?? null, customer: i.customer, subscription: sub, paymentIntent: pi, invoice: i.id,
           amountCents: paid ? i.amount_paid : i.amount_due,
           method: !pi && paid && i.amount_paid === 0 && (i.starting_balance ?? 0) < 0 ? 'credit' : 'card',
@@ -97,13 +99,13 @@ export async function mirrorPayment(event: Event, opts: { released: boolean }): 
       const p = charge.safeParse(o);
       // A pending refund (Pix refunds are async) waits for refund.updated.
       if (!p.success || p.data.refunds?.data.some((r) => r.status !== 'succeeded')) return null;
-      return (tx) => refunded(tx, at, p.data.payment_intent, null, event);
+      return async (tx) => (await refunded(tx, at, p.data.payment_intent, null, event), null);
     }
     case 'refund.created':
     case 'refund.updated': {
       const p = refund.safeParse(o);
       if (!p.success) return null;
-      return (tx) => refunded(tx, at, p.data.payment_intent, p.data.amount, event);
+      return async (tx) => (await refunded(tx, at, p.data.payment_intent, p.data.amount, event), null);
     }
   }
   if (event.type.startsWith('refund.') || event.type.startsWith('charge.')) log.info('payment event not mirrored', { type: event.type });
@@ -114,16 +116,19 @@ const merge = (cur: { type: PaymentEventType; at: string }[], add: PaymentEventT
   [...cur, ...add.filter((t) => !cur.some((e) => e.type === t)).map((type) => ({ type, at }))];
 
 /** Insert or merge: status only moves forward (late or out-of-order events never undo a payment), timeline types are kept once. */
-async function upsert(tx: Tx, at: string, u: Upsert) {
+async function upsert(tx: Tx, at: string, u: Upsert): Promise<PaidNotice | null> {
   const { payments: t } = await dbm();
   const row = {
     id: u.id, userId: u.userId, stripeCustomerId: u.customer, stripeSubscriptionId: u.subscription, stripePaymentIntent: u.paymentIntent, stripeInvoiceId: u.invoice,
     amountCents: u.amountCents, method: u.method, item: u.item, coupon: u.coupon, status: u.status, events: merge([], u.events, at),
   };
+  // One purchase notice per payment: only the write that moves it to `paid` (a retry or a late duplicate finds it already paid).
+  const notice = (amountCents: number, userId: string | null): PaidNotice | null =>
+    u.status === 'paid' && userId && u.method !== 'credit' ? { paymentId: u.id, userId, amountCents, method: u.method, item: u.item, paidAt: at } : null;
   const fresh = await tx.insert(t).values(row).onConflictDoNothing().returning({ id: t.id });
-  if (fresh.length) return;
+  if (fresh.length) return notice(u.amountCents, u.userId);
   const [cur] = await tx.select().from(t).where(eq(t.id, u.id)).for('update');
-  if (!cur) return;
+  if (!cur) return null;
   const forward = RANK[u.status] > RANK[cur.status];
   await tx.update(t).set({
     status: forward ? u.status : cur.status,
@@ -134,6 +139,7 @@ async function upsert(tx: Tx, at: string, u: Upsert) {
     stripeSubscriptionId: cur.stripeSubscriptionId ?? u.subscription, stripeCustomerId: cur.stripeCustomerId ?? u.customer,
     updatedAt: new Date(),
   }).where(eq(t.id, u.id));
+  return forward ? notice(u.amountCents, cur.userId ?? u.userId) : null;
 }
 
 /**

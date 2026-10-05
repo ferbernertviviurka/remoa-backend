@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { createLogger } from '@remoa/log';
 import { ok, parseWith, waitlistEntrySchema, type Result } from '@remoa/contracts';
 import { dbm } from '../db';
-import { sendEmail } from '../account/mailer';
-import { waitlistSubject, waitlistText } from './waitlist-copy';
+import { notifyAddress } from '../notifications/notify';
+import { emailHash } from '../referral/email-normalize';
 
 export const waitlistBodySchema = waitlistEntrySchema.extend({ website: z.string().optional() }); // honeypot
 
@@ -30,10 +30,6 @@ export async function joinWaitlist(input: unknown, requestId: string): Promise<R
   const rows = await db.insert(waitlist).values({ email: email.toLowerCase(), segment, variant, source: origin }).onConflictDoNothing().returning({ id: waitlist.id });
   if (!rows.length) return ok(null);
   createLogger({ requestId }).info('waitlist_joined', { segment, variant });
-  try {
-    await sendEmail({ to: email, subject: waitlistSubject, text: waitlistText });
-  } catch {
-    createLogger({ requestId }).warn('waitlist confirmation failed'); // signed up anyway; no e-mail in the log
-  }
+  await notifyAddress(email, 'landing_waitlist', { reference: emailHash(email), email: {} }); // never throws; signed up anyway
   return ok(null);
 }

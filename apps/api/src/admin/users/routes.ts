@@ -1,6 +1,7 @@
 // F19 FR-14 (D-460): /v1/admin/users. Every action goes through withAdmin (reason, audit, rollback). Nobody acts on themselves; an admin
 // target can't be suspended or scheduled for deletion; `role` is never written here (D-430).
 import { Hono, type Context } from 'hono';
+import { env } from '@remoa/config';
 import { sql } from 'drizzle-orm';
 import { adminErrors, adminUserListQuerySchema, err, ok, parseWith, reasonSchema, type AdminAction, type Result } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
@@ -73,7 +74,7 @@ export const usersRoutes = new Hono<AdminEnv>()
   // The e-mail leaves inside the action: a failure rolls the audit row back into `denied/error`. Never returns a link or a password.
   .post('/:id/password-reset', action('user.password_reset', async (_tx, audit, t, _r, c) => {
     if (t.deletedAt || !t.email) return conflict();
-    const { error } = await anonClient().auth.resetPasswordForEmail(t.email, { redirectTo: `${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}/entrar` });
+    const { error } = await anonClient().auth.resetPasswordForEmail(t.email, { redirectTo: `${env().appUrl}/entrar` });
     if (error) {
       c.get('log').error('admin password reset failed', { code: error.code ?? error.status });
       return err('internal', 'password reset not sent');

@@ -9,6 +9,7 @@ import { getEntitlements } from '../billing/entitlements';
 import { signAvatarUrls } from './avatar';
 import { getPreferences } from './preferences';
 import { recordEvent } from './events';
+import { replanUserReminders } from '../calendar/reminders/schedule';
 
 const DAY = 86_400_000;
 const DEFAULT_TZ = 'America/Sao_Paulo';
@@ -92,7 +93,13 @@ export async function getAccount(userId: string, auth: AuthData, now = new Date(
 export const updateProfile: UpdateProfile = async (userId, input) => {
   const set = { ...input, ...syncGoals(input), ...(input.name !== undefined && { name: normalizeName(input.name) }), updatedAt: new Date() };
   const { db, profiles } = await dbm();
-  const [row] = await db.insert(profiles).values({ userId, ...set }).onConflictDoUpdate({ target: profiles.userId, set }).returning();
+  // CCR-037 (P-323): a new timezone moves every pending calendar reminder (18:00 / 07:00 local) in the same transaction.
+  const row = await db.transaction(async (tx) => {
+    const [before] = input.timezone !== undefined ? await tx.select({ tz: profiles.timezone }).from(profiles).where(eq(profiles.userId, userId)).for('update') : [];
+    const [r] = await tx.insert(profiles).values({ userId, ...set }).onConflictDoUpdate({ target: profiles.userId, set }).returning();
+    if (input.timezone !== undefined && before?.tz !== input.timezone) await replanUserReminders(tx, userId, new Date());
+    return r;
+  });
   return ok(profileOf(userId, row));
 };
 

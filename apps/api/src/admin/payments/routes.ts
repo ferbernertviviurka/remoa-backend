@@ -6,11 +6,11 @@ import { eq, sql } from 'drizzle-orm';
 import { adminErrors, adminPaymentListQuerySchema, err, markPaidInputSchema, ok, parseWith, type AdminAction, type PaymentEventType, type Result } from '@remoa/contracts';
 import type { ZodTypeAny } from 'zod';
 import type { Tx } from '@remoa/db';
-import { sendEmail } from '../../account/mailer';
+import { randomUUID } from 'node:crypto';
+import { notify } from '../../notifications/notify';
 import { applyStripeEvent } from '../../billing/webhook';
 import { installedStripe, type StripePort } from '../../billing/stripe';
 import { dbm } from '../../db';
-import { paymentReceiptEmail } from '../../support/email-copy';
 import { reasonOf, registerExport, send, withAdmin, type AdminEnv, type AuditCapture } from '../core';
 import { paymentsPort } from './port';
 import { getPayment, listPayments, periodOf } from './queries';
@@ -88,7 +88,9 @@ const resendReceipt = action('payment.resend_receipt', async (tx, audit, p, c) =
     const receiptUrl = await port.receiptUrl({ paymentIntent: p.stripePaymentIntent, invoiceId: p.stripeInvoiceId });
     if (!receiptUrl) return conflict();
     // Inside the action: a failed send rolls back and leaves a denied `error` row instead of a success that never reached the student.
-    await sendEmail({ to: u.email, ...paymentReceiptEmail({ userName: u.name ?? 'estudante', receiptUrl }) });
+    // New reference at every resend: the admin asked for another copy (a repeat of the same reference would be a silent duplicate).
+    const sent = await notify(p.userId, 'payment_receipt', { reference: randomUUID(), email: { name: u.name?.trim().split(/\s+/)[0] || null, receiptUrl } });
+    if (sent.email !== 'queued' && sent.email !== 'duplicate') throw new Error(`receipt e-mail ${sent.email}`);
   } catch (e) {
     c.get('log').error('receipt not sent', { paymentId: p.id, error: e instanceof Error ? e.message : String(e) });
     return err('internal', 'receipt not sent');
