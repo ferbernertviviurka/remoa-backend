@@ -43,6 +43,7 @@ export const assertQuota = async (userId: string, key: QuotaKey, now = new Date(
   const limit = await limitFor(userId, key, now);
   const { db } = await dbm();
   if (key === 'boards' || key === 'cards') return (await overTotal(db, userId, key, limit)) ? err('quota_exceeded', key) : ok(null);
+  if (limit === 0) return err('quota_exceeded', key); // D-647: Free has no PDF maps; the upsert below would insert the first row unchecked
   const { col, period } = COUNTER[key];
   const cap = limit === null ? sql`` : sql`where usage_counters.${col} < ${limit}`;
   const rows = await db.execute(sql`
@@ -51,6 +52,15 @@ export const assertQuota = async (userId: string, key: QuotaKey, now = new Date(
     returning 1`);
   return rows.length ? ok(null) : err('quota_exceeded', key);
 };
+
+/** D-648: completed Anki imports of the account (lifetime); failed/canceled ones do not count. */
+export async function overAnkiImports(userId: string, now = new Date()) {
+  const cap = PLAN_LIMITS[(await planOf(userId, now)).plan].ankiImports;
+  if (cap === null) return false;
+  const { db } = await dbm();
+  const [r] = await db.execute<{ n: number }>(sql`select count(*)::int as n from imports where user_id = ${userId} and kind = 'anki' and status = 'done'`);
+  return r!.n >= cap;
+}
 
 /** Gives back the unit when the grader failed (timeout/error): the student got no correction. */
 export const refundQuota = async (userId: string, now = new Date()) => {

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./mocks": "./src/mocks/index.ts", "./events": "./src/events.ts" },
+  "exports": { ".": "./src/index.ts", "./mocks": "./src/mocks/index.ts", "./events": "./src/events.ts", "./referral": "./src/referral.ts" },
   "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests" },
   "dependencies": { "zod": "^3.25.76" },
   "devDependencies": {  }

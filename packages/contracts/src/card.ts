@@ -114,6 +114,10 @@ export const cardSchema = z.object({
   reviewerId: idSchema.nullable(),
   updatedAt: timestampSchema,
   preview: cardPreviewSchema.optional(),
+  /** F03 FR-9 (D-491): suspended by the owner (out of "Revisar hoje" and challenges). Absent/null = active. */
+  suspendedAt: timestampSchema.nullable().optional(),
+  /** F02 FR-9 (D-531): in a seed copy, the seed card it came from. Absent/null = not a seed copy (or copied before 0023). */
+  sourceCardId: idSchema.nullable().optional(),
 });
 export type Card = z.infer<typeof cardSchema>;
 

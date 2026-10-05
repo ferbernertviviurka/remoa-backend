@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { httpErrorBodySchema } from '@remoa/contracts';
 import { createApp } from './app';
 
@@ -26,5 +26,19 @@ describe('api', () => {
 
   it('unknown routes return not_found', async () => {
     expect((await app.request('/nope')).status).toBe(404);
+  });
+
+  it('logs 4xx/5xx with the typed error code and message, never the token (D-582)', async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => (lines.push(String(chunk)), true));
+    try {
+      await app.request('/v1/me', { headers: { authorization: 'Bearer bad-secret-token', 'x-request-id': 'r-log' } });
+    } finally {
+      spy.mockRestore();
+    }
+    const line = JSON.parse(lines.find((l) => l.includes('"r-log"')) ?? '{}') as Record<string, unknown>;
+    expect(line).toMatchObject({ level: 'warn', msg: 'request', method: 'GET', path: '/v1/me', status: 401, code: 'unauthorized', message: 'invalid or missing token' });
+    expect(typeof line.ms).toBe('number');
+    expect(lines.join('')).not.toContain('bad-secret-token');
   });
 });

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { challengeModes, fsrsCardStates, grades, inputKinds, mapStates, verdicts } from './enums';
+import { areas, challengeModes, fsrsCardStates, grades, inputKinds, mapStates, verdicts } from './enums';
 import { idSchema, probabilitySchema, subIdSchema, timestampSchema } from './common';
 import { graderVerdictSchema } from './ai';
 
@@ -53,6 +53,21 @@ export const queueItemSchema = z.object({
 });
 export type QueueItem = z.infer<typeof queueItemSchema>;
 
+/**
+ * G15 (D-641): start a daily session "já filtrada". Same rule as the queue: `boardIds`/`area` restrict the candidate cards before the new-card
+ * budget is applied; `reasons` then keeps those kinds (default: due + new, "em atenção" only when asked).
+ * `ahead` = "Adiantar revisões": instead of the queue, items due within REVIEW_HUB_AHEAD_DAYS (does not change the schedule of the others).
+ */
+export const queueFilterSchema = z
+  .object({
+    reasons: z.array(z.enum(queueReasons)).min(1).max(3).optional(),
+    boardIds: z.array(idSchema).min(1).max(100).optional(),
+    area: z.enum(areas).optional(),
+    ahead: z.boolean().optional(),
+  })
+  .strict();
+export type QueueFilter = z.infer<typeof queueFilterSchema>;
+
 /** Default new items per day until entitlements (F08) set 20 Pro / 10 Free. */
 export const DEFAULT_NEW_PER_DAY = 20;
 /** GET /v1/review/queue?boardId&limit */
@@ -73,6 +88,18 @@ export const retrievabilityMapSchema = z.record(
   }),
 );
 export type RetrievabilityMap = z.infer<typeof retrievabilityMapSchema>;
+
+/**
+ * F03 FR-9 (D-491): POST /v1/review/cards/:id/{suspend|unsuspend|reset}, empty body, owner only (404 otherwise).
+ * suspend/unsuspend set/clear `cards.suspended_at` (idempotent; FSRS state kept, so "retomar" picks up where it was).
+ * reset deletes the caller's `fsrs_state` rows of the card (every sub_id): it comes back as new; `attempts` history is kept.
+ * Suspended cards: out of the daily/board queue, challenge items, due counts; still on the map (state as usual).
+ */
+export const cardStudyActions = ['suspend', 'unsuspend', 'reset'] as const;
+export const cardStudyActionSchema = z.enum(cardStudyActions);
+export type CardStudyAction = z.infer<typeof cardStudyActionSchema>;
+export const cardStudyStateSchema = z.object({ cardId: idSchema, suspendedAt: timestampSchema.nullable() });
+export type CardStudyState = z.infer<typeof cardStudyStateSchema>;
 
 const intervalSchema = z.object({ due: timestampSchema, intervalDays: z.number().nonnegative() });
 /** Next interval for each of the 4 grades (shown under the buttons). */

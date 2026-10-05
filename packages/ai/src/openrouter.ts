@@ -8,6 +8,14 @@ export const graderModel = () => process.env.OPENROUTER_GRADER_MODEL ?? 'anthrop
 export const rubricModel = () => process.env.OPENROUTER_RUBRIC_MODEL ?? 'anthropic/claude-3.5-sonnet';
 export const extractModel = () => process.env.OPENROUTER_EXTRACT_MODEL ?? 'anthropic/claude-3.5-sonnet';
 
+/**
+ * D-580: who writes generated maps. `mock` (AI=mock, dev/test only: the API refuses to boot with it otherwise) = deterministic
+ * offline extraction, no OpenRouter/Mistral call. `live` = OpenRouter (+ Mistral OCR when MISTRAL_API_KEY is set). `off` = no key and
+ * no mock: generation answers 503 `ai_unavailable` instead of passing a paragraph split off as an AI map.
+ */
+export type AiMode = 'live' | 'mock' | 'off';
+export const aiMode = (): AiMode => (process.env.AI === 'mock' ? 'mock' : process.env.OPENROUTER_API_KEY ? 'live' : 'off');
+
 export type Completion = { text: string; model: string; tokensIn: number; tokensOut: number };
 
 type Chat = { model: string; system: string; user: string; timeoutMs?: number; fetchImpl?: typeof fetch; tool?: 'grade' };

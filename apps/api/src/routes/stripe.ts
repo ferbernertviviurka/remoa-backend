@@ -24,7 +24,7 @@ export const stripeRoutes = ({ stripe, mock, webOrigin }: { stripe?: StripePort;
   if (!mock || !stripe) return app;
   const sid = (c: import('hono').Context<Env>) => c.req.query('session') ?? '';
   // F15: the checkout returns like Stripe's success_url/cancel_url; `&pix=pending` completes a Pix unpaid (FR-8) until /mock/pix-confirm.
-  const back = (id: string) => `${webOrigin}/planos/sucesso?session_id=${encodeURIComponent(id)}`;
+  const back = (id: string) => `${webOrigin}/app/planos/sucesso?session_id=${encodeURIComponent(id)}`;
   return app
     .get('/mock/checkout', async (c) => {
       const event = mock.mockEvent('checkout', sid(c), { pending: c.req.query('pix') === 'pending' });
@@ -32,7 +32,7 @@ export const stripeRoutes = ({ stripe, mock, webOrigin }: { stripe?: StripePort;
       if (event !== 'pending') await applyStripeEvent(event, stripe);
       return c.redirect(back(sid(c)), 302);
     })
-    .get('/mock/checkout/cancel', (c) => (mock.isOpen(sid(c)) ? c.redirect(`${webOrigin}/planos?cancelado=1`, 302) : fail({ code: 'not_found', message: 'unknown session' })))
+    .get('/mock/checkout/cancel', (c) => (mock.isOpen(sid(c)) ? c.redirect(`${webOrigin}/app/planos?cancelado=1`, 302) : fail({ code: 'not_found', message: 'unknown session' })))
     .get('/mock/pix-confirm', async (c) => {
       const event = mock.mockPixConfirm(sid(c));
       if (!event) return fail({ code: 'not_found', message: 'unknown session' });
@@ -42,6 +42,6 @@ export const stripeRoutes = ({ stripe, mock, webOrigin }: { stripe?: StripePort;
       const event = mock.mockEvent('portal', sid(c));
       if (!event || event === 'pending') return fail({ code: 'not_found', message: 'unknown session' });
       await applyStripeEvent(event, stripe);
-      return c.redirect(`${webOrigin}/conta?portal=ok`, 302);
+      return c.redirect(`${webOrigin}/app/conta?portal=ok`, 302);
     });
 };

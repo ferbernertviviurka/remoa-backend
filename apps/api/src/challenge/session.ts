@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
-  MAX_SKIPS_PER_ITEM, challengeItemPublicSchema, err, idSchema, ok, rubricSchema, type Answer, type AnswerInput, type AnswerOutput, type Dispute, type FinishSession,
+  CHALLENGE_MIN_CARDS, MAX_SKIPS_PER_ITEM, challengeErrors, challengeItemPublicSchema, challengeOptionsSchema, err, unavailableChallengeOption, idSchema, ok, rubricSchema, type Answer, type AnswerInput, type AnswerOutput, type Dispute, type FinishSession,
   type FsrsMemory, type GradeAnswer, type Grade, type GraderInput, type GraderVerdict, type Rate, type Result, type Skip, type StartSession,
 } from '@remoa/contracts';
 import { preview, verdictToGrade } from '@remoa/fsrs';
@@ -15,7 +15,8 @@ import { assertQuota, refundQuota } from './quota';
 export const GRADER_TIMEOUT_MS = 8000;
 
 const fail = (code: Parameters<typeof err>[0], message: string) => new Abort({ code, message });
-type SessionRow = { id: string; userId: string; boardId: string | null; startedAt: Date; endedAt: Date | null; items: unknown };
+type SessionRow = { id: string; userId: string; boardId: string | null; startedAt: Date; endedAt: Date | null; items: unknown; options?: unknown };
+const selfGraded = (row: SessionRow) => challengeOptionsSchema.parse(row.options ?? {}).gradingMode === 'self';
 
 /** Loads and locks the session (`for no key update`: the attempt insert's FK check must not wait on this lock). RLS: other users' sessions do not exist. */
 async function locked<T>(userId: string, sessionId: string, fn: (tx: Tx, s: typeof import('@remoa/db'), row: SessionRow, items: StoredItem[]) => Promise<T>): Promise<Result<T>> {
@@ -52,13 +53,24 @@ export const attemptIdFor = (sessionId: string, itemId: string) => {
 
 export const startSession: StartSession = async (userId, input) => {
   const limit = input.limit ?? 12;
-  const items = await buildSession(userId, input.kind, input.boardId, limit, new Date());
-  if (!items.ok) return items;
+  const opts = challengeOptionsSchema.safeParse(input.options ?? {});
+  if (!opts.success) return err('validation', 'options: invalid');
+  const unavailable = unavailableChallengeOption(opts.data); // CCR-019: ai grading and voice are "Em breve"
+  if (unavailable) return err('validation', unavailable);
+  const items = await buildSession(userId, input.kind, input.boardId, limit, new Date(), opts.data.order, input.filter);
+  if (!items.ok) return items; // unknown/foreign board: 404 before the count
+  if (input.kind === 'board') {
+    // D-575: the cards a challenge can draw from (live, not a note, not suspended)
+    const [n] = await run(userId, (tx, s) =>
+      tx.select({ n: count() }).from(s.cards).where(and(eq(s.cards.boardId, input.boardId!), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note'))),
+    );
+    if (n!.n < CHALLENGE_MIN_CARDS) return err('validation', challengeErrors.minCards);
+  }
   const sessionId = await run(userId, async (tx, s) => {
-    const [r] = await tx.insert(s.sessions).values({ userId, boardId: input.boardId ?? null, kind: input.kind, items: items.data }).returning({ id: s.sessions.id });
+    const [r] = await tx.insert(s.sessions).values({ userId, boardId: input.boardId ?? null, kind: input.kind, items: items.data, options: opts.data }).returning({ id: s.sessions.id });
     return r!.id;
   });
-  return ok({ sessionId, items: items.data.map((i) => challengeItemPublicSchema.parse(i)) });
+  return ok({ sessionId, items: items.data.map((i) => challengeItemPublicSchema.parse(i)), options: opts.data });
 };
 
 // --- answer ------------------------------------------------------------------------------------------------------------
@@ -105,7 +117,8 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
     } else if (input.inputKind === 'text' || input.inputKind === 'voice') {
       const [card] = await tx.select({ rubric: s.cards.rubric }).from(s.cards).where(eq(s.cards.id, item.cardId));
       const rubric = rubricSchema.safeParse(card?.rubric);
-      if (item.grading === 'none' || !rubric.success) a.fallback = 'no_rubric';
+      if (selfGraded(row)) a.fallback = null; // D-577: text is kept (D-123) but never graded or charged
+      else if (item.grading === 'none' || !rubric.success) a.fallback = 'no_rubric';
       else if (!grade) a.fallback = 'grader_error'; // no grader wired (prod before F05): do not burn quota
       else if (!(await assertQuota(userId, 'ai_grades')).ok) a.fallback = 'quota';
       else if (!allowGrade(userId)) {
@@ -168,7 +181,7 @@ async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>
     notEnded(row);
     const [card] = await tx.select({ rubric: s.cards.rubric }).from(s.cards).where(eq(s.cards.id, item.cardId));
     const rubric = rubricSchema.safeParse(card?.rubric);
-    if (item.grading === 'none' || !rubric.success) return { type: 'delegate' as const };
+    if (selfGraded(row) || item.grading === 'none' || !rubric.success) return { type: 'delegate' as const };
     const quota = await assertQuota(userId, 'ai_grades');
     if (!quota.ok) return { type: 'delegate' as const };
     if (!allowGrade(userId)) {

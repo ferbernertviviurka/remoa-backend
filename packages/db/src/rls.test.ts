@@ -167,6 +167,67 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     await expect(m.withUser(a, (tx) => tx.insert(s.shareAttempts).values({ tokenHash: 't', ipHash: 'i' }))).rejects.toThrow();
     await m.db.delete(s.shareAttempts).where(eq(s.shareAttempts.tokenHash, 't'));
   });
+  it('F18: referral tables are server-written; referrer sees friends only masked via referral_friends()', async () => {
+    const c = randomUUID(); // referee that will be deleted
+    await m.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${c}', '${c}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    try {
+      await m.db.update(s.profiles).set({ name: '  Beatriz   Souza Lima ' }).where(eq(s.profiles.userId, b));
+      await m.db.update(s.profiles).set({ name: 'Caio' }).where(eq(s.profiles.userId, c));
+      await m.db.insert(s.referralCodes).values({ userId: a, code: 'ABCD2345' });
+      const t0 = new Date();
+      const [rb] = await m.db.insert(s.referrals).values({ referrerId: a, refereeId: b, channel: 'link', status: 'qualified', signedUpAt: t0, qualifiedAt: t0 }).returning();
+      const [rc] = await m.db.insert(s.referrals).values({ referrerId: a, refereeId: c, channel: 'link', status: 'rejected', rejectReason: 'fraud_signals', signedUpAt: t0 }).returning();
+      await m.db.insert(s.referrals).values({ referrerId: a, channel: 'email', status: 'invited', invitedEmailHash: 'h1', invitedEmailMasked: 'd***@gmail.com' });
+      await m.db.insert(s.referrals).values({ referrerId: a, channel: 'email', status: 'expired', invitedEmailHash: 'h2', invitedEmailMasked: 'x***@gmail.com' });
+      const end = new Date(t0.getTime() + 30 * 86_400_000);
+      await m.db.insert(s.entitlementGrants).values([
+        { userId: a, source: 'referral', referralId: rb!.id, startsAt: t0, endsAt: end },
+        { userId: b, source: 'referral', referralId: rb!.id, startsAt: t0, endsAt: end },
+      ]);
+      await m.db.insert(s.billingCredits).values({ userId: a, referralId: rc!.id, amountCents: 3900 });
+
+      // constraints: one referrer per referee, no self-referral, double grant idempotent, code format
+      await expect(m.db.insert(s.referrals).values({ referrerId: c, refereeId: b, channel: 'link', status: 'signed_up', signedUpAt: t0 })).rejects.toThrow();
+      await expect(m.db.insert(s.referrals).values({ referrerId: a, refereeId: a, channel: 'link', status: 'signed_up', signedUpAt: t0 })).rejects.toThrow();
+      await expect(m.db.insert(s.entitlementGrants).values({ userId: a, source: 'referral', referralId: rb!.id, startsAt: t0, endsAt: end })).rejects.toThrow();
+      await expect(m.db.insert(s.billingCredits).values({ userId: a, referralId: rc!.id, amountCents: 3900 })).rejects.toThrow();
+      await expect(m.db.insert(s.referralCodes).values({ userId: b, code: 'ABCD234O' })).rejects.toThrow();
+
+      // own rows readable, others' not; no client writes
+      expect(await m.withUser(a, (tx) => tx.select().from(s.referralCodes))).toHaveLength(1);
+      expect(await m.withUser(b, (tx) => tx.select().from(s.referralCodes))).toHaveLength(0);
+      expect(await m.withUser(a, (tx) => tx.select().from(s.entitlementGrants))).toHaveLength(1);
+      expect(await m.withUser(b, (tx) => tx.select().from(s.entitlementGrants))).toEqual([expect.objectContaining({ userId: b })]);
+      expect(await m.withUser(b, (tx) => tx.select().from(s.billingCredits))).toHaveLength(0);
+      await expect(m.withUser(b, (tx) => tx.insert(s.referralCodes).values({ userId: b, code: 'WXYZ2345' }))).rejects.toThrow();
+      await expect(m.withUser(b, (tx) => tx.insert(s.entitlementGrants).values({ userId: b, source: 'promo', startsAt: t0, endsAt: end }))).rejects.toThrow();
+      await expect(m.withUser(b, (tx) => tx.insert(s.billingCredits).values({ userId: b, amountCents: 1 }))).rejects.toThrow();
+      expect(await m.withUser(a, (tx) => tx.select().from(s.referrals)).catch(() => 'denied')).toBe('denied');
+      await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ referredBy: a }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
+
+      type F = { id: string; display_name: string | null; removed: boolean; status: string; invited_at: Date | null };
+      const friends = (u: string) => m.withUser(u, async (tx) => [...(await tx.execute<F>(sql`select * from public.referral_friends()`))]);
+      const fa = await friends(a);
+      expect(fa).toHaveLength(3); // expired hidden
+      expect(fa.find((f) => f.id === rb!.id)).toMatchObject({ display_name: 'Beatriz L.', removed: false, status: 'qualified', invited_at: null });
+      expect(fa.find((f) => f.id === rc!.id)).toMatchObject({ display_name: 'Caio', status: 'signed_up' }); // rejected never shown
+      expect(fa.find((f) => f.status === 'invited')).toMatchObject({ display_name: 'd***@gmail.com', removed: false });
+      expect(JSON.stringify(fa)).not.toMatch(/@test\.local|h1|fraud/);
+      expect(await friends(b)).toHaveLength(0);
+
+      // soft then hard delete of the referee: "Conta removida"; the referrer keeps the grant
+      await m.db.update(s.profiles).set({ deletedAt: new Date() }).where(eq(s.profiles.userId, c));
+      expect((await friends(a)).find((f) => f.id === rc!.id)).toMatchObject({ display_name: null, removed: true });
+      await m.db.execute(sql.raw(`delete from auth.users where id = '${c}'`));
+      expect((await friends(a)).find((f) => f.id === rc!.id)).toMatchObject({ display_name: null, removed: true });
+      const [credit] = await m.db.select().from(s.billingCredits).where(eq(s.billingCredits.userId, a));
+      expect(credit?.referralId).toBe(rc!.id);
+    } finally {
+      await m.db.execute(sql.raw(`delete from auth.users where id = '${c}'`));
+      await m.db.delete(s.referrals).where(eq(s.referrals.referrerId, a));
+      await m.db.delete(s.referralCodes).where(eq(s.referralCodes.userId, a));
+    }
+  });
 
   it('F10: a reviewer reads another user seed_draft; a student does not', async () => {
     const [draft] = await m.db.insert(s.boards).values({ userId: b, title: 'seed draft', status: 'seed_draft' }).returning();
@@ -181,5 +242,84 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     const studentCards = await m.withUser(a, (tx) => tx.select({ id: s.cards.id }).from(s.cards).where(eq(s.cards.id, card!.id)));
     expect(asStudent).toHaveLength(0);
     expect(studentCards).toHaveLength(0);
+  });
+  it('CCR-015 (P-004, rule 6): a student cannot forge the review seal; the server connection still can', async () => {
+    const [board] = await m.withUser(b, (tx) => tx.insert(s.boards).values({ userId: b, title: 'meu' }).returning());
+    const sealed = { points: [{ text: 'p', essential: true }], status: 'approved', reviewerId: a, reviewerName: 'Dra. X', reviewerCrm: '1/SP' };
+    // insert: coerced to unsealed (copies keep working)
+    const [ins] = await m.withUser(b, (tx) => tx.insert(s.cards).values({ boardId: board!.id, title: 'c', status: 'approved', reviewerId: a, rubric: sealed }).returning());
+    expect(ins).toMatchObject({ status: 'draft', reviewerId: null, rubric: { status: 'draft', reviewerId: null } });
+    expect(ins!.rubric).not.toHaveProperty('reviewerCrm');
+    // update of seal columns: refused
+    const id = ins!.id;
+    await expect(m.withUser(b, (tx) => tx.update(s.cards).set({ status: 'approved' }).where(eq(s.cards.id, id)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.update(s.cards).set({ reviewerId: a }).where(eq(s.cards.id, id)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.update(s.cards).set({ rubric: sealed }).where(eq(s.cards.id, id)))).rejects.toThrow();
+    // board seal: refused even for a reviewer
+    await m.db.update(s.profiles).set({ role: 'reviewer' }).where(eq(s.profiles.userId, b));
+    try {
+      await expect(m.withUser(b, (tx) => tx.update(s.boards).set({ status: 'seed_approved' }).where(eq(s.boards.id, board!.id)))).rejects.toThrow();
+      await expect(m.withUser(b, (tx) => tx.insert(s.boards).values({ userId: b, title: 'x', status: 'seed_draft' }))).rejects.toThrow();
+    } finally {
+      await m.db.update(s.profiles).set({ role: 'student' }).where(eq(s.profiles.userId, b));
+    }
+    await expect(m.withUser(b, (tx) => tx.update(s.boards).set({ reviewerId: a }).where(eq(s.boards.id, board!.id)))).rejects.toThrow();
+    await expect(m.withUser(b, (tx) => tx.update(s.boards).set({ temporalMark: '2026' }).where(eq(s.boards.id, board!.id)))).rejects.toThrow();
+    // the server connection seals (editorial); legit student edits keep working; editing sealed content drops the seal
+    await m.db.update(s.cards).set({ status: 'approved', reviewerId: a, rubric: sealed }).where(eq(s.cards.id, id));
+    await m.withUser(b, (tx) => tx.update(s.cards).set({ x: 10, y: 20, suspendedAt: new Date() }).where(eq(s.cards.id, id)));
+    let [row] = await m.db.select().from(s.cards).where(eq(s.cards.id, id));
+    expect(row).toMatchObject({ status: 'approved', reviewerId: a, x: 10 });
+    await m.withUser(b, (tx) => tx.update(s.cards).set({ back: 'dose errada' }).where(eq(s.cards.id, id)));
+    [row] = await m.db.select().from(s.cards).where(eq(s.cards.id, id));
+    expect(row).toMatchObject({ status: 'draft', reviewerId: null, back: 'dose errada', rubric: { status: 'draft', reviewerId: null } });
+    await m.withUser(b, (tx) => tx.update(s.boards).set({ title: 'renomeado' }).where(eq(s.boards.id, board!.id)));
+  });
+
+  it('CCR-015: email_suppressions and profiles.onboarding_answers are server-owned', async () => {
+    const h = 'a'.repeat(64);
+    await expect(m.withUser(a, (tx) => tx.insert(s.emailSuppressions).values({ emailHash: h }))).rejects.toThrow();
+    await expect(m.withUser(a, (tx) => tx.select().from(s.emailSuppressions))).rejects.toThrow();
+    await expect(m.withUser(a, (tx) => tx.update(s.profiles).set({ onboardingAnswers: { area: 'CM' } }).where(eq(s.profiles.userId, a)))).rejects.toThrow();
+  });
+
+  it('CCR-017: personal data is owner-only and server-written; checks hold', async () => {
+    const pii = { userType: 'aluno', sex: 'outro', phone: '+5511912345678', address: { cep: '01310100', street: 'Av. Paulista', number: '1000', complement: null, district: 'Bela Vista', city: 'São Paulo', uf: 'SP' }, goals: ['enamed_2027_1', 'residencia_usp'] };
+    await m.db.update(s.profiles).set(pii).where(eq(s.profiles.userId, a));
+    // B never sees A's row (profiles_select = own row).
+    expect(await m.withUser(b, (tx) => tx.select({ phone: s.profiles.phone }).from(s.profiles).where(eq(s.profiles.userId, a)))).toHaveLength(0);
+    const [own] = await m.withUser(a, (tx) => tx.select({ phone: s.profiles.phone, goals: s.profiles.goals }).from(s.profiles).where(eq(s.profiles.userId, a)));
+    expect(own).toEqual({ phone: pii.phone, goals: pii.goals });
+    // No column GRANT: the owner cannot write them directly either (the API validates and writes).
+    for (const set of [{ phone: '+5511900000000' }, { userType: 'professor' }, { sex: 'feminino' }, { address: {} }, { goals: [] }])
+      await expect(m.withUser(a, (tx) => tx.update(s.profiles).set(set).where(eq(s.profiles.userId, a)))).rejects.toThrow();
+    for (const set of [{ phone: '11912345678' }, { userType: 'outro' }, { sex: 'x' }, { address: [] }, { goals: ['a', 'b', 'c', 'd', 'e', 'f'] }])
+      await expect(m.db.update(s.profiles).set(set).where(eq(s.profiles.userId, a))).rejects.toThrow();
+  });
+
+  it('CCR-018: deleting a board cascades to its cards, edges and study state; copies survive', async () => {
+    const [bd] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'apagar' }).returning());
+    const [c1] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: bd!.id, title: 'c1' }).returning());
+    const [c2] = await m.withUser(a, (tx) => tx.insert(s.cards).values({ boardId: bd!.id, title: 'c2' }).returning());
+    await m.withUser(a, (tx) => tx.insert(s.edges).values({ boardId: bd!.id, fromCardId: c1!.id, toCardId: c2!.id }));
+    await m.withUser(a, (tx) => tx.insert(s.fsrsState).values({ userId: a, cardId: c1!.id, subId: '', due: new Date() }));
+    const [ses] = await m.withUser(a, (tx) => tx.insert(s.sessions).values({ userId: a, boardId: bd!.id, kind: 'board', options: { gradingMode: 'self', order: 'flow', answerMode: 'write' } }).returning());
+    await m.withUser(a, (tx) => tx.insert(s.attempts).values({ userId: a, cardId: c1!.id, sessionId: ses!.id, mode: 'hidden_card', inputKind: 'self', grade: 3 }));
+    const [copy] = await m.withUser(a, (tx) => tx.insert(s.boards).values({ userId: a, title: 'cópia', sourceBoardId: bd!.id }).returning());
+    // B cannot delete A's board (no row visible, nothing deleted).
+    expect(await m.withUser(b, (tx) => tx.delete(s.boards).where(eq(s.boards.id, bd!.id)).returning())).toHaveLength(0);
+    expect(await m.withUser(a, (tx) => tx.delete(s.boards).where(eq(s.boards.id, bd!.id)).returning())).toHaveLength(1);
+    const left = await m.db.execute<{ n: number }>(sql`select (select count(*) from cards where board_id = ${bd!.id})
+      + (select count(*) from edges where board_id = ${bd!.id}) + (select count(*) from fsrs_state where card_id = ${c1!.id})
+      + (select count(*) from attempts where card_id = ${c1!.id}) as n`);
+    expect(Number(left[0]!.n)).toBe(0);
+    const [sesAfter] = await m.db.select().from(s.sessions).where(eq(s.sessions.id, ses!.id));
+    expect(sesAfter?.boardId).toBeNull();
+    const [copyAfter] = await m.db.select().from(s.boards).where(eq(s.boards.id, copy!.id));
+    expect(copyAfter?.sourceBoardId).toBeNull();
+  });
+
+  it('CCR-020: waitlist stays unreadable by clients (admin reads it through the API)', async () => {
+    await expect(m.withUser(a, (tx) => tx.select().from(s.waitlist))).rejects.toThrow();
   });
 });

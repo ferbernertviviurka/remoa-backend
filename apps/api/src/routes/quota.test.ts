@@ -47,8 +47,8 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
   describe('entitlements', () => {
     it('no subscription row -> free with free limits and zero usage', async () => {
       const e = await plan(await newUser());
-      expect(e).toMatchObject({ plan: 'free', status: null, newCardsPerDay: 10, ankiImportMaxCards: 5000, graceUntil: null, usage: { ai_grades: 0, ai_generations: 0, boards: 0, cards: 0 } });
-      expect(e.limits).toEqual({ ai_grades: 20, ai_generations: 1, boards: 2, cards: 50 });
+      expect(e).toMatchObject({ plan: 'free', status: null, newCardsPerDay: 10, ankiImportMaxCards: 200, ankiImports: 1, ankiImportsUsed: 0, graceUntil: null, usage: { ai_grades: 0, ai_generations: 0, boards: 0, cards: 0 } });
+      expect(e.limits).toEqual({ ai_grades: 20, ai_generations: 0, boards: 2, cards: 50 });
     });
 
     it('pro active / trialing -> pro; free plan row stays free', async () => {
@@ -56,7 +56,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
       await sub(a, {});
       await sub(t, { status: 'trialing' });
       await sub(f, { plan: 'free' });
-      expect(await plan(a)).toMatchObject({ plan: 'pro', newCardsPerDay: 20, ankiImportMaxCards: 20000, limits: { ai_grades: null, ai_generations: 20, boards: null, cards: null } });
+      expect(await plan(a)).toMatchObject({ plan: 'pro', newCardsPerDay: null, ankiImportMaxCards: null, ankiImports: null, limits: { ai_grades: 50, ai_generations: 5, boards: null, cards: null } });
       expect((await plan(t)).plan).toBe('pro');
       expect((await plan(f)).plan).toBe('free');
     });
@@ -110,23 +110,28 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
   });
 
   describe('assertQuota', () => {
-    it('ai_grades: consumes up to 20 then fails with message "ai_grades"; pro is unlimited but still counts', async () => {
-      const [f, p] = [await newUser(), await newUser()];
+    it('ai_grades: free 20/day, pro 50/day (51st blocked), founder unlimited but still counts', async () => {
+      const [f, p, fo] = [await newUser(), await newUser(), await newUser()];
       await sub(p, {});
+      await sub(fo, { plan: 'founder' });
       for (let i = 0; i < 20; i++) expect((await q.assertQuota(f, 'ai_grades')).ok).toBe(true);
       expect(await q.assertQuota(f, 'ai_grades')).toEqual({ ok: false, error: { code: 'quota_exceeded', message: 'ai_grades' } });
-      for (let i = 0; i < 25; i++) expect((await q.assertQuota(p, 'ai_grades')).ok).toBe(true);
-      expect((await plan(p)).usage.ai_grades).toBe(25);
+      for (let i = 0; i < 50; i++) expect((await q.assertQuota(p, 'ai_grades')).ok).toBe(true);
+      expect(await q.assertQuota(p, 'ai_grades')).toEqual({ ok: false, error: { code: 'quota_exceeded', message: 'ai_grades' } });
+      for (let i = 0; i < 60; i++) expect((await q.assertQuota(fo, 'ai_grades')).ok).toBe(true);
+      expect((await plan(fo)).usage.ai_grades).toBe(60);
     });
 
-    it('ai_generations: free 1 per month, pro 20; counts in the month row', async () => {
-      const [f, p] = [await newUser(), await newUser()];
+    it('ai_generations (D-647): free 0 (blocked, nothing counted), pro 5 per month (6th blocked), founder unlimited', async () => {
+      const [f, p, fo] = [await newUser(), await newUser(), await newUser()];
       await sub(p, {});
-      expect((await q.assertQuota(f, 'ai_generations')).ok).toBe(true);
-      expect(await q.assertQuota(f, 'ai_generations')).toMatchObject({ ok: false, error: { message: 'ai_generations' } });
-      for (let i = 0; i < 20; i++) expect((await q.assertQuota(p, 'ai_generations')).ok).toBe(true);
+      await sub(fo, { plan: 'founder' });
+      expect(await q.assertQuota(f, 'ai_generations')).toEqual({ ok: false, error: { code: 'quota_exceeded', message: 'ai_generations' } });
+      expect((await plan(f)).usage.ai_generations).toBe(0);
+      for (let i = 0; i < 5; i++) expect((await q.assertQuota(p, 'ai_generations')).ok).toBe(true);
       expect((await q.assertQuota(p, 'ai_generations')).ok).toBe(false);
-      expect((await plan(f)).usage.ai_generations).toBe(1);
+      for (let i = 0; i < 10; i++) expect((await q.assertQuota(fo, 'ai_generations')).ok).toBe(true);
+      expect(await plan(fo)).toMatchObject({ plan: 'founder', newCardsPerDay: null, ankiImportMaxCards: null, ankiImports: null, limits: { ai_grades: null, ai_generations: null, boards: null, cards: null } });
     });
 
     it('atomic: 30 parallel calls on a free user grant exactly 20', async () => {
@@ -265,11 +270,12 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
       expect((await board(u)).status).toBe(402);
     });
 
-    it('review queue new-card budget follows the plan (free 10, pro 20)', async () => {
-      const [f, p] = [await newUser(), await newUser()];
+    it('review queue new-card budget follows the plan (free 10, pro/founder unlimited, D-647)', async () => {
+      const [f, p, fo] = [await newUser(), await newUser(), await newUser()];
       await sub(p, {});
+      await sub(fo, { plan: 'founder' });
       const { getBoardQueue } = await import('../review/queue');
-      for (const [u, n] of [[f, 10], [p, 20]] as const) {
+      for (const [u, n] of [[f, 10], [p, 30], [fo, 30]] as const) {
         const b = (await board(u)).json.data!.id;
         await dbm.db.insert(dbm.cards).values(Array.from({ length: 30 }, (_, i) => ({ boardId: b, title: `n${i}`, order: i })));
         const r = await getBoardQueue(u, b, { now: new Date() });

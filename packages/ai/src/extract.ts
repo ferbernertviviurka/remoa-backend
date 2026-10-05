@@ -11,7 +11,7 @@ const dagre = require('@dagrejs/dagre') as {
   graphlib: typeof graphlib;
   layout: (graph: InstanceType<typeof graphlib.Graph>) => void;
 };
-import { completeJSON, EXTRACT_PROMPT_VERSION, extractModel } from './openrouter';
+import { aiMode, completeJSON, EXTRACT_PROMPT_VERSION, extractModel } from './openrouter';
 
 const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
@@ -227,7 +227,7 @@ export async function extractWithMeta(text: string, source: string, fetchImpl?: 
     extracted: extractOffline(text, source),
     meta: { model: 'offline-extract', promptVersion: EXTRACT_PROMPT_VERSION, tokensIn: 0, tokensOut: 0 },
   });
-  if (!process.env.OPENROUTER_API_KEY) return offline();
+  if (aiMode() !== 'live') return offline();
   try {
     const parts: Extracted[] = [];
     let tokensIn = 0;

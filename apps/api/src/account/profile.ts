@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import {
-  RETENTION, computeCompleteness, err, goalSchema, normalizeName, ok, stageSchema,
+  RETENTION, addressSchema, computeCompleteness, err, goalSchema, normalizeName, ok, sexSchema, stageSchema, syncGoals, userTypeSchema,
   type AccountSnapshot, type CancelDeletion, type LinkedIdentity, type Profile, type UpdateProfile,
 } from '@remoa/contracts';
 import { dbm, run } from '../db';
@@ -15,14 +15,21 @@ const DEFAULT_TZ = 'America/Sao_Paulo';
 
 type AuthData = { email: string; emailConfirmed: boolean; pendingEmail: string | null; identities: LinkedIdentity[]; joinedAt: Date };
 
-const profileOf = (userId: string, r: { name: string | null; avatarKey: string | null; avatarColor: number; goal: string | null; stage: string | null; timezone: string } | undefined): Profile => ({
+type ProfileRow = typeof import('@remoa/db').profiles.$inferSelect;
+const profileOf = (userId: string, r: ProfileRow | undefined): Profile => ({
   userId,
   name: r?.name ?? null,
   avatarKey: r?.avatarKey ?? null,
   avatarColor: r?.avatarColor ?? 0,
   goal: goalSchema.safeParse(r?.goal).data ?? null, // onboarding slugs outside goalSchema -> null (D-126)
+  goals: (r?.goals ?? []).flatMap((g) => goalSchema.safeParse(g).data ?? []),
   stage: stageSchema.safeParse(r?.stage).data ?? null,
   timezone: r?.timezone ?? DEFAULT_TZ,
+  // CCR-017 PII (owner-only): parsed so a bad row never breaks /me.
+  userType: userTypeSchema.safeParse(r?.userType).data ?? null,
+  sex: sexSchema.safeParse(r?.sex).data ?? null,
+  phone: r?.phone ?? null,
+  address: addressSchema.safeParse(r?.address).data ?? null,
 });
 
 /** Consecutive study days (04:00 rollover, profile tz) with attempts, ending today or yesterday. null = never answered. */
@@ -77,12 +84,13 @@ export async function getAccount(userId: string, auth: AuthData, now = new Date(
     deletionScheduledFor: row?.deletedAt ? new Date(row.deletedAt.getTime() + RETENTION.deletionGraceDays * DAY) : null,
     passwordChangedAt: await passwordChangedAt(userId),
     avatarUrls: profile.avatarKey ? await signAvatarUrls(profile.avatarKey) : null,
+    isAdmin: row?.role === 'admin' && !row.deletedAt && !row.suspendedAt, // same gate as requireAdmin (minus e-mail)
   };
 }
 
 /** FR-6/FR-8. `name` is already normalized by the contract schema; normalized again so direct callers are safe too. */
 export const updateProfile: UpdateProfile = async (userId, input) => {
-  const set = { ...input, ...(input.name !== undefined && { name: normalizeName(input.name) }), updatedAt: new Date() };
+  const set = { ...input, ...syncGoals(input), ...(input.name !== undefined && { name: normalizeName(input.name) }), updatedAt: new Date() };
   const { db, profiles } = await dbm();
   const [row] = await db.insert(profiles).values({ userId, ...set }).onConflictDoUpdate({ target: profiles.userId, set }).returning();
   return ok(profileOf(userId, row));

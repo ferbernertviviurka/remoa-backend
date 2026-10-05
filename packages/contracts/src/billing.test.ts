@@ -63,6 +63,7 @@ describe('F15 plan definition and matrix', () => {
   it('derives from PLAN_LIMITS', () => {
     expect(planDefinition('free')).toEqual({
       ...PLAN_LIMITS.free.limits,
+      anki_imports: PLAN_LIMITS.free.ankiImports,
       anki_import_cards: PLAN_LIMITS.free.ankiImportMaxCards,
       new_cards_per_day: PLAN_LIMITS.free.newCardsPerDay,
     });
@@ -142,5 +143,35 @@ describe('F15 schemas', () => {
     expect(eventSchemas.checkout_started.safeParse({ period: 'annual', method: 'pix' }).success).toBe(true);
     expect(eventSchemas.plans_viewed.safeParse({ from: 'boards' }).success).toBe(true);
     expect(eventSchemas.plans_viewed.safeParse({ from: 'evil' }).success).toBe(false);
+  });
+});
+
+describe('plan table (D-647)', () => {
+  it('free / pro / founder', () => {
+    expect(planDefinition('free')).toEqual({ boards: 2, cards: 50, ai_grades: 20, ai_generations: 0, anki_imports: 1, anki_import_cards: 200, new_cards_per_day: 10 });
+    expect(planDefinition('pro')).toEqual({ boards: null, cards: null, ai_grades: 50, ai_generations: 5, anki_imports: null, anki_import_cards: null, new_cards_per_day: null });
+    expect(Object.values(planDefinition('founder')).every((v) => v === null)).toBe(true);
+  });
+});
+
+describe('Founder (D-375)', () => {
+  it('is Pro plus unlimited AI; lifetime is a checkout period', () => {
+    expect(PLAN_LIMITS.founder.limits).toEqual({ ai_grades: null, ai_generations: null, boards: null, cards: null });
+    expect([PLAN_LIMITS.founder.newCardsPerDay, PLAN_LIMITS.founder.ankiImportMaxCards]).toEqual([PLAN_LIMITS.pro.newCardsPerDay, PLAN_LIMITS.pro.ankiImportMaxCards]);
+    expect(checkoutInputSchema.parse({ period: 'lifetime', method: 'pix' }).period).toBe('lifetime');
+  });
+});
+
+describe('accountExportSchema tickets (F19 FR-9, D-471)', async () => {
+  const { accountExportSchema } = await import('./billing');
+  const id = '00000000-0000-4000-8000-000000000001';
+  const msg = { id, authorType: 'admin', body: 'oi', createdAt: new Date() };
+  const base = { version: 1, exportedAt: new Date(), userId: id, profile: null, boards: [], cards: [], edges: [], attempts: [] };
+  const ticket = { id, number: 1001, subject: 's', messages: [msg] };
+  it('accepts user-visible tickets; rejects missing tickets, assignee and internal notes', () => {
+    expect(accountExportSchema.safeParse({ ...base, tickets: [ticket] }).success).toBe(true);
+    expect(accountExportSchema.safeParse(base).success).toBe(false);
+    expect(accountExportSchema.safeParse({ ...base, tickets: [{ ...ticket, assignedTo: id }] }).success).toBe(false);
+    expect(accountExportSchema.safeParse({ ...base, tickets: [{ ...ticket, messages: [{ ...msg, internal: true }] }] }).success).toBe(false);
   });
 });

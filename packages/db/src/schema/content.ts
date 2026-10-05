@@ -3,6 +3,7 @@ import { type AnyPgColumn, check, index, integer, jsonb, pgTable, primaryKey, sm
 import {
   areaEnum, authUsers, boardAccessEnum, boardStatusEnum, cardShapeEnum, cardStatusEnum, cardTypeEnum, licenseEnum, roleEnum, timestamps, userId,
 } from './common';
+import { MAX_GOALS, sexes, userTypes } from '@remoa/contracts';
 
 export const profiles = pgTable('profiles', {
   userId: uuid('user_id').primaryKey().references(() => authUsers.id, { onDelete: 'cascade' }),
@@ -11,6 +12,15 @@ export const profiles = pgTable('profiles', {
   school: text('school'),
   year: integer('year'),
   goal: text('goal'),
+  /** CCR-017 (D-570): every objective picked (goalSchema values); `goal` mirrors goals[0]. Server-owned (no column GRANT). */
+  goals: text('goals').array().notNull().default(sql`'{}'::text[]`),
+  // CCR-017 (D-571) personal data, PII: owner-only read (profiles_select), written only by the API (no column GRANT).
+  userType: text('user_type'),
+  sex: text('sex'),
+  /** E.164, +55 only. */
+  phone: text('phone'),
+  /** AddressSchema (cep, street, number, complement, district, city, uf). */
+  address: jsonb('address'),
   /** F10: council registration stamped on approved rubrics. */
   crm: text('crm'),
   /** F13: y3_4 | y5_6 | graduated (stageSchema). */
@@ -20,9 +30,26 @@ export const profiles = pgTable('profiles', {
   avatarColor: smallint('avatar_color').notNull().default(0),
   timezone: text('timezone').notNull().default('America/Sao_Paulo'),
   onboardingDoneAt: timestamp('onboarding_done_at', { withTimezone: true }),
+  /** F12 (D-492): partial OnboardingAnswers as saved by POST /v1/onboarding/answers. Server-owned (no column GRANT). */
+  onboardingAnswers: jsonb('onboarding_answers').notNull().default({}),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  /** F18: who referred this user (first touch, D-383). Server-owned (no column GRANT). */
+  referredBy: uuid('referred_by').references(() => authUsers.id, { onDelete: 'set null' }),
+  /** F19: set by the admin (withAdmin 'user.suspend'); blocks every /v1/* call. Server-owned (no column GRANT). */
+  suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  suspendedReason: text('suspended_reason'),
   ...timestamps,
-}, (t) => [check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`)]);
+}, (t) => [
+  check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`),
+  check('profiles_suspended', sql`(${t.suspendedAt} is null) = (${t.suspendedReason} is null)`),
+  check('profiles_user_type', sql.raw(`user_type in (${userTypes.map((v) => `'${v}'`).join(', ')})`)),
+  check('profiles_sex', sql.raw(`sex in (${sexes.map((v) => `'${v}'`).join(', ')})`)),
+  check('profiles_phone', sql`${t.phone} ~ '^[+]55[1-9]{2}(9[0-9]{8}|[2-5][0-9]{7})$'`),
+  check('profiles_address', sql`jsonb_typeof(${t.address}) = 'object'`),
+  check('profiles_goals', sql`cardinality(${t.goals}) <= ${sql.raw(String(MAX_GOALS))}`),
+  // F19 admin search by name (ILIKE).
+  index('profiles_name_trgm_idx').using('gin', t.name.op('gin_trgm_ops')),
+]);
 
 export const matrixItems = pgTable('matrix_items', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -60,6 +87,9 @@ export const boards = pgTable('boards', {
   ...timestamps,
 }, (t) => [
   index('boards_user_idx').on(t.userId),
+  // F19 admin: search by title (ILIKE) and newest first.
+  index('boards_title_trgm_idx').using('gin', t.title.op('gin_trgm_ops')),
+  index('boards_created_idx').on(t.createdAt.desc()),
   check('boards_share_token_chk', sql`(${t.access} = 'owner') = (${t.shareToken} is null)`),
   check('boards_share_password_chk', sql`(${t.access} = 'password') = (${t.sharePasswordHash} is not null)`),
   // only student boards are shared; seeds are readable by everyone, so a token there would leak
@@ -109,9 +139,14 @@ export const cards = pgTable('cards', {
   order: integer('order').notNull().default(0),
   reviewerId: uuid('reviewer_id').references(() => authUsers.id),
   deletedAt: timestamp('deleted_at', { withTimezone: true }), // F01: soft delete, 30 days
+  /** F03 FR-9 (D-491): suspended by the owner; out of the review queue and challenges until unsuspended. FSRS state is kept. */
+  suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  /** F02 FR-9 (D-531): in a seed copy, the seed card this one was copied from. Null for own cards and pre-0023 copies. */
+  sourceCardId: uuid('source_card_id').references((): AnyPgColumn => cards.id, { onDelete: 'set null' }),
   ...timestamps,
 }, (t) => [
   index('cards_board_idx').on(t.boardId),
+  index('cards_source_card_idx').on(t.sourceCardId).where(sql`${t.sourceCardId} is not null`),
   index('cards_back_asset_idx').on(t.backAssetId).where(sql`${t.backAssetId} is not null`),
   // limits mirror CARD_SIZE_MIN/MAX in @remoa/contracts
   check('cards_size_chk', sql`(${t.width} is null and ${t.height} is null) or (${t.width} between 140 and 640 and ${t.height} between 90 and 560)`),

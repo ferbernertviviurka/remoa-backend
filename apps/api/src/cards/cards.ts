@@ -42,7 +42,7 @@ export const getCard: GetCard = async (userId, cardId) => {
     return ok({
       id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, backAssetId: r.backAssetId, size: sizeOf(r), tags: r.tags, source: r.source,
       position: { x: r.x, y: r.y }, status: r.status, order: r.order, reviewerId: r.reviewerId, updatedAt: r.updatedAt,
-      rubric: r.rubric, payload: r.payload, preview: cardPreview(r.type, r.payload),
+      rubric: r.rubric, payload: r.payload, suspendedAt: r.suspendedAt, preview: cardPreview(r.type, r.payload),
     } as unknown as CardDetail);
   });
 };

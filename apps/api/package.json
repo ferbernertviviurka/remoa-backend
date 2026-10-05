@@ -9,7 +9,8 @@
     "job:maintenance": "tsx --env-file=../../.env src/account/maintenance.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests --exclude '**/*.load.test.ts' --exclude '**/node_modules/**'",
+    "test:perf": "vitest run src/reports/progress.load.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1144.0",

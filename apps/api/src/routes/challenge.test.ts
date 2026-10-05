@@ -5,7 +5,7 @@ import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
 import { err, ok, type GradeAnswer } from '@remoa/contracts';
-import { makeOptions } from '../challenge/build';
+import { flowOrder, makeOptions } from '../challenge/build';
 import type { GradeStream } from '../challenge/session';
 
 config({ path: '../../.env' });
@@ -34,6 +34,26 @@ describe('makeOptions (pure)', () => {
   });
 });
 
+describe('flowOrder (pure)', () => {
+  const e = (from: string, to: string) => ({ from, to });
+  it('follows the arrows from several roots; a card waits for all its predecessors; ties by card order', () => {
+    expect(flowOrder(['a', 'b', 'c', 'd', 'e'], [e('a', 'c'), e('c', 'e'), e('b', 'd'), e('a', 'd')])).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(flowOrder(['a', 'b', 'c'], [e('b', 'c'), e('a', 'b')])).toEqual(['a', 'b', 'c']);
+  });
+  it('isolated cards are roots in card order; foreign ids and self-loops are ignored', () => {
+    expect(flowOrder(['x', 'y', 'z'], [e('z', 'z'), e('y', 'nope')])).toEqual(['x', 'y', 'z']);
+  });
+  it('breaks a cycle at the first card in card order, after the real roots', () => {
+    expect(flowOrder(['a', 'b', 'c', 'r'], [e('a', 'b'), e('b', 'c'), e('c', 'a'), e('r', 'a')])).toEqual(['r', 'a', 'b', 'c']);
+    expect(flowOrder(['a', 'b', 'c'], [e('a', 'b'), e('b', 'c'), e('c', 'a')])).toEqual(['a', 'b', 'c']);
+  });
+  it('is deterministic', () => {
+    const ids = ['a', 'b', 'c', 'd'];
+    const es = [e('d', 'a'), e('b', 'c'), e('c', 'b')];
+    expect(flowOrder(ids, es)).toEqual(flowOrder(ids, es));
+  });
+});
+
 describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   const users: string[] = [];
   let dbm: typeof import('@remoa/db');
@@ -57,7 +77,12 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     return c!.id;
   };
   const edge = (boardId: string, from: string, to: string, label: string | null) => dbm.db.insert(dbm.edges).values({ boardId, fromCardId: from, toCardId: to, label });
-  const board = async (userId: string, status: 'private' | 'seed_approved' = 'private') => (await dbm.db.insert(dbm.boards).values({ userId, title: 'Mapa', status }).returning())[0]!.id;
+  /** `pad`: CHALLENGE_MIN_CARDS is 10; padding = image cards without masks (challengeable, but no item, no distractor text). */
+  const board = async (userId: string, status: 'private' | 'seed_approved' = 'private', pad = true) => {
+    const id = (await dbm.db.insert(dbm.boards).values({ userId, title: 'Mapa', status }).returning())[0]!.id;
+    if (pad) await dbm.db.insert(dbm.cards).values(Array.from({ length: 10 }, (_, i) => ({ boardId: id, type: 'image' as const, title: '', payload: {}, order: 100 + i })));
+    return id;
+  };
   const putState = (userId: string, cardId: string, sub: string, due: Date) => {
     const last = new Date(due.getTime() - 5 * 86_400_000);
     return dbm.db.insert(dbm.fsrsState).values({ userId, cardId, subId: sub, stability: 5, difficulty: 5, due, reps: 3, lapses: 0, lastReview: last, state: 'review', scheduledDays: 5, createdAt: last });
@@ -74,9 +99,11 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     const image = await card(b, { type: 'image', title: 'Coração', order: 5, payload: { assetId: asset!.id, masks: MASKS.map((m) => ({ ...m, polygon: poly })) } });
     return { b, a, bb, c, flow, kase, image };
   };
-  const start = async (u: string, body: object = { kind: 'daily' }) => {
+  /** `ai`: the start endpoint refuses gradingMode 'ai' (CCR-019), so AI-path tests flip the stored option directly. */
+  const start = async (u: string, body: object = { kind: 'daily' }, ai = false) => {
     const r = await post(u, '/start', body);
     expect(r.status).toBe(200);
+    if (ai) await dbm.db.update(dbm.sessions).set({ options: { gradingMode: 'ai', order: 'random', answerMode: 'write' } }).where(eq(dbm.sessions.id, r.json.data.sessionId));
     return { sessionId: r.json.data.sessionId as string, items: r.json.data.items as any[], raw: r.raw }; // eslint-disable-line @typescript-eslint/no-explicit-any
   };
   const answer = (u: string, sessionId: string, itemId: string, extra: object = { inputKind: 'self' }, a = app) => post(u, '/answer', { sessionId, itemId, durationMs: 4000, ...extra }, a);
@@ -261,7 +288,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     const w = await prancheta(u, RUBRIC('approved'));
     let calls = 0;
     const counting = mk(async (i) => (calls++, mockGrader(i)));
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const it = s.items.find((i) => i.subId === 's1')!;
     const body = { inputKind: 'text', text: 'hemocultura primeiro' };
     const a1 = await answer(u, s.sessionId, it.id, body, counting);
@@ -276,7 +303,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   it('text answer: no rubric -> no_rubric fallback; draft rubric on someone else\'s board too', async () => {
     const u = await newUser();
     const w = await prancheta(u); // no rubrics
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const it = s.items.find((i) => i.subId === 's1')!;
     const r = await answer(u, s.sessionId, it.id, { inputKind: 'text', text: 'qualquer coisa' });
     expect(r.json.data).toMatchObject({ canonical: STEPS[0], verdict: null, suggestedGrade: null, fallback: 'no_rubric', gradeLocked: false });
@@ -288,7 +315,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   it('own draft rubric on a private board grades (rubric_own); mock grader -> verdict + suggestedGrade', async () => {
     const u = await newUser();
     const w = await prancheta(u, RUBRIC('draft'));
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const it = s.items.find((i) => i.subId === 's1')!;
     expect(it.grading).toBe('rubric_own');
     const good = await answer(u, s.sessionId, it.id, { inputKind: 'text', text: 'Coletar hemocultura' });
@@ -306,7 +333,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   it('voice and text with the same rubric and the same answer get the same verdict', async () => {
     const u = await newUser();
     const w = await prancheta(u, RUBRIC('draft'));
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const spoken = 'Coletar hemocultura';
     const a = s.items.find((i) => i.subId === 's1')!;
     const b = s.items.find((i) => i.subId === 's2')!;
@@ -334,7 +361,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     const u = await newUser();
     const w = await prancheta(u, RUBRIC('approved'));
     const critical = mk(async (i) => { const g = await mockGrader(i); return g.ok ? ok({ ...g.data, verdict: 'partial' as const, criticalError: true }) : g; });
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const it = s.items.find((i) => i.subId === 's1')!;
     const a = await answer(u, s.sessionId, it.id, { inputKind: 'text', text: 'hemocultura' }, critical);
     expect(a.json.data).toMatchObject({ gradeLocked: true, suggestedGrade: 'again' });
@@ -349,7 +376,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     const counting = mk(async (i) => (calls++, mockGrader(i)));
     const period = await quota.localDay(u, new Date());
     await dbm.db.insert(dbm.usageCounters).values({ userId: u, period, aiGrades: 19 });
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const [i1, i2] = [s.items.find((i) => i.subId === 's1')!, s.items.find((i) => i.subId === 's2')!];
     expect((await answer(u, s.sessionId, i1.id, { inputKind: 'text', text: 'hemocultura' }, counting)).json.data.fallback).toBeNull();
     const over = await answer(u, s.sessionId, i2.id, { inputKind: 'text', text: 'hemocultura' }, counting);
@@ -362,7 +389,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   it('grader throwing, erroring or missing -> grader_error, canonical and preview still returned', async () => {
     const u = await newUser();
     const w = await prancheta(u, RUBRIC('approved'));
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const ids = ['s1', 's2', 's3'].map((sub) => s.items.find((i) => i.subId === sub)!.id);
     const text = { inputKind: 'text', text: 'hemocultura' };
     const throwing = mk(async () => { throw new Error('boom'); });
@@ -379,7 +406,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   it('dispute: needs a graded answer; inserts review_queue with attempt_id; idempotent; works before or after rate', async () => {
     const u = await newUser();
     const w = await prancheta(u, RUBRIC('approved'));
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const [i1, i2, i3] = ['s1', 's2', 's3'].map((sub) => s.items.find((i) => i.subId === sub)!.id);
     await answer(u, s.sessionId, i3!, { inputKind: 'self' });
     expect((await post(u, '/dispute', { sessionId: s.sessionId, itemId: i3 })).status).toBe(409); // self-assessment has no verdict
@@ -467,7 +494,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
   it('QA: grader failure refunds the quota unit; dispute before rate links attempt_id at rate', async () => {
     const u = await newUser();
     const w = await prancheta(u, RUBRIC('approved'));
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const [i1, i2] = [s.items.find((i) => i.subId === 's1')!.id, s.items.find((i) => i.subId === 's2')!.id];
     await answer(u, s.sessionId, i1, { inputKind: 'text', text: 'x' }, mk(async () => { throw new Error('boom'); }));
     const [c0] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
@@ -505,7 +532,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
       yield { verdict: { verdict: 'partial', matched: [], missing: ['volume'], criticalError: false, feedback: 'Faltou volume.', model: 'stream-test' } };
     };
     const streaming = mk(mockGrader, fake);
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const it = s.items.find((i) => i.subId === 's1')!;
     const ask = () => streaming.request('/v1/challenge/answer', {
       method: 'POST',
@@ -533,7 +560,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
       throw new Error('boom');
     };
     const streaming = mk(mockGrader, broken);
-    const s = await start(u, { kind: 'board', boardId: w.b });
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
     const it = s.items.find((i) => i.subId === 's1')!;
     const res = await streaming.request('/v1/challenge/answer', {
       method: 'POST',
@@ -557,5 +584,57 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     expect(s.items.map((i) => i.cardId)).toEqual([x]);
     expect(s.items[0].mode).not.toBe('edge'); // its only connection ends in a note
     expect(s.raw).not.toContain('Conteudo');
+  });
+
+  it('D-575: board sessions need 10 challengeable cards (notes and suspended do not count); daily is unaffected', async () => {
+    const u = await newUser();
+    const b = await board(u, 'private', false);
+    for (let i = 0; i < 9; i++) await card(b, { title: `c${i}`, order: i });
+    await card(b, { type: 'note', title: 'n' });
+    const [sus] = await dbm.db.insert(dbm.cards).values({ boardId: b, title: 's', suspendedAt: new Date() }).returning();
+    expect(sus).toBeTruthy();
+    const low = await post(u, '/start', { kind: 'board', boardId: b });
+    expect(low.status).toBe(422);
+    expect(low.json.error).toMatchObject({ code: 'validation', message: 'challenge_min_cards' });
+    await card(b, { title: 'c9', order: 9 });
+    expect((await post(u, '/start', { kind: 'board', boardId: b })).status).toBe(200);
+    const small = await board(u, 'private', false);
+    await card(small, { title: 'x' });
+    expect((await post(u, '/start', { kind: 'daily' })).status).toBe(200);
+  });
+
+  it("D-577: order 'flow' follows the arrows; random keeps the queue order", async () => {
+    const u = await newUser();
+    const b = await board(u, 'private', false);
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) ids.push(await card(b, { title: `c${i}`, back: `r${i}`, order: i }));
+    // arrows: 7 -> 2 -> 9 ; 4 -> 2 ; the other cards are isolated roots
+    await edge(b, ids[7]!, ids[2]!, null);
+    await edge(b, ids[2]!, ids[9]!, null);
+    await edge(b, ids[4]!, ids[2]!, null);
+    const s = await start(u, { kind: 'board', boardId: b, options: { order: 'flow' } });
+    const got = s.items.map((i) => i.cardId);
+    expect(got).toHaveLength(10);
+    const at = (n: number) => got.indexOf(ids[n]!);
+    expect(at(7)).toBeLessThan(at(2));
+    expect(at(4)).toBeLessThan(at(2));
+    expect(at(2)).toBeLessThan(at(9));
+    expect(got).toEqual(flowOrder(ids, [{ from: ids[7]!, to: ids[2]! }, { from: ids[2]!, to: ids[9]! }, { from: ids[4]!, to: ids[2]! }]));
+  });
+
+  it('D-577: self sessions never call the grader nor spend quota, and still keep the text and show the canonical', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    let calls = 0;
+    const counting = mk(async (i) => (calls++, mockGrader(i)));
+    const s = await start(u, { kind: 'board', boardId: w.b });
+    const item = s.items.find((i) => i.subId === 's1')!;
+    const r = await answer(u, s.sessionId, item.id, { inputKind: 'text', text: 'hemocultura' }, counting);
+    expect(r.json.data).toMatchObject({ verdict: null, suggestedGrade: null, fallback: null, canonical: STEPS[0] });
+    expect(r.json.data.preview).toBeTruthy();
+    expect(calls).toBe(0);
+    expect(await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u))).toHaveLength(0);
+    const [row] = await dbm.db.select().from(dbm.sessions).where(eq(dbm.sessions.id, s.sessionId));
+    expect((row!.items as any[]).find((i) => i.id === item.id).x.answered.answerText).toBe('hemocultura'); // eslint-disable-line @typescript-eslint/no-explicit-any
   });
 });

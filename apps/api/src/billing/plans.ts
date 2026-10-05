@@ -5,7 +5,7 @@ import { err, nextChargeDate, ok, type CheckoutSessionStatus, type CouponValidat
 import { dbm, run } from '../db';
 import { dayWindow } from '../review/queue';
 import { cachedPrices, checkedPromotion, createCheckout, DOUBLE_CLICK_MS, once, pricesFetchedAt } from './checkout';
-import { planOf } from './plan';
+import { paidPlanOf } from './plan';
 import { discounted, plansPort, type SessionInfo, type StripePort } from './stripe';
 
 const off = () => err('internal', 'billing unavailable');
@@ -22,6 +22,7 @@ export const getPriceBook = (stripe?: StripePort) => async (userId: string, now 
   return ok({
     monthly: { ...book.monthly, currency: 'brl' },
     annual: { ...book.annual, currency: 'brl' },
+    lifetime: { ...book.lifetime, currency: 'brl' },
     nextChargeOn: { monthly: nextChargeDate('monthly', now, tz), annual: nextChargeDate('annual', now, tz) },
     fetchedAt: pricesFetchedAt(plans),
   });
@@ -48,15 +49,15 @@ export const getCheckoutSession = (stripe?: StripePort) => async (userId: string
   if (!plans) return off();
   const s = await plans.session(sessionId);
   if (!s || s.userId !== userId) return err('not_found', 'checkout session not found');
-  return ok({ status: sessionOutcome(s), plan: 'pro', period: s.period, method: s.method });
+  return ok({ status: sessionOutcome(s), plan: s.period === 'lifetime' ? 'founder' : 'pro', period: s.period, method: s.method });
 };
 
-/** FR-9: null without a paid period. Period/amount come from Stripe (the table stores neither). */
+/** FR-9: null without a paid period. Period/amount come from Stripe (the table stores neither). Founder: its one-time payment, `period: 'lifetime'` (D-375). */
 export const getSubscription = (stripe?: StripePort) => async (userId: string, now = new Date()): Promise<Result<SubscriptionSummary | null>> => {
   const plans = plansPort(stripe);
   if (!plans) return off();
-  const [p, row] = await Promise.all([planOf(userId, now), rowOf(userId)]);
-  if (p.plan !== 'pro' || !row?.stripeCustomerId) return ok(null);
+  const [p, row] = await Promise.all([paidPlanOf(userId, now), rowOf(userId)]);
+  if (p.plan === 'free' || !row?.stripeCustomerId) return ok(null);
   const card = row.stripeSubscriptionId;
   const detail = card ? await plans.plan(card) : await plans.lastPayment(row.stripeCustomerId);
   if (!detail) {
@@ -66,7 +67,7 @@ export const getSubscription = (stripe?: StripePort) => async (userId: string, n
   }
   return ok({
     status: p.status, renewsAt: p.renewsAt, cancelAtPeriodEnd: p.cancelAtPeriodEnd, graceUntil: p.graceUntil,
-    period: detail.period, method: card ? 'card' : 'pix', amount: detail.amount, pastDue: p.status === 'past_due',
+    period: p.plan === 'founder' ? 'lifetime' : detail.period, method: card ? 'card' : ('method' in detail && detail.method) || 'pix', amount: detail.amount, pastDue: p.status === 'past_due',
   });
 };
 
@@ -74,7 +75,7 @@ export const getSubscription = (stripe?: StripePort) => async (userId: string, n
 export const switchToAnnual = (stripe?: StripePort) => async (userId: string, now = new Date()): Promise<Result<SwitchToAnnualResult>> => {
   const plans = plansPort(stripe);
   if (!plans || !stripe) return off();
-  const [p, row] = await Promise.all([planOf(userId, now), rowOf(userId)]);
+  const [p, row] = await Promise.all([paidPlanOf(userId, now), rowOf(userId)]);
   const notMonthly = () => err<SwitchToAnnualResult>('conflict', 'not on a monthly Pro plan');
   if (p.plan !== 'pro' || !row?.stripeCustomerId) return notMonthly();
   const subId = row.stripeSubscriptionId;

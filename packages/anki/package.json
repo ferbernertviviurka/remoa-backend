@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:cov": "vitest run --coverage --coverage.include=src/** --coverage.exclude=src/**/*.test.ts"
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@remoa/contracts": "workspace:*",

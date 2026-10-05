@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { clientIp } from '../client-ip';
 import { errorHttpStatus, parseWith, unsubscribeQuerySchema } from '@remoa/contracts';
 import { unsubscribeButton, unsubscribeConfirm, unsubscribedPage } from '../account/email-copy';
 import { getPublicPriceBook } from '../public/pricebook';
@@ -7,7 +8,7 @@ import { waitlistRateLimited } from '../public/waitlist-copy';
 import type { StripePort } from '../billing/stripe';
 import { isValidUnsubscribeToken, unsubscribeReminder } from '../account/reminders';
 import { SHARE_ACCESS_HEADER, unlockInputSchema, type AppError, type HttpErrorBody } from '@remoa/contracts';
-import { SHARED_ASSET_TTL_SECONDS, getSharedBoard, sharedAssetBytes, takeViewSlot, unlockShared } from '../public/shared';
+import { SHARED_ASSET_TTL_SECONDS, getSharedBoard, ipBucket, sharedAssetBytes, takeViewSlot, unlockShared } from '../public/shared';
 
 const page = (inner: string) => `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remoa</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">${inner}</body></html>`;
 
@@ -31,8 +32,7 @@ export const publicRoutes = ({ stripe, viewer }: { stripe?: StripePort; viewer?:
     })
     // F16 FR-14: landing waitlist (rate limited by IP, honeypot `website`, duplicate looks like success)
     .post('/waitlist', async (c) => {
-      const ip = (c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? 'unknown').split(',')[0]!.trim();
-      if (!takeWaitlistSlot(ip)) return Response.json({ error: { code: 'rate_limited', message: waitlistRateLimited } }, { status: 429 });
+      if (!takeWaitlistSlot(clientIp(c))) return Response.json({ error: { code: 'rate_limited', message: waitlistRateLimited } }, { status: 429 });
       const r = await joinWaitlist(await c.req.json().catch(() => null), c.req.header('x-request-id') ?? 'public');
       return r.ok ? c.json({ ok: true, data: null }) : Response.json({ error: r.error }, { status: errorHttpStatus[r.error.code] });
     })
@@ -53,8 +53,6 @@ export type Viewer = (authorization: string | undefined) => Promise<string | nul
 const sharedHeaders = { 'cache-control': 'private, no-store', 'x-robots-tag': 'noindex' };
 const sharedJson = (body: unknown, status = 200, extra: Record<string, string> = {}) => Response.json(body, { status, headers: { ...sharedHeaders, ...extra } });
 const sharedFail = (r: { error: AppError }) => sharedJson({ error: r.error } satisfies HttpErrorBody, errorHttpStatus[r.error.code]);
-const clientIp = (c: { req: { header: (k: string) => string | undefined } }) =>
-  (c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? 'unknown').split(',')[0]!.trim();
 
 export const sharedRoutes = (viewer: Viewer = async () => null) =>
   new Hono()
@@ -64,6 +62,8 @@ export const sharedRoutes = (viewer: Viewer = async () => null) =>
       return r.ok ? sharedJson({ ok: true, data: r.data }) : sharedFail(r);
     })
     .post('/:token/unlock', async (c) => {
+      // D-543: in-memory gate before the DB (a flood would otherwise queue on the advisory lock holding pool connections)
+      if (!takeViewSlot(`unlock:${ipBucket(clientIp(c))}`)) return sharedFail({ error: { code: 'rate_limited', message: 'too many requests' } });
       const input = parseWith(unlockInputSchema, await c.req.json().catch(() => null));
       if (!input.ok) return sharedFail({ error: { code: 'validation', message: 'invalid body' } }); // never echo the field
       const r = await unlockShared(c.req.param('token'), input.data, { ip: clientIp(c) });

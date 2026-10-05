@@ -18,6 +18,8 @@ const mac = (id: string) => createHmac('sha256', secret()).update(id).digest('ba
 
 /** `userId.hmac`: no expiry on purpose, an old e-mail must still unsubscribe (the only effect is turning the reminder off). */
 export const unsubscribeToken = (userId: string) => `${userId}.${mac(userId)}`;
+/** P-192 (D-487): the invitee has no account, the subject is the D-386 e-mail hash (64 hex). Same secret, same format. */
+export const inviteeUnsubscribeToken = (emailHash: string) => `${emailHash}.${mac(emailHash)}`;
 export const isValidUnsubscribeToken = (token: string) => userOfToken(token) !== null;
 const userOfToken = (token: string) => {
   const [id = '', sig = ''] = token.split('.');
@@ -28,6 +30,11 @@ const userOfToken = (token: string) => {
 
 export const unsubscribeReminder: UnsubscribeReminder = async (token) => {
   const userId = userOfToken(token);
+  if (userId && /^[0-9a-f]{64}$/.test(userId)) {
+    const { db } = await dbm();
+    await db.execute(sql`insert into email_suppressions (email_hash) values (${userId}) on conflict do nothing`);
+    return ok(null);
+  }
   if (!userId || !/^[0-9a-f-]{36}$/.test(userId)) return err('validation', 'invalid token');
   const { db } = await dbm();
   const r = await db.execute(sql`update user_preferences set reminder_enabled = false, updated_at = now() where user_id = ${userId}`);
@@ -64,7 +71,7 @@ export async function sendDailyReminders(now: Date): Promise<number> {
         return { due: n ?? 0, reviewed: (a?.n ?? 0) > 0 };
       });
       if (!due || reviewed) continue;
-      const mail = reminderEmail({ name: c.name?.split(' ')[0] ?? 'estudante', n: due, reviewUrl: `${web}/revisar`, unsubscribeUrl: `${api}/v1/public/unsubscribe?token=${unsubscribeToken(c.user_id)}` });
+      const mail = reminderEmail({ name: c.name?.split(' ')[0] ?? 'estudante', n: due, reviewUrl: `${web}/app/revisar`, unsubscribeUrl: `${api}/v1/public/unsubscribe?token=${unsubscribeToken(c.user_id)}` });
       const unsub = `${api}/v1/public/unsubscribe?token=${unsubscribeToken(c.user_id)}`;
       // RFC 8058 one-click: mail clients POST to the URL, the body link opens the confirm page.
       await sendEmail({ to: c.email, ...mail, headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } });

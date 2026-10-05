@@ -21,19 +21,20 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/billing + /v1/stripe', () => {
   const checkouts: CheckoutArgs[] = [];
   let subInfo = { status: 'active', renewsAt: new Date(Date.now() + 30 * 86_400_000), cancelAtPeriodEnd: false };
   // F15 fake state: Stripe prices, promotion codes, checkout sessions, Pix payments and card subscription details.
-  const PRICES = { monthly: { amount: 4200, priceId: 'price_m' }, annual: { amount: 39900, priceId: 'price_a' } };
+  const PRICES = { monthly: { amount: 4200, priceId: 'price_m' }, annual: { amount: 39900, priceId: 'price_a' }, lifetime: { amount: 59990, priceId: 'price_l' } };
   let priceCalls = 0;
   let customers = 0;
   const sessions = new Map<string, SessionInfo>();
-  const pixPaid = new Map<string, { period: 'monthly' | 'annual'; amount: number }>();
+  const pixPaid = new Map<string, { period: 'monthly' | 'annual' | 'lifetime'; amount: number }>();
   const planDetail = new Map<string, { period: 'monthly' | 'annual'; amount: number; itemId: string }>();
+  const canceled: string[] = [];
   const switches: Parameters<PlansPort['switchAnnual']>[0][] = [];
   const fake: StripePort & PlansPort = {
     createCustomer: async () => (customers++, `cus_${uuid()}`),
     checkout: async (a) => (checkouts.push(a), 'https://stripe.test/c'),
     portal: async ({ cancel }) => `https://stripe.test/p?cancel=${cancel}`,
     subscription: async () => subInfo,
-    cancelNow: async () => {},
+    cancelNow: async (id) => void canceled.push(id),
     prices: async () => (priceCalls++, PRICES),
     promotion: async (code) =>
       code === 'FUNDADOR' ? { discount: { promotion_code: 'promo_fundador' }, percentOff: 50, amountOff: null }
@@ -226,12 +227,12 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/billing + /v1/stripe', () => {
     const url = new URL(json.data!.url);
     expect(url.pathname).toBe('/v1/stripe/mock/checkout');
     const res = await mockApp.request(url.pathname + url.search);
-    expect([res.status, res.headers.get('location')]).toEqual([302, `http://web.test/planos/sucesso?session_id=${url.searchParams.get('session')}`]);
+    expect([res.status, res.headers.get('location')]).toEqual([302, `http://web.test/app/planos/sucesso?session_id=${url.searchParams.get('session')}`]);
     expect(await sub(u)).toMatchObject({ plan: 'pro', status: 'active', cancelAtPeriodEnd: false });
     expect((await mockApp.request(url.pathname + url.search)).status).toBe(404);
     const p = new URL((await call(mockApp, u, '/billing/portal', { cancel: true })).json.data!.url);
     const pr = await mockApp.request(p.pathname + p.search);
-    expect(pr.headers.get('location')).toBe('http://web.test/conta?portal=ok');
+    expect(pr.headers.get('location')).toBe('http://web.test/app/conta?portal=ok');
     expect(await sub(u)).toMatchObject({ plan: 'pro', cancelAtPeriodEnd: true });
     expect((await mockApp.request('/v1/stripe/mock/checkout?session=guess')).status).toBe(404);
     expect((await app.request('/v1/stripe/mock/checkout?session=x')).status).toBe(404); // not mounted without the mock
@@ -338,7 +339,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/billing + /v1/stripe', () => {
     const url = new URL((await call(mockApp, u, '/billing/checkout', { period: 'monthly', method: 'pix', couponCode: 'FUNDADOR' })).json.data!.url);
     const id = mockSession(url.href);
     const res = await mockApp.request(`${url.pathname}${url.search}&pix=pending`);
-    expect([res.status, res.headers.get('location')]).toEqual([302, `http://web.test/planos/sucesso?session_id=${id}`]);
+    expect([res.status, res.headers.get('location')]).toEqual([302, `http://web.test/app/planos/sucesso?session_id=${id}`]);
     expect((await get(mockApp, u, `/billing/checkout/${id}`)).json.data).toEqual({ status: 'pending_pix', plan: 'pro', period: 'monthly', method: 'pix' });
     expect((await get(mockApp, u, '/billing/entitlements')).json.data).toMatchObject({ plan: 'free' });
     expect(await dbm.db.select().from(dbm.subscriptions).where(eq(dbm.subscriptions.userId, u))).toMatchObject([{ plan: 'free' }]);
@@ -360,7 +361,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/billing + /v1/stripe', () => {
     const first = new URL((await call(mockApp, u, '/billing/checkout', { period: 'annual', method: 'card' })).json.data!.url);
     const id = mockSession(first.href);
     const cancel = await mockApp.request(`/v1/stripe/mock/checkout/cancel?session=${id}`);
-    expect([cancel.status, cancel.headers.get('location')]).toEqual([302, 'http://web.test/planos?cancelado=1']);
+    expect([cancel.status, cancel.headers.get('location')]).toEqual([302, 'http://web.test/app/planos?cancelado=1']);
     expect((await get(mockApp, u, `/billing/checkout/${id}`)).json.data!.status).toBe('canceled');
     expect((await get(mockApp, u, '/billing/entitlements')).json.data).toMatchObject({ plan: 'free' });
     await mockApp.request(first.pathname + first.search);
@@ -426,5 +427,61 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/billing + /v1/stripe', () => {
     const bare = createApp({ webOrigin: 'http://web.test', verifyToken: async (t) => (users.includes(t) ? t : null) });
     const u = await newUser();
     for (const r of [await get(bare, u, '/billing/prices'), await post(bare, u, '/billing/coupon', { code: 'X' }), await get(bare, u, '/billing/checkout/cs_1'), await get(bare, u, '/billing/subscription'), await post(bare, u, '/billing/switch-annual')]) expect(r.status).toBe(500);
+  });
+
+  // --- Founder (D-375) ---
+  const founderPaid = (u: string, customer = 'cus_f') =>
+    evt('checkout.session.completed', { mode: 'payment', payment_status: 'paid', client_reference_id: u, customer, metadata: { userId: u, period: 'lifetime' } });
+  const unlimited = { ai_grades: null, ai_generations: null, boards: null, cards: null };
+
+  it('founder checkout: lifetime price, Pix or card, no coupon; allowed over a live card Pro; a founder cannot buy again', async () => {
+    const u = await newUser();
+    expect((await call(app, u, '/billing/checkout', { period: 'lifetime', method: 'card', couponCode: 'FUNDADOR' })).json.error).toMatchObject({ code: 'validation', message: 'coupon not applicable' });
+    for (const method of ['pix', 'card'] as const) {
+      expect((await call(app, u, '/billing/checkout', { period: 'lifetime', method })).status).toBe(200);
+      expect(checkouts.filter(owner(u)).at(-1)).toMatchObject({ period: 'lifetime', method, amount: 59990, promo: undefined });
+    }
+    expect((await get(app, u, '/billing/prices')).json.data).toMatchObject({ lifetime: { amount: 59990, currency: 'brl' } });
+    await hook(cardCheckout(u, `sub_${uuid()}`));
+    expect((await call(app, u, '/billing/checkout', { period: 'monthly', method: 'card' })).status).toBe(409);
+    expect((await call(app, u, '/billing/checkout', { period: 'lifetime', method: 'card' })).status).toBe(200);
+    await hook(founderPaid(u));
+    const again = await call(app, u, '/billing/checkout', { period: 'annual', method: 'pix' }); // lifetime keys are still in the double-click window
+    expect([again.status, again.json.error?.message]).toEqual([409, 'already founder']);
+  });
+
+  it('founder webhook: lifetime, no expiry, unlimited AI; the Pro subscription is canceled and its later events never downgrade', async () => {
+    const u = await newUser();
+    const id = `sub_${uuid()}`;
+    await hook(cardCheckout(u, id));
+    expect((await hook(founderPaid(u))).status).toBe(200);
+    expect(canceled).toContain(id);
+    expect(await sub(u)).toMatchObject({ plan: 'founder', status: 'active', renewsAt: null, stripeSubscriptionId: null, cancelAtPeriodEnd: false });
+    const ent = (await get(app, u, '/billing/entitlements')).json.data;
+    expect(ent).toMatchObject({ plan: 'founder', status: 'active', limits: unlimited, renewsAt: null, graceUntil: null, cancelAtPeriodEnd: false });
+    // Leftover Pro events and a late Pro Pix payment.
+    await hook(evt('invoice.payment_failed', { subscription: id }));
+    await hook(evt('customer.subscription.deleted', { id }));
+    await hook(evt('checkout.session.completed', { mode: 'payment', payment_status: 'paid', client_reference_id: u, customer: 'cus_f', metadata: { userId: u, period: 'monthly' } }));
+    expect(await sub(u)).toMatchObject({ plan: 'founder', status: 'active', renewsAt: null });
+    // No period end, grace or lapse: still Founder decades later.
+    const { planOf } = await import('../billing/plan');
+    expect(await planOf(u, new Date('2100-01-01T00:00:00Z'))).toMatchObject({ plan: 'founder', renewsAt: null, graceUntil: null, grantUntil: null });
+    const { limitFor } = await import('../billing/quota');
+    expect(await limitFor(u, 'ai_generations', new Date('2100-01-01T00:00:00Z'))).toBeNull();
+    pixPaid.set('cus_f', { period: 'lifetime', amount: 59990 });
+    expect((await get(app, u, '/billing/subscription')).json.data).toMatchObject({ period: 'lifetime', amount: 59990, renewsAt: null, pastDue: false });
+    expect((await post(app, u, '/billing/switch-annual')).status).toBe(409);
+  });
+
+  it('founder with STRIPE=mock: card lifetime is a one-time payment (no subscription), paid return says founder', async () => {
+    const u = await newUser();
+    const url = new URL((await call(mockApp, u, '/billing/checkout', { period: 'lifetime', method: 'card' })).json.data!.url);
+    expect((await mockApp.request(url.pathname + url.search)).status).toBe(302);
+    expect(await sub(u)).toMatchObject({ plan: 'founder', status: 'active', renewsAt: null, stripeSubscriptionId: null });
+    expect((await get(mockApp, u, `/billing/checkout/${mockSession(url.href)}`)).json.data).toEqual({ status: 'paid', plan: 'founder', period: 'lifetime', method: 'card' });
+    expect((await get(mockApp, u, '/billing/entitlements')).json.data).toMatchObject({ plan: 'founder', limits: unlimited });
+    expect((await get(mockApp, u, '/billing/subscription')).json.data).toMatchObject({ period: 'lifetime', method: 'card', amount: 59990, renewsAt: null });
+    expect((await get(mockApp, u, '/billing/prices')).json.data).toMatchObject({ lifetime: { amount: 59990 } });
   });
 });

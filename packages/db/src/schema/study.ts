@@ -32,6 +32,8 @@ export const sessions = pgTable('sessions', {
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   items: jsonb('items').notNull().default([]),
+  /** CCR-019 (D-575): ChallengeOptions as applied at start ({} = DEFAULT_CHALLENGE_OPTIONS; read through challengeOptionsSchema). */
+  options: jsonb('options').notNull().default({}),
   ...timestamps,
 });
 

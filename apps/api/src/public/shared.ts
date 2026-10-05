@@ -6,6 +6,7 @@ import {
   SHARE_LIMITS, assetVariants, err, idSchema, ok, sharedBoardSchema, sharedCardSchema, shareTokenSchema,
   type GetSharedBoard, type Result, type SharedAsset, type SharedCard, type UnlockShared,
 } from '@remoa/contracts';
+import { isIP } from 'node:net';
 import { dbm } from '../db';
 import { getBytes } from '../storage/storage';
 import { assetSig, limiterHash, signGrant, verifyAssetSig, verifyGrant, verifySharePassword } from '../share/crypto';
@@ -101,6 +102,21 @@ function toSharedCard(card: Record<string, unknown> & { id: string; type: string
 }
 
 /**
+ * D-543: the unit a client controls. IPv6 = its /64 (one subscriber gets the whole prefix, so rotating inside it would open a
+ * fresh bucket per guess); IPv4-mapped IPv6 = the IPv4. Anything else as is.
+ */
+export function ipBucket(ip: string): string {
+  const v4 = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (v4) return v4[1]!;
+  if (isIP(ip) !== 6) return ip;
+  const [head = '', tail] = ip.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? h : [...h, ...Array<string>(8 - h.length - t.length).fill('0'), ...t];
+  return `${groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
+}
+
+/**
  * FR-14. Wrong passwords are counted per (link, IP) in share_attempts; an advisory lock on that pair serializes
  * concurrent guesses, so a burst cannot slip past the limit. Blocked = 429 even with the right password.
  */
@@ -110,7 +126,7 @@ export const unlockShared: UnlockShared = async (token, input, { ip }) => {
   if (board.access !== 'password' || !board.sharePasswordHash) return err('validation', 'board is not password protected');
   const hash = board.sharePasswordHash;
   const tokenHash = limiterHash('token', token);
-  const ipHash = limiterHash('ip', ip);
+  const ipHash = limiterHash('ip', ipBucket(ip));
   const { db, shareAttempts: t } = await dbm();
   const window = sql`now() - make_interval(mins => ${SHARE_LIMITS.unlockWindowMinutes})`;
   return db.transaction(async (tx): Promise<Result<{ value: string; expiresAt: Date }>> => {

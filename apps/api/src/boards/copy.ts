@@ -8,6 +8,7 @@ import { assertQuota, limitFor, overTotal } from '../billing/quota';
 import { copyObject, deletePrefix } from '../storage/storage';
 import { resolveShared, cardAssetIds } from '../public/shared';
 import { cloneBoardContent, duplicateBoard, toBoard } from './boards';
+import { maybeQualifyReferral } from '../referral/qualify';
 
 const log = createLogger({ requestId: 'boards-copy' });
 const VARIANTS = ['w800', 'w1600'] as const;
@@ -80,6 +81,7 @@ export const copySharedBoard: CopySharedBoard = async (userId, input, { grant })
     return res;
   }
   await db.update(b).set({ copyCount: sql`${b.copyCount} + 1` }).where(eq(b.id, src.id));
+  await maybeQualifyReferral(userId); // F18 (D-384); never throws
   return ok(toBoard(res.data));
 };
 

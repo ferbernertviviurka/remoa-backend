@@ -4,6 +4,7 @@ import { grades } from '@remoa/contracts';
 import { schedule } from '@remoa/fsrs';
 import { Abort, guard, run } from '../db';
 import { invalidateRetrievability } from './queue';
+import { invalidateReviewHub } from './hub';
 
 const bad = (message: string) => new Abort({ code: 'validation', message });
 const payloadIds = (payload: unknown, key: 'steps' | 'masks') => {
@@ -54,5 +55,6 @@ export const recordAttempt: RecordAttempt = async (a) => {
   );
   if (!r.ok) return r;
   invalidateRetrievability(a.userId);
+  invalidateReviewHub(a.userId);
   return ok({ state: r.data, due: r.data.due });
 };

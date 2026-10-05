@@ -1,9 +1,8 @@
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
   type Board, type CardMask, type MapOp,
-  type ListBoards, type GetBoard, type CreateBoard, type UpdateBoard, type DuplicateBoard, type ApplyMapOps,
-  MAX_CARDS_PER_BOARD, PLAN_LIMITS, err, idSchema, ok,
-  boardMatrixItemIds,
+  type ListBoards, type DeleteBoard, type GetBoard, type CreateBoard, type UpdateBoard, type DuplicateBoard, type ApplyMapOps,
+  MAX_CARDS_PER_BOARD, PLAN_LIMITS, boardListQuerySchema, err, idSchema, ok, parseWith,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { Abort, guard, run } from '../db';
@@ -14,6 +13,7 @@ import { boardListExtras } from '../review/queue';
 import { initialShareColumns } from '../share/crypto';
 import { shareUrlOf } from '../share/url';
 import { turnOffShare } from './share';
+import { maybeQualifyReferral } from '../referral/qualify';
 
 const notFound = () => err<never>('not_found', 'board not found');
 const isUuid = (v: string) => idSchema.safeParse(v).success;
@@ -31,23 +31,37 @@ export const toBoard = (r: typeof import('@remoa/db').boards.$inferSelect): Boar
 
 const liveCardEnds = sql`join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null`;
 
-export const listBoards: ListBoards = async (userId) =>
-  ok(
+/** G14 D-574: permanent, owner-only, own maps only (seed = 404). One row; FKs cascade (cards/edges/fsrs/attempts/queue) or set null (sessions, copies). */
+export const deleteBoard: DeleteBoard = async (userId, boardId) => {
+  if (!isUuid(boardId)) return notFound();
+  return run(userId, async (tx, s) => {
+    const [row] = await tx.delete(s.boards).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId), eq(s.boards.status, 'private'))).returning({ id: s.boards.id });
+    return row ? ok({ id: row.id }) : notFound();
+  });
+};
+
+export const listBoards: ListBoards = async (userId, query = {}) => {
+  const parsed = parseWith(boardListQuerySchema, query);
+  if (!parsed.ok) return parsed;
+  const { status } = parsed.data;
+  return ok(
     await run(userId, async (tx, s) => {
       const rows = await tx
         .select({
           id: s.boards.id, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, updatedAt: s.boards.updatedAt,
-          access: s.boards.access,
+          access: s.boards.access, archivedAt: s.boards.archivedAt,
+          matrixItemIds: sql<string[]>`coalesce((select array_agg(bm.matrix_item_id order by bm.created_at, bm.matrix_item_id) from board_matrix_items bm where bm.board_id = boards.id), '{}')`,
           cardCount: sql<number>`(select count(*)::int from cards c where c.board_id = boards.id and c.deleted_at is null)`,
           edgeCount: sql<number>`(select count(*)::int from edges e ${liveCardEnds} where e.board_id = boards.id)`,
         })
         .from(s.boards)
-        .where(and(eq(s.boards.userId, userId), isNull(s.boards.archivedAt)))
+        .where(and(eq(s.boards.userId, userId), status === 'active' ? isNull(s.boards.archivedAt) : status === 'archived' ? isNotNull(s.boards.archivedAt) : undefined))
         .orderBy(desc(s.boards.updatedAt));
       const extra = await boardListExtras(tx, userId, new Date(), rows.map((r) => r.id)); // F03 FR-8 badge + G01 state bar/preview
       return rows.map((r) => ({ ...r, ...(extra.get(r.id) ?? { dueCount: 0, stateCounts: { review: 0, watch: 0, steady: 0, unknown: 0 }, preview: { nodes: [], edges: [] } }) }));
     }),
   );
+};
 
 export const getBoard: GetBoard = async (userId, boardId) => {
   if (!isUuid(boardId)) return notFound();
@@ -59,7 +73,7 @@ export const getBoard: GetBoard = async (userId, boardId) => {
         id: s.cards.id, boardId: s.cards.boardId, type: s.cards.type, shape: s.cards.shape, title: s.cards.title, front: s.cards.front,
         frontAssetId: s.cards.frontAssetId,
         back: s.cards.back, backAssetId: s.cards.backAssetId, width: s.cards.width, height: s.cards.height, tags: s.cards.tags, source: s.cards.source, x: s.cards.x, y: s.cards.y, status: s.cards.status,
-        order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt, payload: s.cards.payload,
+        order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt, payload: s.cards.payload, suspendedAt: s.cards.suspendedAt,
       })
       .from(s.cards)
       .where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)))
@@ -76,9 +90,14 @@ export const getBoard: GetBoard = async (userId, boardId) => {
       .where(eq(s.boardVersions.boardId, versionOf))
       .orderBy(desc(s.boardVersions.version))
       .limit(1);
-    return ok({ board: { ...toBoard(board), changelog: published?.changelog ?? null }, cards, edges });
+    return ok({ board: { ...toBoard(board), changelog: published?.changelog ?? null, matrixItemIds: await linkedItems(tx, s, boardId) }, cards, edges });
   });
 };
+
+/** F17 FR-21 (D-532): the map's matrix links, oldest first. */
+const linkedItems = async (tx: Tx, s: typeof import('@remoa/db'), boardId: string) =>
+  (await tx.select({ id: s.boardMatrixItems.matrixItemId }).from(s.boardMatrixItems).where(eq(s.boardMatrixItems.boardId, boardId))
+    .orderBy(asc(s.boardMatrixItems.createdAt), asc(s.boardMatrixItems.matrixItemId))).map((r) => r.id);
 
 const cardLimitOf = async (userId: string) => PLAN_LIMITS[(await planOf(userId)).plan].limits.cards;
 
@@ -90,7 +109,7 @@ const isLinkableItemInArea = (tx: Tx, id: string, area: string) =>
 export const createBoard: CreateBoard = async (userId, input) => {
   const q = await assertQuota(userId, 'boards');
   if (!q.ok) return q;
-  const itemIds = boardMatrixItemIds(input); // handles deprecated matrixItemId too
+  const itemIds = input.matrixItemIds ?? [];
   const area = input.area ?? 'CM';
   // Sharing: generates token + hash before the transaction (scrypt is async and cpu-heavy).
   const share = await initialShareColumns({ access: input.access ?? 'owner', password: input.password });
@@ -124,8 +143,20 @@ export const updateBoard: UpdateBoard = async (userId, boardId, input) => {
     const set: Partial<typeof s.boards.$inferInsert> = { updatedAt: new Date() };
     if (input.title !== undefined) set.title = input.title;
     if (input.archived !== undefined) set.archivedAt = input.archived ? new Date() : null;
+    if (input.area !== undefined) set.area = input.area;
     const [row] = await tx.update(s.boards).set(set).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId))).returning();
-    return row ? ok(toBoard(row)) : notFound();
+    if (!row) return notFound();
+    if (input.area !== undefined) {
+      // D-532: links to items of another area go with the area change (same tx); the primary item follows the oldest survivor.
+      await tx.execute(sql`delete from board_matrix_items bm using matrix_items m where bm.board_id = ${boardId} and m.id = bm.matrix_item_id and m.area <> ${input.area}`);
+      const items = await linkedItems(tx, s, boardId);
+      if (row.matrixItemId && !items.includes(row.matrixItemId)) {
+        const [fixed] = await tx.update(s.boards).set({ matrixItemId: items[0] ?? null }).where(eq(s.boards.id, boardId)).returning();
+        return ok({ ...toBoard(fixed!), matrixItemIds: items });
+      }
+      return ok({ ...toBoard(row), matrixItemIds: items });
+    }
+    return ok({ ...toBoard(row), matrixItemIds: await linkedItems(tx, s, boardId) });
   });
   // F17: archiving turns the link off (server connection, after the tx above has released the row; D-288).
   if (!r.ok || input.archived !== true || r.data.access === 'owner') return r;
@@ -138,7 +169,7 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
   const q = await assertQuota(userId, 'boards');
   if (!q.ok) return q;
   const limit = await cardLimitOf(userId);
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const [src] = await tx.select().from(s.boards).where(eq(s.boards.id, boardId));
     if (!src) return notFound();
     const cards = await tx.select().from(s.cards).where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)));
@@ -149,6 +180,8 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
     await cloneBoardContent(tx, s, copy!.id, cards, edges, { status: (c) => (src.status === 'private' ? c.status : 'draft'), tags: (c) => c.tags });
     return ok(toBoard(copy!));
   });
+  if (r.ok) await maybeQualifyReferral(userId); // F18 (D-384): a copied seed/own board can be the first map; never throws
+  return r;
 };
 
 type CardRow = typeof import('@remoa/db').cards.$inferSelect;
@@ -266,7 +299,7 @@ async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp, q: { use
 
 export const applyMapOps: ApplyMapOps = async (userId, ops) => {
   const cardLimit = ops.some((o) => o.op === 'createCard') ? await cardLimitOf(userId) : null;
-  return guard(() =>
+  const r = await guard(() =>
     run(userId, async (tx, s) => {
       const boardIds = [...new Set(ops.map((o) => o.boardId))];
       // RLS on UPDATE silently matches 0 rows, so ownership is checked explicitly.
@@ -277,5 +310,6 @@ export const applyMapOps: ApplyMapOps = async (userId, ops) => {
       return { applied: ops.map((o) => o.opId) };
     }),
   );
-
+  if (r.ok && cardLimit !== null) await maybeQualifyReferral(userId); // F18 (D-384): after the commit; never throws
+  return r;
 };

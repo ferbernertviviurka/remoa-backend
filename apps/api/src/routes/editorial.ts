@@ -17,7 +17,7 @@ export const editorialRoutes = new Hono<Env>()
   .post('/dispute', async (c) => send(await resolveDispute(c.get('userId'), await c.req.json().catch(() => null))))
   .get('/drafts', async (c) => send(await listDrafts(c.get('userId'))))
   .post('/publish', async (c) => send(await publishBoard(c.get('userId'), await c.req.json().catch(() => null))))
-  .get('/seeds', async (c) => send(await listSeeds()))
+  .get('/seeds', async () => send(await listSeeds()))
   .post('/copy', async (c) => {
     const body = (await c.req.json().catch(() => null)) as { boardId?: string } | null;
     if (!body?.boardId) return send({ ok: false, error: { code: 'validation', message: 'boardId' } });

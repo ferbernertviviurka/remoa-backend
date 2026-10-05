@@ -35,6 +35,8 @@ export const boardSchema = z.object({
   title: z.string().min(1),
   area: z.enum(areas),
   matrixItemId: idSchema.nullable(),
+  /** F17 FR-21 (D-532): every matrix link of the map (`board_matrix_items`, oldest first). Filled by GET/PATCH /v1/boards/:id; absent elsewhere. */
+  matrixItemIds: z.array(idSchema).optional(),
   status: z.enum(boardStatuses),
   version: z.number().int().positive(),
   temporalMark: z.string().nullable(),
@@ -64,33 +66,56 @@ export const createBoardInputSchema = z
     area: z.enum(areas).default('CM'),
     /** F17 FR-17: matrix items (→ `board_matrix_items`; the first also → boards.matrix_item_id). */
     matrixItemIds: matrixItemIdsSchema.default([]),
-    /** @deprecated G01 single item; read through `boardMatrixItemIds(input)`. */
-    matrixItemId: idSchema.nullable().optional(),
     access: boardAccessSchema.default('owner'),
     password: sharePasswordSchema.optional(),
   })
   .superRefine(refineSharePassword({ requirePassword: true }));
 export type CreateBoardInput = z.input<typeof createBoardInputSchema>;
-/** Effective item list: `matrixItemIds` when non-empty, else the deprecated `matrixItemId`. */
-export const boardMatrixItemIds = (input: { matrixItemIds?: string[]; matrixItemId?: string | null }): string[] =>
-  input.matrixItemIds?.length ? input.matrixItemIds : input.matrixItemId ? [input.matrixItemId] : [];
+/**
+ * POST /v1/ai/generate-pdf (D-532): multipart/form-data with `file` (the PDF) and `board` (JSON of this schema), so the
+ * generated map is born with area, items and access like an import. Same shape as createBoard.
+ */
+export const generatePdfBoardInputSchema = createBoardInputSchema;
 /** F17 FR-11 "mapa com o mesmo nome": trim, case and accents ignored. */
 export const normalizeBoardTitle = (title: string) => title.normalize('NFD').replace(/\p{M}/gu, '').trim().toLowerCase();
-/** PATCH /v1/boards/:id — rename and/or archive (`archived: false` restores). */
+/**
+ * PATCH /v1/boards/:id — rename, archive (`archived: false` restores) and/or change the area (F17 FR-21, D-532: links to
+ * matrix items of another area are removed in the same transaction).
+ */
 export const updateBoardInputSchema = z
-  .object({ title: boardTitleSchema, archived: z.boolean() })
+  .object({ title: boardTitleSchema, archived: z.boolean(), area: z.enum(areas) })
   .partial()
-  .refine((v) => v.title !== undefined || v.archived !== undefined, 'nothing to update');
+  .refine((v) => v.title !== undefined || v.archived !== undefined || v.area !== undefined, 'nothing to update');
 export type UpdateBoardInput = z.infer<typeof updateBoardInputSchema>;
+
+/**
+ * CCR-018 (D-573): GET /v1/boards?status=. `active` (default) = not archived ("Meus mapas", sidebar); `archived` = the
+ * "Arquivados" filter; `all` = both. Archived maps do not count toward the Free quota (D-167), live ones do.
+ */
+export const boardListStatuses = ['active', 'archived', 'all'] as const;
+export const boardListQuerySchema = z.object({ status: z.enum(boardListStatuses).default('active') });
+export type BoardListQuery = z.input<typeof boardListQuerySchema>;
+/**
+ * CCR-018 (D-574): DELETE /v1/boards/:id = permanent delete (no soft delete, no undo). Only the owner, only `private`
+ * boards (seeds: 404). Cascades in the same statement: cards → edges, fsrs_state, attempts, review_queue, board_matrix_items,
+ * board_versions; sessions.board_id → null; copies keep living (source_board_id → null); the share link dies with the row.
+ * Card images become orphans and are swept by `cleanup/assets`. Answer `{ id }`. Archived or not, it frees the quota slot.
+ */
+export const deleteBoardResultSchema = z.object({ id: idSchema });
+export type DeleteBoardResult = z.infer<typeof deleteBoardResultSchema>;
 
 /** Row in "Meus mapas" / sidebar. */
 export const boardSummarySchema = boardSchema
   .pick({ id: true, title: true, area: true, status: true, updatedAt: true })
   .extend({
+    /** CCR-018: null = live; the API always sends it (optional only for older fixtures). */
+    archivedAt: timestampSchema.nullable().optional(),
     cardCount: z.number().int().nonnegative(),
     edgeCount: z.number().int().nonnegative(),
     /** G01 v2: item da matriz do mapa (D-081). */
     matrixItemId: idSchema.nullable().default(null),
+    /** F17 FR-21 (D-532): every matrix link of the map; the API always sends it. */
+    matrixItemIds: z.array(idSchema).optional(),
     /** F17 FR-19: badge on the card when ≠ owner. */
     access: boardAccessSchema.default('owner'),
     dueCount: z.number().int().nonnegative().default(0), // F03 FR-8: sidebar badge, items due today
@@ -145,3 +170,33 @@ export type MapOp = z.infer<typeof mapOpSchema>;
 /** POST /v1/boards/ops body. Ops apply in order, each one idempotent (client-generated ids). */
 export const applyMapOpsInputSchema = z.object({ ops: z.array(mapOpSchema).min(1).max(200) });
 export type ApplyMapOpsInput = z.infer<typeof applyMapOpsInputSchema>;
+
+// --- F23 mapa no celular (D-664, D-665): preferências só do aparelho, em localStorage --------------
+export const MOBILE_MAP_PREFS_KEY = 'remoa:map-mobile-prefs';
+export const MOBILE_MAP_ZOOM_MIN = 0.4;
+export const MOBILE_MAP_ZOOM_MAX = 1.8;
+/** Abaixo disto o card entra na visão geral (FR-6). */
+export const MOBILE_MAP_SEMANTIC_ZOOM = 0.8;
+export const MOBILE_MAP_MAX_VIEWPORTS = 50;
+/** Última vista de um mapa; `x`/`y` em coordenadas do fluxo (centro), `zoom` já preso a 40%–180%. */
+export const mobileMapViewSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  zoom: z.number().min(MOBILE_MAP_ZOOM_MIN).max(MOBILE_MAP_ZOOM_MAX),
+});
+export type MobileMapView = z.infer<typeof mobileMapViewSchema>;
+/**
+ * Lido com `safeParse` e, se falhar, recai em `defaultMobileMapPrefs` (nunca lança). Sem dado de card, sem texto.
+ * `favorites` é por aparelho até existir coluna no servidor (CCR-032, D-665).
+ */
+export const mobileMapPrefsSchema = z.object({
+  version: z.literal(1).default(1),
+  heat: z.boolean().default(true),
+  labels: z.boolean().default(true),
+  view: z.enum(['canvas', 'list']).default('canvas'),
+  /** boardId → última vista. O cliente poda para os 50 mais recentes. */
+  viewports: z.record(idSchema, mobileMapViewSchema).default({}),
+  favorites: z.array(idSchema).max(200).default([]),
+});
+export type MobileMapPrefs = z.infer<typeof mobileMapPrefsSchema>;
+export const defaultMobileMapPrefs: MobileMapPrefs = mobileMapPrefsSchema.parse({});

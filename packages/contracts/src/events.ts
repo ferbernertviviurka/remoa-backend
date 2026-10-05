@@ -3,6 +3,8 @@ import { areas, boardAccess, cardTypes, challengeModes, grades, inputKinds, plan
 import { paywallReasons, billingPeriods, paymentMethods } from './billing';
 import { disputeOutcomes } from './editorial';
 import { segments, startPaths } from './onboarding';
+import { friendStatuses, referralEntryPoints, referralRejectReasons, referralShareChannels, referralSides } from './referral';
+import { supportTicketTypes } from './support';
 import { accountSections, completenessItems, identityProviders, passwordLabels, preferencesSchema, reminderHourSchema, themes } from './account';
 
 // Rule (F11): events carry counts and enums only, never answer text or card content.
@@ -11,7 +13,7 @@ const none = z.object({}).strict();
 const count = z.number().int().nonnegative();
 const ms = z.number().nonnegative();
 const authMethod = z.enum(['password', 'magic_link', 'google']);
-const upgradeSources = ['account_plan', 'usage_nudge', 'navbar_upgrade', 'plan_popover', 'map_slider_lock', 'library_lock', 'header_new_map_lock'] as const;
+const upgradeSources = ['account_plan', 'usage_nudge', 'navbar_upgrade', 'plan_popover', 'map_slider_lock', 'library_lock', 'header_new_map_lock', 'referral'] as const;
 /** F15 `/planos?de=`: an upgrade_clicked source, a paywall reason, or 'direct' (missing or unknown `de`). */
 export const plansFromSources = [...upgradeSources, ...paywallReasons, 'direct'] as const;
 
@@ -36,6 +38,12 @@ export const eventSchemas = {
     .object({ grade: z.enum(grades), mode: z.enum(challengeModes), inputKind: z.enum(inputKinds), overridden: z.boolean() })
     .strict(),
   queue_opened: z.object({ due: count, new: count, weak: count }).strict(),
+  // F21 FR-19 (G15, D-644): /app/revisar; counts and enums only, never card text
+  revisar_opened: z.object({ due: count, new: count, weak: count }).strict(),
+  revisar_session_started: z.object({ count, reasons: z.array(z.enum(['due', 'new', 'weak'])), maps: count, ahead: z.boolean(), area: z.enum(areas).nullable() }).strict(),
+  revisar_chart_interacted: z.object({ chart: z.enum(['forecast', 'states', 'retention', 'activity']) }).strict(),
+  revisar_area_clicked: z.object({ area: z.enum(areas) }).strict(),
+  revisar_hard_card_opened: none,
   // F04
   challenge_started: z.object({ kind: z.enum(sessionKinds), items: count, modes: z.array(z.enum(challengeModes)) }).strict(),
   answer_submitted: z
@@ -63,7 +71,7 @@ export const eventSchemas = {
   coverage_viewed: none,
   board_linked_to_matrix: z.object({ count, suggestedCount: count }).strict(),
   // F17 sharing (never title, token, password, IP or owner id)
-  board_access_changed: z.object({ from: z.enum(boardAccess), to: z.enum(boardAccess), source: z.enum(['create', 'editor']) }).strict(),
+  board_access_changed: z.object({ from: z.enum(boardAccess), to: z.enum(boardAccess), source: z.enum(['create', 'editor', 'properties']) }).strict(),
   board_share_rotated: none,
   board_share_password_changed: none,
   shared_board_viewed: z.object({ access: z.enum(['password', 'public']), cards: count }).strict(),
@@ -88,10 +96,16 @@ export const eventSchemas = {
   dispute_resolved: z.object({ outcome: z.enum(disputeOutcomes) }).strict(),
   // F11
   progress_viewed: none,
+  // G16 store waitlist (FR-13): never e-mail or other PII in props
+  store_viewed: none,
+  store_waitlist_joined: z.object({ interest: z.enum(['buy', 'sell', 'both']), role: z.enum(['teacher', 'student_resident', 'physician']).nullable() }).strict(),
+  store_sell_cta_clicked: none,
+  store_simulator_used: z.object({ band: z.enum(['low', 'mid', 'high']) }).strict(),
+  store_faq_opened: z.object({ item: z.number().int().min(0).max(20) }).strict(),
   // F12
   waitlist_joined: z.object({ variant: z.string().regex(/^\d+$/).nullable(), segment: z.enum(segments) }).strict(),
   onboarding_step: z.object({ step: z.number().int().min(1).max(4) }).strict(),
-  onboarding_completed: z.object({ path: z.enum([...startPaths, 'skipped']) }).strict(),
+  onboarding_completed: z.object({ path: z.enum([...startPaths, 'blank', 'skipped']) }).strict(),
   demo_started: none,
   // F13 (no name, e-mail or free text)
   account_viewed: z.object({ section: z.enum(accountSections) }).strict(),
@@ -141,12 +155,38 @@ export const eventSchemas = {
     })
     .strict(),
   hero_cta_clicked: z.object({ cta: z.enum(['create', 'demo']) }).strict(),
+  landing_cta_clicked: z
+    .object({
+      location: z.enum(['header', 'demo', 'plans_free', 'plans_pro', 'plans_founder', 'final']),
+      cta: z.enum(['create', 'waitlist', 'signin', 'open_app']),
+    })
+    .strict(),
   hero_replayed: none,
   feature_tab_selected: z.object({ feature: z.enum(['map', 'cards', 'challenge', 'grading', 'fsrs', 'enamed']) }).strict(),
   demo_answered: z.object({ correct: z.boolean() }).strict(),
   demo_completed: none,
   pricing_toggled: z.object({ period: z.enum(['monthly', 'annual']) }).strict(),
   pricing_viewed: none,
+  // F18 referral (never e-mail, name or code; D-388). referral_qualified / referral_reward_granted / referral_rejected and
+  // first_board_created are emitted by the server.
+  referral_page_viewed: z.object({ from: z.enum(referralEntryPoints) }).strict(),
+  referral_link_copied: none,
+  referral_message_edited: none,
+  referral_share_clicked: z.object({ channel: z.enum(referralShareChannels) }).strict(),
+  referral_invites_sent: z.object({ count: z.number().int().min(1).max(5) }).strict(),
+  referral_friend_selected: z.object({ status: z.enum(friendStatuses) }).strict(),
+  referral_invite_opened: z.object({ valid: z.boolean() }).strict(),
+  referral_signup: z.object({ valid: z.boolean(), method: authMethod }).strict(),
+  referral_qualified: none,
+  referral_reward_granted: z.object({ side: z.enum(referralSides), kind: z.enum(['month', 'credit']) }).strict(),
+  referral_reward_seen: none,
+  referral_rejected: z.object({ reason: z.enum(referralRejectReasons) }).strict(),
+  // F19 support (D-433): no subject, description or context text, only enums/booleans. Admin actions are never tracked.
+  support_opened: z.object({ from: z.enum(['fab', 'command', 'account_menu', 'mobile_nav', 'email_link']) }).strict(),
+  support_submitted: z.object({ type: z.enum(supportTicketTypes), hasAttachment: z.boolean(), context: z.boolean() }).strict(),
+  support_replied: none,
+  support_ticket_resolved: z.object({ type: z.enum(supportTicketTypes) }).strict(),
+  first_board_created: none,
   scroll_depth: z.object({ depth: z.union([z.literal(25), z.literal(50), z.literal(75), z.literal(100)]) }).strict(),
 } as const;
 

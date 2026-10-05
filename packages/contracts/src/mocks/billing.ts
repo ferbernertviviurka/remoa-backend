@@ -1,6 +1,7 @@
 // F15 mocks for the frontend: PriceBook from PRICES_BRL (D-182), FUNDADOR coupon, checkout sessions and subscriptions.
 import { ok, err } from '../errors';
 import {
+  FOUNDER_PRICE_CENTS,
   PRICES_BRL,
   couponInputSchema,
   nextChargeDate,
@@ -19,6 +20,7 @@ const TZ = 'America/Sao_Paulo';
 export const priceBookFixture: PriceBook = {
   monthly: { amount: PRICES_BRL.monthly * 100, currency: 'brl', priceId: 'price_mock_monthly' },
   annual: { amount: PRICES_BRL.annual * 100, currency: 'brl', priceId: 'price_mock_annual' },
+  lifetime: { amount: FOUNDER_PRICE_CENTS, currency: 'brl', priceId: 'price_mock_lifetime' },
   nextChargeOn: { monthly: nextChargeDate('monthly', FIXTURE_NOW, TZ), annual: nextChargeDate('annual', FIXTURE_NOW, TZ) },
   fetchedAt: FIXTURE_NOW,
 };
@@ -31,6 +33,7 @@ export const checkoutSessionFixtures = {
   cs_mock_paid: { status: 'paid', plan: 'pro', period: 'annual', method: 'card' },
   cs_mock_pending_pix: { status: 'pending_pix', plan: 'pro', period: 'monthly', method: 'pix' },
   cs_mock_canceled: { status: 'canceled', plan: 'pro', period: 'monthly', method: 'card' },
+  cs_mock_founder_paid: { status: 'paid', plan: 'founder', period: 'lifetime', method: 'card' },
 } satisfies Record<string, CheckoutSessionStatus>;
 
 const monthlyActive: SubscriptionSummary = {
@@ -41,6 +44,7 @@ export const subscriptionFixtures = {
   monthlyActive,
   pastDue: { ...monthlyActive, status: 'past_due', renewsAt: at(-2), graceUntil: at(5), pastDue: true },
   cancelScheduled: { ...monthlyActive, cancelAtPeriodEnd: true },
+  founder: { status: 'active', period: 'lifetime', method: 'pix', amount: FOUNDER_PRICE_CENTS, renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null, pastDue: false },
 } satisfies Record<string, SubscriptionSummary>;
 
 export const getPriceBook: Api.GetPriceBook = async () => ok(priceBookFixture);

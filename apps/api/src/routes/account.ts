@@ -12,7 +12,7 @@ const send = <T>(r: Result<T>) =>
 export const accountRoutes = ({ stripe }: { stripe?: StripePort }) => new Hono<Env>()
   .post('/export', async (c) => {
     // D-125: 1 per hour, counted in account_events; a failed export gives the slot back.
-    const slot = await takeSlot(c.get('userId'), 'export_requested', ACCOUNT_LIMITS.exportsPerHour, 3_600_000, requestMeta((h) => c.req.header(h)));
+    const slot = await takeSlot(c.get('userId'), 'export_requested', ACCOUNT_LIMITS.exportsPerHour, 3_600_000, requestMeta(c));
     if (!slot) return send({ ok: false, error: { code: 'rate_limited', message: 'one export per hour' } });
     const r = await exportAccount(c.get('userId')).catch(async (e: unknown) => { await releaseSlot(slot); throw e; });
     if (!r.ok) await releaseSlot(slot);

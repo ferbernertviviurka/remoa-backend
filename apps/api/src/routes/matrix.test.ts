@@ -60,7 +60,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/matrix, /v1/coverage, createBoar
   it('createBoard with matrixItemId links it (boards column + board_matrix_items); unknown id -> 422 and no board', async () => {
     const u = await newUser();
     const [item] = await items(u);
-    const ok = await call(u, 'POST', '/boards', { title: 'Cardio', matrixItemId: item!.id });
+    const ok = await call(u, 'POST', '/boards', { title: 'Cardio', matrixItemIds: [item!.id] });
     expect(ok.status).toBe(201);
     expect(ok.json.data.matrixItemId).toBe(item!.id);
     const links = await dbm.db.select().from(dbm.boardMatrixItems).where(eq(dbm.boardMatrixItems.boardId, ok.json.data.id));
@@ -68,11 +68,11 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/matrix, /v1/coverage, createBoar
     expect((await call(u, 'GET', `/boards/${ok.json.data.id}`)).json.data.board.matrixItemId).toBe(item!.id);
     expect(((await call(u, 'GET', '/boards')).json.data as { id: string; matrixItemId: string }[]).find((b) => b.id === ok.json.data.id)!.matrixItemId).toBe(item!.id);
 
-    const bad = await call(u, 'POST', '/boards', { title: 'Sem item', matrixItemId: uuid() });
+    const bad = await call(u, 'POST', '/boards', { title: 'Sem item', matrixItemIds: [uuid()] });
     const group = (await all(u)).find((i) => !i.parentId)!;
-    expect((await call(u, 'POST', '/boards', { title: 'Grupo', matrixItemId: group.id })).status).toBe(422);
+    expect((await call(u, 'POST', '/boards', { title: 'Grupo', matrixItemIds: [group.id] })).status).toBe(422);
     expect(bad.status).toBe(422);
-    expect((await call(u, 'POST', '/boards', { title: 'Sem item', matrixItemId: 'x' })).status).toBe(422);
+    expect((await call(u, 'POST', '/boards', { title: 'Sem item', matrixItemIds: ['x'] })).status).toBe(422);
     expect((await call(u, 'GET', '/boards')).json.data).toHaveLength(1);
     const plain = await call(u, 'POST', '/boards', { title: 'Livre' });
     expect(plain.json.data.matrixItemId).toBeNull();
@@ -83,10 +83,10 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/matrix, /v1/coverage, createBoar
     const other = await newUser();
     const [i1, i2] = await items(u);
     expect((await call(u, 'GET', '/coverage')).json.data).toEqual([]);
-    const b1 = (await call(u, 'POST', '/boards', { title: 'A', matrixItemId: i1!.id })).json.data.id as string;
-    const archived = (await call(u, 'POST', '/boards', { title: 'C', matrixItemId: i2!.id })).json.data.id as string;
+    const b1 = (await call(u, 'POST', '/boards', { title: 'A', matrixItemIds: [i1!.id] })).json.data.id as string;
+    const archived = (await call(u, 'POST', '/boards', { title: 'C', matrixItemIds: [i2!.id] })).json.data.id as string;
     await call(u, 'PATCH', `/boards/${archived}`, { archived: true });
-    const b2 = (await call(u, 'POST', '/boards', { title: 'B', matrixItemId: i1!.id })).json.data.id as string;
+    const b2 = (await call(u, 'POST', '/boards', { title: 'B', matrixItemIds: [i1!.id] })).json.data.id as string;
     const [c1, c2, dead] = await mkCards(b1, 3);
     await mkCards(b2, 1);
     await mkCards(archived, 5);
@@ -111,7 +111,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/matrix, /v1/coverage, createBoar
   it('coverage caps at 100 and has null recall without reviews', async () => {
     const u = await newUser();
     const [item] = await items(u);
-    const b = (await call(u, 'POST', '/boards', { title: 'Grande', matrixItemId: item!.id })).json.data.id as string;
+    const b = (await call(u, 'POST', '/boards', { title: 'Grande', matrixItemIds: [item!.id] })).json.data.id as string;
     await mkCards(b, item!.targetCards + 5);
     const [row] = (await call(u, 'GET', '/coverage')).json.data as CoverageRow[];
     expect(row).toMatchObject({ cards: item!.targetCards + 5, coverage: 100, avgRetrievability: null });
@@ -189,5 +189,19 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/matrix, /v1/coverage, createBoar
     expect(await primary()).toBeNull();
     expect(await linkRows()).toHaveLength(0);
     expect((await call(u, 'GET', '/coverage')).json.data).toEqual([]);
+  });
+
+  it('F17 FR-21 (D-532): matrixItemIds on GET/list/PATCH; changing the area drops links of the old area', async () => {
+    const u = await newUser();
+    const [i1, i2] = await items(u);
+    const b = (await call(u, 'POST', '/boards', { title: 'Props', matrixItemIds: [i1!.id, i2!.id] })).json.data.id as string;
+    expect((await call(u, 'GET', `/boards/${b}`)).json.data.board.matrixItemIds).toEqual([i1!.id, i2!.id].sort());
+    expect(((await call(u, 'GET', '/boards')).json.data as { id: string; matrixItemIds: string[] }[]).find((x) => x.id === b)!.matrixItemIds.sort()).toEqual([i1!.id, i2!.id].sort());
+    const same = await call(u, 'PATCH', `/boards/${b}`, { area: 'CM' });
+    expect(same.json.data.matrixItemIds).toHaveLength(2);
+    const moved = await call(u, 'PATCH', `/boards/${b}`, { area: 'PED' });
+    expect(moved.status).toBe(200);
+    expect(moved.json.data).toMatchObject({ area: 'PED', matrixItemId: null, matrixItemIds: [] });
+    expect(await dbm.db.select().from(dbm.boardMatrixItems).where(eq(dbm.boardMatrixItems.boardId, b))).toHaveLength(0);
   });
 });
