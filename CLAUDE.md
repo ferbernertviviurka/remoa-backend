@@ -31,3 +31,4 @@ pnpm check                      lint + typecheck + test (inclui teste de RLS)
 - `packages/contracts` e `packages/db` só mudam via `architect` com entrada no decision log (`../docs/STATUS.md`). Mudança em contrato quebra o frontend: rode `pnpm check` lá também.
 - Todo endpoint valida entrada com zod de `@remoa/contracts`, responde `{ error: { code, message } }` e loga com `@remoa/log`. Rotas de usuário passam por `requireUser`; consultas do usuário passam por `withUser()` para o RLS valer (a conexão é superuser, D-021).
 - Depois de `pnpm db:generate`, apague o `CREATE TABLE auth.users` que o drizzle-kit reemite.
+- Migrations só pelo Drizzle (`packages/db/migrations`). Não crie `supabase/migrations` nem use `supabase migration`, `db push` ou `db diff`, mesmo que a skill `supabase` sugira: a pasta `supabase/` é só a config do Supabase local (D-823).

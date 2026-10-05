@@ -8,7 +8,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# D-708: lint, typecheck, test shards, perf and coverage/eval run as parallel jobs. Every shard gets its own Supabase,
+# D-822: lint, typecheck, test shards, perf and coverage/eval run as parallel jobs. Every shard gets its own Supabase,
 # so integration tests (RLS included) never share a database across shards.
 jobs:
   lint:
