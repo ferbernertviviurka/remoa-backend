@@ -28,7 +28,7 @@ export const ticketsRoutes = new Hono<AdminEnv>()
       if (!x.ok) return x;
       audit.before({ status: x.data.before });
       audit.after({ status: x.data.after, internal: x.data.internal }); // never the message text
-      if (!x.data.internal) notify = () => notifyAnswered(x.data.userId, id, x.data.number);
+      if (!x.data.internal) notify = () => notifyAnswered(x.data.userId, id, x.data.number, x.data.messageId);
       return { ok: true, data: {} };
     });
     if (r.ok) await (notify as (() => Promise<void>) | null)?.(); // after commit

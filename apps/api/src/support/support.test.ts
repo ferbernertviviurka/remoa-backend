@@ -12,7 +12,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 support (user side + admin inbox
   let app: ReturnType<typeof import('../app').createApp>;
   let storage: typeof import('../storage/storage');
   let inbox: typeof import('./admin-inbox');
-  let mailer: typeof import('../account/mailer');
+  let sent: Awaited<ReturnType<typeof import('../test-email')['captureEmails']>>;
   const users: string[] = [];
 
   const newUser = async (name = 'Ana Souza') => {
@@ -46,7 +46,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 support (user side + admin inbox
     dbm = await import('@remoa/db');
     storage = await import('../storage/storage');
     inbox = await import('./admin-inbox');
-    mailer = await import('../account/mailer');
+    sent = (await import('../test-email')).captureEmails();
     await storage.ensureBucket();
     const { createApp } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (users.includes(t) ? t : null) });
@@ -69,7 +69,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 support (user side + admin inbox
     expect(a.status).toBe(201);
     expect(b.json.data.number).toBe(a.json.data.number + 1);
     expect(a.json.data.number).toBeGreaterThanOrEqual(1001);
-    const mail = mailer.sentEmails().filter((m) => m.to === `${u}@test.local`);
+    const mail = sent.filter((m) => m.to === `${u}@test.local`);
     expect(mail[0]!.subject).toBe(`Chamado #${a.json.data.number} recebido`);
     expect(mail[0]!.subject + mail[0]!.text).not.toContain('Erro na revisão');
     const list = await call(u, 'GET', '/tickets');
@@ -199,15 +199,14 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 support (user side + admin inbox
     expect(JSON.stringify(detail)).not.toContain('sigilosa');
     expect(JSON.stringify((await call(u, 'GET', '/tickets')).json)).not.toContain('sigilosa');
 
-    const before = mailer.sentEmails().length;
+    const before = sent.length;
     const rep = await asAdmin((tx) => inbox.replyAsAdmin(tx, adm, t.id, { body: 'Já corrigimos, tente de novo.' }));
     expect(rep.ok).toBe(true);
-    if (rep.ok) await inbox.notifyAnswered(rep.data.userId, t.id, rep.data.number);
-    await new Promise((r) => setTimeout(r, 50));
-    const sent = mailer.sentEmails().slice(before).filter((m) => m.to === `${u}@test.local`);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.subject).toBe(`Resposta ao chamado #${t.number}`);
-    expect(sent[0]!.subject + sent[0]!.text).not.toContain('corrigimos');
+    if (rep.ok) await inbox.notifyAnswered(rep.data.userId, t.id, rep.data.number, rep.data.messageId);
+    const got = sent.slice(before).filter((m) => m.to === `${u}@test.local`);
+    expect(got).toHaveLength(1);
+    expect(got[0]!.subject).toContain(`#${t.number}`);
+    expect(got[0]!.subject + got[0]!.text).not.toContain('corrigimos');
 
     expect((await call(u, 'GET', '/unread')).json.data.count).toBe(1);
     expect((await call(u, 'GET', '/tickets')).json.data[0].unread).toBe(true);
@@ -271,7 +270,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 support (user side + admin inbox
     const adm = await admin();
     const u = await newUser('Carla Souza');
     const ctx = { screen: '/mapa', plan: 'free', browser: 'Safari', os: 'iOS', appVersion: '1.0.0', timezone: 'America/Sao_Paulo' };
-    const marker = `Zebra${n}`;
+    const marker = `Zebra${uuid().replace(/-/g, '')}`; // P-318: unique per run, the shared db keeps old tickets
     const t1 = (await create(u, { subject: `${marker} cobrança`, type: 'billing', context: ctx })).json.data as { id: string; number: number };
     const t2 = (await create(u, { subject: `${marker} outro` })).json.data as { id: string };
     const bad = await asAdmin((tx) => inbox.assignTicket(tx, adm, uuid()));

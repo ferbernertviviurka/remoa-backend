@@ -96,8 +96,8 @@ describe('inputs', () => {
     expect(updatePreferencesInputSchema.safeParse({ newCardsPerDay: 12 }).success).toBe(false);
     expect(updatePreferencesInputSchema.safeParse({ newCardsPerDay: 25 }).success).toBe(false);
     expect(updatePreferencesInputSchema.safeParse({ newCardsPerDay: null }).success).toBe(true); // D-647: follow the plan
-    expect(updatePreferencesInputSchema.safeParse({ reminderHour: 9 }).success).toBe(false);
-    expect(updatePreferencesInputSchema.safeParse({ reminderHour: 21, theme: 'system', reduceMotion: null }).success).toBe(true);
+    expect(updatePreferencesInputSchema.safeParse({ reminderHour: 19 }).success).toBe(false);
+    expect(updatePreferencesInputSchema.safeParse({ reminderHour: 20, theme: 'system', reduceMotion: null }).success).toBe(true);
   });
   it('effective new cards per day', () => {
     expect(effectiveNewCardsPerDay(null, 20)).toBe(20);

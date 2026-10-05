@@ -9,6 +9,7 @@ describe('api', () => {
     const res = await app.request('/health', { headers: { 'x-request-id': 'r-1' } });
     expect(res.status).toBe(200);
     expect(res.headers.get('x-request-id')).toBe('r-1');
+    expect((await res.json()).email).toMatchObject({ configured: expect.any(Boolean), provider: expect.stringMatching(/^(console|resend)$/) }); // G18, no secrets
   });
 
   it('rejects /v1 without a valid token using the contracts error body', async () => {

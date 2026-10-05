@@ -60,6 +60,16 @@ import type {
   OverviewPeriod, ReasonInput, RevokeGrantInput,
 } from './admin';
 
+import type {
+  AddressNoticeType, MarkReadInput, MarkReadResult, NotificationListQuery, NotificationPage, NotificationPrefs, NotificationPrefsPatch, NotificationType, NotifyAddressPayload,
+  NotifyAddressResult, NotifyOptions, NotifyPayload, NotifyResult, UnreadCount,
+} from './notifications';
+import type {
+  CalendarEvent, CalendarEventInput, CalendarEventList, CalendarEventPatch, CalendarLabel, CalendarLabelDeleted, CalendarLabelInput, CalendarLabelList,
+  CalendarLabelPatch, CalendarRangeQuery, CalendarSettings, CalendarTourSeen, CalendarView, CalendarViewInput, DuplicateEventInput, EventRemindersInput, UpcomingEvents,
+} from './calendar';
+import type { EmailTemplate, SendEmailInput, SendEmailResult } from './emails';
+
 type Async<T> = Promise<Result<T>>;
 
 // F01 board (apps/web features/map)
@@ -285,3 +295,61 @@ export type RevokeGrant = (adminId: string, referralId: string, input: RevokeGra
 export type ReplyAsAdmin = (adminId: string, ticketId: string, input: AdminTicketReplyInput) => Async<AdminActionResult>;
 /** POST /v1/admin/export → CSV body (text/csv). */
 export type ExportAdminCsv = (adminId: string, input: AdminExportInput) => Async<{ csv: string; audit: AuditEntry }>;
+
+// G18 (CCR-034). E-mail and notices: server-only, never HTTP. notify() is the only door (CLAUDE.md rule 10); sendEmail is called only by notify()
+// and the Supabase Send Email hook (account / password_reset go through notify() too). Neither throws into the caller.
+export type SendEmail = <T extends EmailTemplate>(input: SendEmailInput<T>) => Promise<SendEmailResult>;
+export type Notify = <T extends NotificationType>(userId: string, type: T, payload: NotifyPayload<T>, opts?: NotifyOptions) => Promise<NotifyResult>;
+/** CCR-035: the same door for an address without an account (e-mail only). */
+export type NotifyAddress = <T extends AddressNoticeType>(to: string, type: T, payload: NotifyAddressPayload<T>) => Promise<NotifyAddressResult>;
+
+// G18 / F26 notifications, /v1/notifications (requireUser). Rows are written only by notify(); the client reads them (RLS) and
+// gets Realtime INSERT/UPDATE on public.notifications filtered by user_id (fallback: poll unread-count every 60 s while visible).
+/** GET /v1/notifications?cursor&filter=all|unread&category&limit */
+export type ListNotifications = (userId: string, query: NotificationListQuery) => Async<NotificationPage>;
+/** GET /v1/notifications/unread-count */
+export type GetUnreadCount = (userId: string) => Async<UnreadCount>;
+/** POST /v1/notifications/read {ids} | {all:true} */
+export type MarkNotificationsRead = (userId: string, input: MarkReadInput) => Async<MarkReadResult>;
+/** DELETE /v1/notifications/:id — dismiss (soft); not_found for another user's id. */
+export type DismissNotification = (userId: string, notificationId: string) => Async<null>;
+/** GET /v1/notifications/prefs — also Minha conta › E-mails. */
+export type GetNotificationPrefs = (userId: string) => Async<NotificationPrefs>;
+/** PATCH /v1/notifications/prefs */
+export type UpdateNotificationPrefs = (userId: string, input: NotificationPrefsPatch) => Async<NotificationPrefs>;
+
+// G18 / F25 calendar, /v1/calendar (requireUser). Every write replans reminders (calendar.plan-reminders).
+/** GET /v1/calendar/events?from&to */
+export type ListCalendarEvents = (userId: string, range: CalendarRangeQuery) => Async<CalendarEventList>;
+/** POST /v1/calendar/events — validation `calendar_bad_label` / `calendar_bad_cover` when the label or asset is not the caller's. */
+export type CreateCalendarEvent = (userId: string, input: CalendarEventInput) => Async<CalendarEvent>;
+/** PATCH /v1/calendar/events/:id */
+export type UpdateCalendarEvent = (userId: string, eventId: string, input: CalendarEventPatch) => Async<CalendarEvent>;
+/** DELETE /v1/calendar/events/:id — soft delete (deleted_at), cancels scheduled reminders; purged after CALENDAR_LIMITS.deletedRetentionDays. */
+export type DeleteCalendarEvent = (userId: string, eventId: string) => Async<null>;
+/** POST /v1/calendar/events/:id/duplicate {days?} */
+export type DuplicateCalendarEvent = (userId: string, eventId: string, input: DuplicateEventInput) => Async<CalendarEvent>;
+/** PATCH /v1/calendar/events/:id/reminders {remindD1?, remindD0?} */
+export type SetCalendarReminders = (userId: string, eventId: string, input: EventRemindersInput) => Async<CalendarEvent>;
+/** GET /v1/calendar/upcoming?limit — Hoje card, strip and rail dot. */
+export type GetUpcomingEvents = (userId: string, limit: number, now: Date) => Async<UpcomingEvents>;
+/** GET /v1/calendar/labels — seeds DEFAULT_CALENDAR_LABELS on the first call. */
+export type ListCalendarLabels = (userId: string) => Async<CalendarLabelList>;
+/** POST /v1/calendar/labels */
+export type CreateCalendarLabel = (userId: string, input: CalendarLabelInput) => Async<CalendarLabel>;
+/** PATCH /v1/calendar/labels/:id */
+export type UpdateCalendarLabel = (userId: string, labelId: string, input: CalendarLabelPatch) => Async<CalendarLabel>;
+/** DELETE /v1/calendar/labels/:id */
+export type DeleteCalendarLabel = (userId: string, labelId: string) => Async<CalendarLabelDeleted>;
+/** GET /v1/calendar/settings */
+export type GetCalendarSettings = (userId: string) => Async<CalendarSettings>;
+/** POST /v1/calendar/tour-seen */
+export type MarkCalendarTourSeen = (userId: string) => Async<CalendarTourSeen>;
+/** PATCH /v1/calendar/view */
+export type SetCalendarView = (userId: string, input: CalendarViewInput) => Async<{ view: CalendarView }>;
+/**
+ * GET /v1/calendar/events/:id.ics (Bearer) → text/calendar body, event timezone, no VALARM (FR-18).
+ * The e-mail's `icsUrl` cannot carry a Bearer: it is GET /v1/public/calendar/:token.ics with an HMAC token over the event id
+ * (env.emailUnsubscribeSecret, domain-separated with the prefix "ics:"), same body.
+ */
+export type GetCalendarIcs = (userId: string, eventId: string) => Async<{ filename: string; body: string }>;

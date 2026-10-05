@@ -26,10 +26,11 @@ describe('maintenance schedule (F08 FR-8)', () => {
     expect(m.expire).toHaveBeenCalledWith(now);
   });
 
-  it('hourly runs reminders and sweeps, not the daily purges', async () => {
+  it('hourly runs the sweeps, not the daily purges nor the old review reminder (now review.reminder, G18)', async () => {
     m.purge.mockClear(); m.expire.mockClear();
     const out = await runHourly(now);
-    expect(out.reminded).toBe(1);
+    expect(out).not.toHaveProperty('reminded');
+    expect(m.remind).not.toHaveBeenCalled();
     expect(m.referrals).toHaveBeenCalledWith(now);
     expect(m.purge).not.toHaveBeenCalled();
     expect(m.expire).not.toHaveBeenCalled();

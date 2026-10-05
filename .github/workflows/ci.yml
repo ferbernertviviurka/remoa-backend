@@ -4,8 +4,55 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# D-708: lint, typecheck, test shards, perf and coverage/eval run as parallel jobs. Every shard gets its own Supabase,
+# so integration tests (RLS included) never share a database across shards.
 jobs:
-  check:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm i --frozen-lockfile
+      - run: pnpm lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm i --frozen-lockfile
+      - run: pnpm typecheck
+
+  test:
+    name: test (${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm i --frozen-lockfile
+      - uses: supabase/setup-cli@v1
+      # Studio, image proxy, edge functions and log collection are not used by any test.
+      - run: supabase start -x studio,imgproxy,edge-runtime,logflare,vector
+      - run: pnpm --silent db:env > .env && pnpm db:migrate
+      # Vitest shards each package's files. A small package may get no file in a shard: every `test` script has
+      # --passWithNoTests (passing it here too would duplicate the flag, which Vitest rejects).
+      - run: pnpm turbo run test -- --shard=${{ matrix.shard }}/3
+
+  perf:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,9 +61,17 @@ jobs:
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm i --frozen-lockfile
       - uses: supabase/setup-cli@v1
-      - run: supabase start
+      - run: supabase start -x studio,imgproxy,edge-runtime,logflare,vector
       - run: pnpm --silent db:env > .env && pnpm db:migrate
-      - run: pnpm check # includes the RLS integration test (DATABASE_URL from .env)
       - run: pnpm --filter @remoa/api test:perf # D-559: p95 checks run alone, not under the parallel suite
+
+  coverage-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm i --frozen-lockfile
       - run: pnpm coverage # D-511: domain packages (fsrs, ai grader, anki) >= 90% lines, 85% branches
       - run: pnpm ai:eval # F05: concordance must stay within 3 points of the baseline

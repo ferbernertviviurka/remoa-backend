@@ -1,9 +1,9 @@
 import { sql } from 'drizzle-orm';
 import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
-import { sendEmail } from '../account/mailer';
+import { env } from '@remoa/config';
+import { notify } from '../notifications/notify';
 import { claimEmail } from './onboarding';
-import { day3Email, mapReadyEmail } from './email-copy';
 
 const log = createLogger({ requestId: 'job-onboarding-emails' });
 type Cand = { user_id: string; email: string; name: string | null };
@@ -15,7 +15,7 @@ type Cand = { user_id: string; email: string; name: string | null };
  */
 export async function sendOnboardingEmails(now: Date): Promise<{ mapReady: number; day3: number }> {
   const { db } = await dbm();
-  const web = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
+  const web = env().appUrl;
   const base = sql`from profiles p join auth.users u on u.id = p.user_id
     where p.deleted_at is null and u.email is not null and p.created_at > ${now.toISOString()}::timestamptz - interval '30 days'`;
   const mapReady = await db.execute<Cand>(sql`select p.user_id, u.email, p.name ${base}
@@ -28,11 +28,12 @@ export async function sendOnboardingEmails(now: Date): Promise<{ mapReady: numbe
     and coalesce((select up.email_review_reminders from user_preferences up where up.user_id = p.user_id), true)`);
   let m = 0;
   let d = 0;
-  for (const [list, key, mail, url] of [[mapReady, 'mapReady', mapReadyEmail, `${web}/app/revisar`], [day3, 'day3', day3Email, `${web}/app`]] as const) {
+  for (const [list, key, version, url] of [[mapReady, 'mapReady', 'first_map', `${web}/app/revisar`], [day3, 'day3', 'day3', `${web}/app`]] as const) {
     for (const c of list) {
       try {
         if (!(await claimEmail(c.user_id, key))) continue;
-        await sendEmail({ to: c.email, ...mail({ name: c.name?.split(' ')[0] ?? 'estudante', url }) });
+        // reference carries the user id: email_deliveries is unique on (template, reference) for everyone
+        await notify(c.user_id, 'onboarding_nudge', { reference: `${c.user_id}:${version}`, email: { version, name: c.name?.split(' ')[0] || null, actionUrl: url } });
         if (key === 'mapReady') m++;
         else d++;
       } catch (e) {

@@ -196,11 +196,15 @@ export type EdgeDraft = z.infer<typeof edgeDraftSchema>;
 
 // --- Uploads (F02 routes) ----------------------------------------------------
 /** F13: `avatar` uploads are capped at AVATAR_MAX_BYTES; omitted kind = card image (F02). */
-export const uploadKinds = ['card_image', 'avatar'] as const;
+/** G18 (CCR-034): `calendar_cover` = F25 cover, PNG/JPEG up to CALENDAR_COVER_MAX_BYTES, then the normal /v1/uploads/complete (WebP 800/1600, EXIF stripped). */
+export const uploadKinds = ['card_image', 'avatar', 'calendar_cover'] as const;
 export const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+export const CALENDAR_COVER_MAX_BYTES = 5 * 1024 * 1024;
 export const uploadSignInputSchema = z
   .object({ mime: z.enum(imageMimes), sizeBytes: z.number().int().positive().max(10 * 1024 * 1024), kind: z.enum(uploadKinds).optional() })
-  .refine((v) => v.kind !== 'avatar' || v.sizeBytes <= AVATAR_MAX_BYTES, { message: 'avatar too large', path: ['sizeBytes'] });
+  .refine((v) => v.kind !== 'avatar' || v.sizeBytes <= AVATAR_MAX_BYTES, { message: 'avatar too large', path: ['sizeBytes'] })
+  .refine((v) => v.kind !== 'calendar_cover' || v.sizeBytes <= CALENDAR_COVER_MAX_BYTES, { message: 'cover too large', path: ['sizeBytes'] })
+  .refine((v) => v.kind !== 'calendar_cover' || v.mime !== 'image/webp', { message: 'cover must be png or jpeg', path: ['mime'] });
 export type UploadSignInput = z.infer<typeof uploadSignInputSchema>;
 /** `url` is a presigned PUT: send the file with the same Content-Type and Content-Length. */
 export const uploadSignOutputSchema = z.object({ url: z.string().url(), key: z.string().min(1) });

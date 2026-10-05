@@ -4,6 +4,7 @@ import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { referralSummarySchema, inviteResultSchema } from '@remoa/contracts';
+import { settle } from '../test-email';
 
 config({ path: '../../.env' });
 process.env.UNSUBSCRIBE_SECRET ||= 'test-secret-test-secret';
@@ -14,7 +15,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 /v1/referral summary + invites',
   let dbm: typeof import('@remoa/db');
   let app: ReturnType<typeof import('../app').createApp>;
   let admin: ReturnType<typeof import('../account/auth-admin').adminClient>;
-  let mailer: typeof import('../account/mailer');
+  let sent: Awaited<ReturnType<typeof import('../test-email')['captureEmails']>>;
   let notify: typeof import('../referral/notify');
 
   const newUser = async (name: string | null = null, tz?: string) => {
@@ -29,12 +30,12 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 /v1/referral summary + invites',
     const res = await app.request(`/v1/referral${path}`, { method, headers: { authorization: `Bearer ${user}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: res.status, json: (await res.json()) as Json };
   };
-  const sentTo = (to: string) => mailer.sentEmails().filter((m) => m.to === to);
+  const sentTo = (to: string) => sent.filter((m) => m.to === to);
 
   beforeAll(async () => {
     dbm = await import('@remoa/db');
     admin = (await import('../account/auth-admin')).adminClient();
-    mailer = await import('../account/mailer');
+    sent = (await import('../test-email')).captureEmails();
     notify = await import('../referral/notify');
     const { createApp } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (users.includes(t) ? t : null) });
@@ -91,12 +92,14 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 /v1/referral summary + invites',
     const mail = `Joao.Silva+x${uuid().slice(0, 6)}@gmail.com`.toLowerCase();
     const r = await call(u.id, 'POST', '/invites', { emails: [mail, existing.email] });
     expect(inviteResultSchema.parse(r.json.data)).toEqual({ sent: 2, invitesLeftToday: 18 });
+    await settle(); // the invite e-mail is fire-and-forget (D-399)
     expect(sentTo(mail)).toHaveLength(1);
     expect(sentTo(mail)[0]!.subject).toContain('Carla');
     expect(sentTo(existing.email)).toHaveLength(0);
     // same person via other spelling of the gmail address: no new row, no new mail
     const again = await call(u.id, 'POST', '/invites', { emails: [mail.replace('joao.silva', 'joaosilva')] });
     expect(again.status).toBe(200);
+    await settle();
     expect(sentTo(mail)).toHaveLength(1);
     expect(sentTo(mail.replace('joao.silva', 'joaosilva'))).toHaveLength(0);
     const rows = await dbm.db.execute<{ invited_email_hash: string; invited_email_masked: string }>(sql`select invited_email_hash, invited_email_masked from referrals where referrer_id = ${u.id}`);

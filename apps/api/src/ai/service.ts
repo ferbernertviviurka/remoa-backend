@@ -1,3 +1,4 @@
+import { notifyMapReady } from '../notifications/map-ready';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { AI_DRAFT_SOURCE, generatePdfBoardInputSchema, graderInputSchema, rubricSchema, err, ok, parseWith, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput } from '@remoa/contracts';
@@ -362,6 +363,7 @@ async function executeGeneration(jobId: string) {
   const item = work.get(jobId);
   if (!job || !item || job.status === 'done' || job.status === 'failed') return;
   jobs.set(jobId, { ...job, status: 'running', progress: Math.max(job.progress, 30), stage: 'extract' });
+  const startedAt = Date.now(); // ponytail: run time only (queue wait not counted); map_ready decides the e-mail from it
   try {
     const { extracted, meta } = await extractWithMeta(item.text, AI_DRAFT_SOURCE);
     counts.set(jobId, { cards: extracted.cards.length, edges: extracted.edges.length, pages: counts.get(jobId)?.pages });
@@ -374,6 +376,7 @@ async function executeGeneration(jobId: string) {
     const done = jobs.get(jobId);
     if (done) jobs.set(jobId, { ...done, status: 'done', progress: 100, stage: null, boardId });
     work.delete(jobId);
+    if (boardId) await notifyMapReady({ userId: item.userId, boardId, origin: item.input.kind === 'pdf' ? 'pdf' : 'text', tookMs: Date.now() - startedAt }); // G18; never throws
   } catch (e) {
     if (item.charged && !item.refunded) {
       item.refunded = true;

@@ -3,7 +3,7 @@ import { config } from 'dotenv';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { accountSnapshotSchema } from '@remoa/contracts';
+import { accountSnapshotSchema, type Notify } from '@remoa/contracts';
 
 config({ path: '../../.env' });
 process.env.UNSUBSCRIBE_SECRET ||= 'test-secret-test-secret';
@@ -19,7 +19,6 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
   let admin: ReturnType<typeof import('../account/auth-admin').adminClient>;
   let anonClient: typeof import('../account/auth-admin').anonClient;
   let reminders: typeof import('../account/reminders');
-  let mailer: typeof import('../account/mailer');
   let queue: typeof import('../review/queue');
 
   const newUser = async (opts: { pro?: boolean; tz?: string } = {}) => {
@@ -53,7 +52,6 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     ({ anonClient } = await import('../account/auth-admin'));
     admin = (await import('../account/auth-admin')).adminClient();
     reminders = await import('../account/reminders');
-    mailer = await import('../account/mailer');
     queue = await import('../review/queue');
     const { createApp } = await import('../app');
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (users.includes(t) ? t : null) });
@@ -69,7 +67,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     const s = accountSnapshotSchema.parse(free.json.data);
     expect(s).toMatchObject({ email, emailConfirmed: true, pendingEmail: null, streakDays: null, deletionScheduledFor: null, avatarUrls: null, isAdmin: false });
     expect(s.entitlements.plan).toBe('free');
-    expect(s.preferences).toMatchObject({ theme: 'light', reminderEnabled: false, reminderHour: 19, newCardsPerDay: 10 });
+    expect(s.preferences).toMatchObject({ theme: 'light', reminderEnabled: false, reminderHour: 20, newCardsPerDay: 10 });
     expect(s.identities.map((i) => i.provider)).toEqual(['email']);
     expect(s.completeness).toEqual({ percent: 20, missing: ['photo', 'name', 'goal', 'reminder'] });
 
@@ -231,52 +229,58 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     expect((await q(pro.id)).data).toHaveLength(10);
   });
 
-  describe('daily reminder (FR-15)', () => {
-    const setup = async (o: { tz?: string; hour?: 8 | 12 | 19 | 21; enabled?: boolean; due?: boolean } = {}) => {
+  describe('daily reminder (FR-15 → G18 notify review_reminder, D-781)', () => {
+    const setup = async (o: { tz?: string; hour?: 7 | 8 | 12 | 20; due?: boolean } = {}) => {
       const u = await newUser({ tz: o.tz ?? 'America/Sao_Paulo' });
-      await dbm.db.insert(dbm.userPreferences).values({ userId: u.id, reminderEnabled: o.enabled ?? true, reminderHour: o.hour ?? 19 });
+      await dbm.db.insert(dbm.userPreferences).values({ userId: u.id, reminderEnabled: true, reminderHour: o.hour ?? 20 });
       const [c] = await seedCard(u.id);
-      if (o.due !== false) await dbm.db.insert(dbm.fsrsState).values({ userId: u.id, cardId: c!.id, due: new Date(at19brt.getTime() - 86_400_000), stability: 1, difficulty: 5, reps: 1, state: 'review', lastReview: new Date(at19brt.getTime() - 2 * 86_400_000), createdAt: new Date(at19brt.getTime() - 5 * 86_400_000) });
+      if (o.due !== false) await dbm.db.insert(dbm.fsrsState).values({ userId: u.id, cardId: c!.id, due: new Date(at20brt.getTime() - 86_400_000), stability: 1, difficulty: 5, reps: 1, state: 'review', lastReview: new Date(at20brt.getTime() - 2 * 86_400_000), createdAt: new Date(at20brt.getTime() - 5 * 86_400_000) });
       return { ...u, card: c! };
     };
-    // today 22:00Z = 19:00 in America/Sao_Paulo (UTC-3) = 07:00 the next day in Tokyo
-    const at19brt = new Date();
-    at19brt.setUTCHours(22, 0, 0, 0);
-    const day = at19brt.toISOString().slice(0, 10);
-    const mine = (email: string) => mailer.sentEmails().filter((m) => m.to === email);
+    // 23:00Z = 20:00 in America/Sao_Paulo (UTC-3) = 08:00 the next day in Tokyo (G18 D-744: hours 7/8/12/20).
+    // A 2020 clock: the job scans every user, and only the ones made here have cards due by then.
+    const at20brt = new Date('2020-06-10T23:00:00Z');
+    const day = at20brt.toISOString().slice(0, 10);
+    const calls: { userId: string; type: string; payload: { reference: string; data?: unknown; email?: unknown } }[] = [];
+    const notify: Notify = async (userId, type, payload) => {
+      calls.push({ userId, type, payload });
+      return { inApp: 'created', notificationId: null, email: 'not_applicable', emailDeliveryId: null };
+    };
+    const mine = (id: string) => calls.filter((c) => c.userId === id);
 
-    it('sends at the local hour with the due count and a working unsubscribe link, once per day', async () => {
+    it('notifies at the local hour with the queue, once per local day', async () => {
       const u = await setup();
-      await reminders.sendDailyReminders(at19brt);
-      expect(mine(u.email)).toHaveLength(1);
-      expect(mine(u.email)[0]!.subject).toBe('1 conceito vence hoje');
-      expect(mine(u.email)[0]!.text).toContain('/v1/public/unsubscribe?token=');
-      expect(mine(u.email)[0]!.headers).toMatchObject({ 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' });
-      await reminders.sendDailyReminders(at19brt);
-      expect(mine(u.email)).toHaveLength(1); // reminder_last_sent_on
+      await reminders.sendDailyReminders(at20brt, notify);
+      expect(mine(u.id)).toHaveLength(1);
+      expect(mine(u.id)[0]).toMatchObject({ type: 'review_reminder', payload: { reference: `${u.id}:${day}`, data: { cards: 1 }, email: { cards: 1, overdue: 1, maps: [{ title: 'b', cards: 1 }] } } });
+      await reminders.sendDailyReminders(at20brt, notify);
+      await reminders.sendDailyReminders(new Date(at20brt.getTime() + 15 * 60_000), notify); // the next */15 run, same hour
+      expect(mine(u.id)).toHaveLength(1); // reminder_last_sent_on
       const [p] = await dbm.db.select().from(dbm.userPreferences).where(eq(dbm.userPreferences.userId, u.id));
       expect(p!.reminderLastSentOn).toBe(day);
     });
 
-    it('skips: wrong hour, other timezone, disabled, nothing due, already reviewed today, deleted, e-mail reminders off', async () => {
+    it('skips: wrong hour, other timezone, both channels off, nothing due, already reviewed today, deleted', async () => {
       const wrongHour = await setup({ hour: 8 });
-      const tokyo = await setup({ tz: 'Asia/Tokyo' }); // 07:00 there, not 19
-      const off = await setup({ enabled: false });
+      const tokyo = await setup({ tz: 'Asia/Tokyo' }); // 08:00 there, not 20
+      const off = await setup();
+      await dbm.db.insert(dbm.notificationPreferences).values({ userId: off.id, key: 'review_reminder', inApp: false, email: false });
       const nothing = await setup({ due: false });
       const reviewed = await setup();
       await attempt(reviewed.id, reviewed.card.id, new Date(`${day}T15:00:00Z`)); // 12:00 BRT, same study day
       const deleted = await setup();
       await dbm.db.update(dbm.profiles).set({ deletedAt: new Date() }).where(eq(dbm.profiles.userId, deleted.id));
-      const noMail = await setup();
-      await dbm.db.update(dbm.userPreferences).set({ emailReviewReminders: false }).where(eq(dbm.userPreferences.userId, noMail.id));
+      const noMail = await setup(); // e-mail off still gets the bell: notify() decides the channels
+      await dbm.db.insert(dbm.notificationPreferences).values({ userId: noMail.id, key: 'review_reminder', inApp: true, email: false });
       const control = await setup();
-      await reminders.sendDailyReminders(at19brt);
-      for (const u of [wrongHour, tokyo, off, nothing, reviewed, deleted, noMail]) expect(mine(u.email)).toHaveLength(0);
-      expect(mine(control.email)).toHaveLength(1);
-      // the same instant is 07:00 in Tokyo: a Tokyo user with hour 8 gets it an hour later
-      const tokyo8 = await setup({ tz: 'Asia/Tokyo', hour: 8 });
-      await reminders.sendDailyReminders(new Date(at19brt.getTime() + 3_600_000));
-      expect(mine(tokyo8.email)).toHaveLength(1);
+      await reminders.sendDailyReminders(at20brt, notify);
+      for (const u of [wrongHour, tokyo, off, nothing, reviewed, deleted]) expect(mine(u.id)).toHaveLength(0);
+      expect(mine(control.id)).toHaveLength(1);
+      expect(mine(noMail.id)).toHaveLength(1);
+      // the same instant is 08:00 in Tokyo: a Tokyo user with hour 7 got it an hour earlier
+      const tokyo7 = await setup({ tz: 'Asia/Tokyo', hour: 7 });
+      await reminders.sendDailyReminders(new Date(at20brt.getTime() - 3_600_000), notify);
+      expect(mine(tokyo7.id)).toHaveLength(1);
     });
 
     it('unsubscribe turns the reminder off with one click; a forged token does nothing', async () => {
@@ -297,8 +301,8 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
       expect(res.headers.get('content-type')).toContain('text/html');
       const [after] = await dbm.db.select().from(dbm.userPreferences).where(eq(dbm.userPreferences.userId, u.id));
       expect(after!.reminderEnabled).toBe(false);
-      await reminders.sendDailyReminders(at19brt);
-      expect(mine(u.email)).toHaveLength(0);
+      const [pref] = await dbm.db.select().from(dbm.notificationPreferences).where(eq(dbm.notificationPreferences.userId, u.id));
+      expect(pref).toMatchObject({ key: 'review_reminder', email: false }); // notify() drops the e-mail, the bell stays
     });
   });
 });

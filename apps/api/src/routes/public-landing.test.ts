@@ -12,7 +12,7 @@ vi.stubEnv('TRUSTED_PROXY_HOPS', '2');
 describe.skipIf(!process.env.DATABASE_URL)('/v1/public/waitlist, /v1/public/pricebook', () => {
   let dbm: typeof import('@remoa/db');
   let app: ReturnType<typeof import('../app').createApp>;
-  let mailer: typeof import('../account/mailer');
+  let sent: Awaited<ReturnType<typeof import('../test-email')['captureEmails']>>;
   const emails: string[] = [];
   const join = (email: string, ip: string, extra: object = {}) => {
     emails.push(email);
@@ -23,12 +23,12 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/public/waitlist, /v1/public/pric
     });
   };
   const rows = async (email: string) => dbm.db.select().from(dbm.waitlist).where(eq(dbm.waitlist.email, email));
-  const mails = (email: string) => mailer.sentEmails().filter((m) => m.to === email);
+  const mails = (email: string) => sent.filter((m) => m.to === email);
   const ip = () => `10.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`; // must be a real IP (D-537)
 
   beforeAll(async () => {
     dbm = await import('@remoa/db');
-    mailer = await import('../account/mailer');
+    sent = (await import('../test-email')).captureEmails();
     const { createApp } = await import('../app');
     const { createMockStripe } = await import('../billing/stripe');
     app = createApp({ webOrigin: 'http://web.test', verifyToken: async () => null, stripe: createMockStripe({ apiOrigin: 'http://api.test' }).port });

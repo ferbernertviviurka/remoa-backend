@@ -12,7 +12,7 @@ config({ path: '../../.env' });
 describe.skipIf(!process.env.DATABASE_URL)('/v1/admin/tickets (inbox routes)', () => {
   let dbm: typeof import('@remoa/db');
   let app: Hono<AdminEnv>;
-  let mailer: typeof import('../../account/mailer');
+  let sent: Awaited<ReturnType<typeof import('../../test-email')['captureEmails']>>;
   const users: string[] = [];
   const mk = async (name: string) => {
     const id = uuid();
@@ -31,7 +31,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/admin/tickets (inbox routes)', (
 
   beforeAll(async () => {
     dbm = await import('@remoa/db');
-    mailer = await import('../../account/mailer');
+    sent = (await import('../../test-email')).captureEmails();
     const { ticketsRoutes } = await import('./routes');
     adm = await mk('Equipe');
     student = await mk('Aluno');
@@ -88,10 +88,10 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/admin/tickets (inbox routes)', (
     const note = await req(`/${ticket.id}/messages`, 'POST', { body: 'nota fechada', internal: true });
     expect(note.status).toBe(200);
     expect(note.json.data.audit.action).toBe('ticket.internal_note');
-    const before = mailer.sentEmails().length;
+    const before = sent.length;
     expect((await req(`/${ticket.id}/messages`, 'POST', { body: 'Resposta pública' })).status).toBe(200);
     await new Promise((r) => setTimeout(r, 50));
-    expect(mailer.sentEmails().length - before).toBe(1);
+    expect(sent.length - before).toBe(1);
     expect((await req(`/${ticket.id}/resolve`, 'POST')).status).toBe(200);
     expect((await req(`/${ticket.id}/resolve`, 'POST')).status).toBe(409); // already resolved: denied, invalid_state
     const rows = await audits(ticket.id);

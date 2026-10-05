@@ -183,6 +183,27 @@
       "when": 1791162096817,
       "tag": "0025_g16_store_waitlist",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791220793054,
+      "tag": "0026_g18_notifications_calendar",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791221576127,
+      "tag": "0027_g18_email_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1791223432502,
+      "tag": "0028_g18_profile_timezone_server_only",
+      "breakpoints": true
     }
   ]
 }

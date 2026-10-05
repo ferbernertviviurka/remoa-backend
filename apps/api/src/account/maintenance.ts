@@ -3,7 +3,6 @@ import { pathToFileURL } from 'node:url';
 import { createLogger } from '@remoa/log';
 import { createStripe, installStripe } from '../billing/stripe';
 import { expireAnswerTexts, purgeDeletedAccounts } from './jobs';
-import { sendDailyReminders } from './reminders';
 import { sweepReferrals } from '../referral/sweep';
 import { sweepSupport } from '../support/retention';
 import { cleanOrphanAssets, purgeDeletedCards } from '../cleanup/assets';
@@ -12,14 +11,13 @@ import { refreshRecentMetrics } from '../admin/overview/metrics';
 
 const log = createLogger({ requestId: 'job-maintenance' });
 
-/** Hourly (cron `0 * * * *`): reminders are per-hour, the rest is idempotent. */
+/** Hourly (cron `0 * * * *`), idempotent. The review reminder moved to the review.reminder job (G18, inngest/notices.ts). */
 export async function runHourly(now = new Date()) {
-  const reminded = await sendDailyReminders(now); // F13 FR-15
   const referrals = await sweepReferrals(now); // F18 (D-384)
   const support = await sweepSupport(now); // F19 FR-9 (Q-046)
   const metrics = await refreshRecentMetrics(now); // F19 FR-13 (D-458)
   const onboarding = await sendOnboardingEmails(now); // F12 FR-8 (D-525)
-  const out = { reminded, referrals, support, metrics, onboarding };
+  const out = { referrals, support, metrics, onboarding };
   log.info('maintenance hourly done', out);
   return out;
 }
@@ -40,5 +38,8 @@ export async function runDaily(now = new Date()) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await runDaily();
   await runHourly();
+  // G18: the Railway cron also runs the notice jobs once (idempotent; Inngest runs them on their own schedule).
+  const { noticeJobs } = await import('../inngest/notices');
+  for (const [job, j] of Object.entries(noticeJobs)) log.info('notice job done', { job, result: await j.run(new Date()) });
   process.exit(0);
 }

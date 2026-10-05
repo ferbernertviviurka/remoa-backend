@@ -13,6 +13,7 @@ import { limitFor, overAnkiImports, overTotal } from '../billing/quota';
 import { planOf } from '../billing/plan';
 import { dbm, run } from '../db';
 import { initialShareColumns } from '../share/crypto';
+import { notifyMapReady } from '../notifications/map-ready';
 import { layoutImport } from './layout';
 import { maybeQualifyReferral } from '../referral/qualify';
 
@@ -331,6 +332,7 @@ export function createImports({ anki }: { anki: AnkiPort }) {
     const report = { ...rep, durationMs: Date.now() - t0 };
     await setStats(userId, importId, { ...report, processed: total, total }, 'done');
     if (rep.imported) await maybeQualifyReferral(userId); // F18 (D-384); never throws
+    for (const boardId of rep.imported ? rep.boardIds : []) await notifyMapReady({ userId, boardId, origin: 'anki', tookMs: Date.now() - t0 }); // G18; never throws
     log.info('import done', report);
   }
 

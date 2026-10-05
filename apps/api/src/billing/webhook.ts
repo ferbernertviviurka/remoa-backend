@@ -4,9 +4,10 @@ import { createLogger } from '@remoa/log';
 import { and, eq, ne } from 'drizzle-orm';
 import { dbm } from '../db';
 import { applyPendingCredits } from './credits';
-import { mirrorPayment, releasedByAdmin } from '../admin/payments/mirror';
+import { mirrorPayment, releasedByAdmin, type PaidNotice } from '../admin/payments/mirror';
 import { convertGrantsToCredits, lockGrants, monthCents } from './grants';
 import { grantChain } from './plan';
+import { notifyPurchase } from './purchase-notice';
 import { addPeriod, type StripePort } from './stripe';
 
 export type StripeEventLike = { id: string; type: string; data: { object: unknown } };
@@ -115,6 +116,7 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
   // The check runs in the transaction under the payment row lock (D-475): a mark-paid in flight holds that lock, so a Pix
   // confirmation arriving at the same instant waits for it and then sees `marked_paid` instead of extending the plan again.
   const released = { released: write !== null };
+  const paid: { notice: PaidNotice | null } = { notice: null };
   const mirror = await mirrorPayment(event, released);
   if (!write && !mirror) return 'ignored';
   const fn = write;
@@ -123,10 +125,11 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
     if (!fresh.length) return 'duplicate' as const;
     if (fn && (await releasedByAdmin(event, tx))) released.released = false;
     else await fn?.(tx);
-    await mirror?.(tx); // F19 T4
+    paid.notice = (await mirror?.(tx)) ?? null; // F19 T4
     return 'applied' as const;
   });
   // After commit; failures stay pending for the daily sweep and never fail the webhook.
   if (result === 'applied' && creditsFor) await applyPendingCredits(creditsFor, stripe);
+  if (result === 'applied' && paid.notice) await notifyPurchase(paid.notice); // G18: one per payment, renewals included; never throws
   return result;
 }

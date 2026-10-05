@@ -8,6 +8,8 @@ import { accountRoutes } from './routes/account';
 import { accountSecurityRoutes } from './routes/account-security';
 import { accountProfileRoutes } from './routes/account-profile';
 import { publicRoutes } from './routes/public';
+import { notificationsRoutes } from './notifications/routes';
+import { calendarRoutes, publicCalendarRoutes } from './calendar/routes';
 import { accountAvatarRoutes } from './routes/account-avatar';
 import { accountState } from './admin/core';
 import { adminRoutes } from './routes/admin';
@@ -33,10 +35,14 @@ import { supportRoutes } from './routes/support';
 import { storeRoutes } from './routes/store';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
+import { emailHealth } from '@remoa/config';
 import { serve as serveInngest } from 'inngest/hono';
 import { inngest } from './inngest/client';
 import { generateBoard } from './inngest/generate-board';
 import { maintenanceDaily, maintenanceHourly } from './inngest/maintenance';
+import { noticeFunctions } from './inngest/notices';
+import { cronRoutes } from './routes/cron';
+import { authHookRoutes, devEmailsRoutes, emailsRoutes } from './emails/routes';
 import { invalidateReviewHub } from './review/hub';
 
 /** Resolves a Supabase access token to a user id (+ JWT `session_id`, D-124; + account flags, D-565), or null if invalid. A bare id = no session (tests). */
@@ -65,7 +71,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     // ponytail: async jobs that add cards later (Anki import, PDF generation) still show up within the 60 s TTL; invalidate at job end if that matters.
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.get('userId')) invalidateReviewHub(c.get('userId'));
     // F17: the share token is a credential; it never reaches the logs
-    const line = { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/(?:shared|referral)\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start };
+    const line = { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/(?:shared|referral|calendar(?:\/cover)?)\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start };
     if (c.res.status < 400) return log.info('request', line);
     // D-582: 4xx/5xx carry the typed error (`{ error: { code, message } }`, written by the API itself: no token, password or body echo).
     // The message only outside production: a zod message can quote a received value.
@@ -91,8 +97,8 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     return caller.run(userId, () => next());
   });
 
-  app.get('/health', (c) => c.json({ ok: true }));
-  const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard, maintenanceHourly, maintenanceDaily] });
+  app.get('/health', (c) => c.json({ ok: true, email: emailHealth() })); // G18: booleans only, no secret
+  const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard, maintenanceHourly, maintenanceDaily, ...noticeFunctions] });
   app.on(['GET', 'POST', 'PUT'], '/api/inngest', (c) => inngestHandler(c));
   // Lane routes mount under /v1 with requireUser (F02 uploads, F05 ai, F08 stripe webhook is public + signature).
   app.get('/v1/me', requireUser, (c) => c.json({ ok: true, data: { userId: c.get('userId') } }));
@@ -105,11 +111,18 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     return typeof v === 'string' ? v : (v?.userId ?? null);
   };
   app.route('/v1/public/referral', publicReferralRoutes); // F18: no auth, rate limited per IP
+  app.route('/v1/cron', cronRoutes); // G18: Bearer CRON_SECRET, same bodies as the Inngest crons
+  app.route('/v1/emails', emailsRoutes); // G18 F24: Resend webhook (Svix signature) + one-click unsubscribe (signed token); no auth
+  app.route('/v1/auth', authHookRoutes); // G18 F24: Supabase Auth Send Email hook (Standard Webhooks signature)
+  app.route('/v1/dev/emails', devEmailsRoutes); // G18 F24 FR-19: preview for the web's /dev/emails; 404 in production
+  app.route('/v1/public/calendar', publicCalendarRoutes); // G18 F25: .ics from the e-mail, HMAC token
   app.route('/v1/public', publicRoutes({ stripe, viewer })); // F13 unsubscribe: no auth, signed token; F17 shared links: optional session
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 
   app.use('/v1/cards', requireUser).use('/v1/cards/*', requireUser).route('/v1/cards', cardsRoutes);
   app.use('/v1/onboarding', requireUser).use('/v1/onboarding/*', requireUser).route('/v1/onboarding', onboardingRoutes); // F12
+  app.use('/v1/notifications', requireUser).use('/v1/notifications/*', requireUser).route('/v1/notifications', notificationsRoutes); // G18 F26
+  app.use('/v1/calendar', requireUser).use('/v1/calendar/*', requireUser).route('/v1/calendar', calendarRoutes); // G18 F25
   app.use('/v1/home', requireUser).route('/v1/home', homeRoutes);
   app.use('/v1/matrix/*', requireUser).route('/v1/matrix', matrixRoutes);
   app.use('/v1/coverage', requireUser).route('/v1/coverage', coverageRoutes);
