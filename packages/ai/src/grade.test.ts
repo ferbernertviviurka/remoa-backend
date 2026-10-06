@@ -146,6 +146,34 @@ describe('grader prompt hardening (G22 Phase 2)', () => {
     expect(toVerdict({ ...base, verdict: 'correct', matched: ['Dar glicose IV'] }, rich, 'm').verdict).toBe('correct');
   });
 
+  // G22 live round 2026-10-06 (D-1438): a recorded nemotron reply (tool call), the same verdict as JSON content in a fence or
+  // after a sentence, and a reply with no sourceQuote: all valid, the last one with sourceQuote null instead of failing.
+  it('reads live reply shapes: tool call, fenced JSON, JSON after prose, no sourceQuote', async () => {
+    withKey();
+    const live = { verdict: 'correct', matched: ['Dar glicose IV'], missing: [], criticalError: false, sourceQuote: 'Dar glicose', feedback: 'Você acertou: dar glicose IV. Fonte: Manual sintético.' };
+    const body = (message: Record<string, unknown>) => (async () => Response.json({ model: 'nvidia/nemotron-3-super-120b-a12b:free', choices: [{ finish_reason: 'stop', message }], usage: { prompt_tokens: 1199, completion_tokens: 432 } })) as unknown as typeof fetch;
+    const replies = [
+      body({ content: '', tool_calls: [{ type: 'function', index: 0, id: 'call-1', function: { name: 'grade', arguments: JSON.stringify(live) } }] }),
+      body({ content: `\`\`\`json\n${JSON.stringify(live)}\n\`\`\`` }),
+      body({ content: `Segue o veredito: ${JSON.stringify(live)}` }),
+    ];
+    for (const f of replies) expect((await gradeWithMeta(rich, f)).verdict).toMatchObject({ verdict: 'correct', sourceQuote: 'Dar glicose', model: 'nvidia/nemotron-3-super-120b-a12b:free' });
+    const noQuote: Partial<typeof live> = { ...live };
+    delete noQuote.sourceQuote;
+    const r = await gradeWithMeta(rich, body({ content: JSON.stringify({ ...noQuote, sourceQuote: null }) }));
+    expect(r.meta.error).toBeUndefined();
+    expect(r.verdict).toMatchObject({ verdict: 'correct', sourceQuote: null });
+    expect((await gradeWithMeta(rich, body({ content: JSON.stringify(noQuote) }))).verdict.sourceQuote).toBeNull();
+  });
+  it('keeps the guards with the relaxed reply: no matched means no full marks, criticalError is still required', async () => {
+    withKey();
+    const reply = (o: Record<string, unknown>) => completion(JSON.stringify(o));
+    expect((await gradeWithMeta(rich, reply({ verdict: 'correct', criticalError: false, feedback: 'Nota máxima.' }))).verdict.verdict).toBe('partial');
+    const noCritical = await gradeWithMeta(rich, reply({ verdict: 'correct', matched: ['Dar glicose IV'], feedback: 'Nota máxima.' }));
+    expect(noCritical.verdict.model).toBe('offline-grader');
+    expect(noCritical.meta.error?.code).toBe('invalid_output');
+  });
+
   it('grades a blank answer locally without calling the model', async () => {
     withKey();
     let called = false;

@@ -6,7 +6,7 @@ import { headers, refusal, rememberPrice } from './client';
 
 /** Parameters each function sends (see grade.ts / extract.ts). */
 export const PARAMS_BY_FN: Record<string, readonly string[]> = {
-  grader: ['tools', 'tool_choice'],
+  grader: ['response_format'], // JSON mode since grader/v4 (D-1438)
   rubric: ['response_format'],
   extract: ['response_format'],
 };

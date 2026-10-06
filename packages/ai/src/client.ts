@@ -365,13 +365,28 @@ const first = (o: ChatOptions): Message[] => [
 /** Plain completion (with `json`/`tool` when asked). Throws AiError. */
 export const generateText = (o: ChatOptions): Promise<Completion> => complete(o, first(o));
 
-/** Valid-JSON rate before and after the one repair call (G22 Phase 2 reads it). In memory, per process. */
+/** Valid-JSON rate before and after the one repair call, over replies that arrived (G22 Phase 2 reads it). In memory, per process. */
 export const jsonStats = { calls: 0, validFirst: 0, validAfterRepair: 0, invalid: 0 };
+
+/**
+ * The JSON object in a reply. Free models often wrap it in a ```json fence or a sentence (G22 live round, D-1438): the
+ * outermost {...} is taken. Still only JSON reaches the schema; nothing is "fixed" inside it.
+ */
+export function parseJsonText(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) throw e;
+    return JSON.parse(text.slice(start, end + 1));
+  }
+}
 
 function check<T>(schema: ZodType<T, ZodTypeDef, unknown>, text: string): { ok: true; data: T } | { ok: false; issue: string } {
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    raw = parseJsonText(text);
   } catch (e) {
     return { ok: false, issue: `JSON inválido: ${e instanceof Error ? e.message : 'erro de leitura'}` };
   }
@@ -386,8 +401,9 @@ function check<T>(schema: ZodType<T, ZodTypeDef, unknown>, text: string): { ok: 
  */
 export async function generateJson<T>(schema: ZodType<T, ZodTypeDef, unknown>, o: ChatOptions): Promise<Completion & { data: T; repaired: boolean }> {
   const opts = o.tool ? o : { ...o, json: true };
-  jsonStats.calls += 1;
   const done = await complete(opts, first(opts));
+  // Counted only once the model replied: a transport error (429, 400, timeout) is not an invalid JSON (G22 live round, D-1438).
+  jsonStats.calls += 1;
   const firstTry = check(schema, done.text);
   if (firstTry.ok) {
     jsonStats.validFirst += 1;

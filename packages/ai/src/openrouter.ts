@@ -1,6 +1,6 @@
 import type { GraderInput } from '@remoa/contracts';
 
-export const GRADER_PROMPT_VERSION = 'grader/v3';
+export const GRADER_PROMPT_VERSION = 'grader/v4';
 export const RUBRIC_PROMPT_VERSION = 'rubric/v2';
 export const EXTRACT_PROMPT_VERSION = 'extract/v2';
 
