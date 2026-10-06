@@ -1,6 +1,6 @@
 // F13 audit log + rate-limit counter (account_events). Server connection only: the client has SELECT, never INSERT (D-121).
 import { createHmac } from 'node:crypto';
-import { and, count, eq, gte } from 'drizzle-orm';
+import { and, count, eq, gte, sql } from 'drizzle-orm';
 import type { AccountEventType } from '@remoa/contracts';
 import type { Db, Tx } from '@remoa/db';
 import type { Context } from 'hono';
@@ -28,15 +28,17 @@ export async function countEvents(userId: string, type: AccountEventType, sinceM
 }
 
 /**
- * Rate limit without a lock: insert first, then count. Concurrent callers each see the others' rows, so at most `limit`
- * get through (a burst may let fewer through, never more). Returns the slot id, or null (slot already released) when over.
+ * Rate limit: count and insert under a transaction lock per (user, type), so a burst lets exactly `limit` through. Insert-then-count
+ * without the lock let every caller of a burst see the others' rows and give up, denying all of them. Returns the slot id, or null.
  */
 export async function takeSlot(userId: string, type: AccountEventType, limit: number, windowMs: number, meta?: EventMeta) {
-  const { db } = await dbm();
-  const id = await recordEvent(db, userId, type, meta);
-  if ((await countEvents(userId, type, windowMs)) <= limit) return id;
-  await releaseSlot(id);
-  return null;
+  const { db, accountEvents: e } = await dbm();
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`slot:${userId}:${type}`}, 0))`);
+    const [r] = await tx.select({ n: count() }).from(e).where(and(eq(e.userId, userId), eq(e.type, type), gte(e.createdAt, new Date(Date.now() - windowMs))));
+    if ((r?.n ?? 0) >= limit) return null;
+    return recordEvent(tx, userId, type, meta);
+  });
 }
 
 export async function releaseSlot(id: string) {
