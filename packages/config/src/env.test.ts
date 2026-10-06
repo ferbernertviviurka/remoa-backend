@@ -88,6 +88,15 @@ describe('parseEnv', () => {
     expect(parseEnv({ ...legacy, APP_URL: 'https://new.example.com', EMAIL_UNSUBSCRIBE_SECRET: S32 })).toMatchObject({ appUrl: 'https://new.example.com', emailUnsubscribeSecret: S32 });
   });
 
+  it('WEB_ORIGIN: comma-separated origins, the first is canonical (APP_URL fallback); paths and wildcards are refused', () => {
+    const multi = { ...prod, APP_URL: undefined, WEB_ORIGIN: 'https://remoa.com.br, https://www.remoa.com.br/' };
+    expect(parseEnv(multi)).toMatchObject({ webOrigins: ['https://remoa.com.br', 'https://www.remoa.com.br'], appUrl: 'https://remoa.com.br' });
+    const bad = 'WEB_ORIGIN must be a comma-separated list of http(s) origins (no path, no wildcard)';
+    for (const WEB_ORIGIN of ['*', 'https://*.remoa.com.br', 'https://remoa.com.br/app', 'ftp://remoa.com.br', 'https://remoa.com.br,nope']) {
+      expect(problems({ ...prod, WEB_ORIGIN })).toContain(bad);
+    }
+  });
+
   it('EMAIL_FROM must be on EMAIL_DOMAIN', () => {
     expect(problems({ ...prod, EMAIL_FROM: 'Remoa <a@other.com>' })).toEqual(['EMAIL_FROM must use EMAIL_DOMAIN (or a subdomain of it)']);
     expect(problems({ ...prod, EMAIL_FROM: 'Remoa <a@mail.example.com>' })).toEqual([]);

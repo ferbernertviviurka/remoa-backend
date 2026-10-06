@@ -24,7 +24,7 @@ const supabase = createClient(env('NEXT_PUBLIC_SUPABASE_URL'), env('NEXT_PUBLIC_
 // Mocks are fail-closed (G05 M3): only with NODE_ENV=development|test (the `dev` script sets it); an unset NODE_ENV counts as production.
 const devLike = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
 // G18 (D-732): e-mail/notification/cron settings validated before anything starts; throws EnvError listing what is missing.
-configEnv();
+const { webOrigins } = configEnv();
 for (const k of ['GRADER', 'STRIPE', 'AI'] as const) if (process.env[k] === 'mock' && !devLike) throw new Error(`${k}=mock requires NODE_ENV=development or test`);
 // D-580: map generation without OPENROUTER_API_KEY answers 503 ai_unavailable unless AI=mock (deterministic offline drafts). Said once at boot.
 if (aiMode() !== 'live') createLogger({ requestId: 'boot' }).warn(aiMode() === 'mock' ? 'AI=mock: generated maps are offline drafts' : 'AI off: set the AI_* variables (or AI=mock in dev) to generate maps', { missing: missingConfig() });
@@ -34,16 +34,15 @@ void validateAi();
 const grade = process.env.GRADER === 'mock' ? mockGrader : gradeAnswer;
 const stream = process.env.GRADER === 'mock' ? undefined : streamGradeAnswer;
 // D-100: STRIPE=mock swaps the SDK for a fake with dev-only /v1/stripe/mock/* endpoints.
-const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
 const mockStripe = process.env.STRIPE === 'mock' ? createMockStripe({ apiOrigin: `http://localhost:${process.env.PORT ?? 4000}` }) : undefined;
-const stripe = mockStripe?.port ?? (process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin }) : undefined);
+const stripe = mockStripe?.port ?? (process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: webOrigins[0]! }) : undefined);
 installStripe(stripe); // F18: grants/credits run from referral code and the webhook, not only routes
 const app = createApp({
   grade,
   stream,
   stripe,
   mockStripe,
-  webOrigin,
+  webOrigin: webOrigins,
   verifyToken: supabaseVerifier(supabase),
 });
 
