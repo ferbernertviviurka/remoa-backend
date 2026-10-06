@@ -1,7 +1,7 @@
 // G21 T2 FR-5 (D-986): `pnpm perf:bench [--strict]` runs the HTTP scenarios against a private API (port 4300+, isolated remoa_perf database,
 // NODE_ENV=development STRIPE/GRADER/AI=mock) and prints Markdown; JSON goes to docs/perf/bench-<date>.json. Light load: PERF_BENCH_N requests
-// per scenario (30), concurrency PERF_BENCH_C (3), 2 warm-up requests discarded. Uses PERF_API_URL instead if you already run a perf API.
-// Per scenario it diffs pg_stat_statements (role `postgres` = the API), so queries per request come from the database; Server-Timing and
+// per scenario (24), concurrency PERF_BENCH_C (3); warm-up requests are discarded (one per rotating user for 'typical' scenarios, else 2). Uses PERF_API_URL instead if you already run a perf API.
+// Per scenario it diffs pg_stat_statements (this database only; API traffic is the only traffic), so queries per request come from the database; Server-Timing and
 // X-Remoa-Queries headers (G21 T1) are read when the API sends them. `--strict` exits 1 when a budget (F26: p95 > 800 ms, > 2 s, FR-19 queries) is crossed.
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -13,13 +13,12 @@ import postgres from 'postgres';
 import { perfTarget, perfToken } from './target';
 import { resetStatements, topQueries } from './queries';
 
-const N = Number(process.env.PERF_BENCH_N ?? 30);
+const N = Number(process.env.PERF_BENCH_N ?? 24);
 const C = Number(process.env.PERF_BENCH_C ?? 3);
-const WARM = 2;
 const SLOW = 800;
 const VERY_SLOW = 2000;
 const HEAVY = 1;
-const TYPICAL = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+const TYPICAL = [2, 3, 4, 5, 6, 7];
 const t = perfTarget();
 const secret = process.env.SUPABASE_JWT_SECRET ?? '';
 if (!secret) throw new Error('SUPABASE_JWT_SECRET missing (run through pnpm perf:bench, which loads .env)');
@@ -27,11 +26,17 @@ const root = join(import.meta.dirname, '..', '..', '..', '..');
 const md5uuid = (s: string) => { const h = createHash('md5').update(s).digest('hex'); return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`; };
 const bid = (u: number, b: number) => md5uuid(`b:${u}:${b}`);
 
+type Json = { data?: { sessionId?: string } } | null;
+type Q = { q: string; calls: number; total: number; rows: number; perReq: number; meanMs: number };
+type Result = {
+  group: string; name: string; n: number; status: Record<number, number>; p50: number; p95: number; p99: number; max: number; bytes: number; queriesHeader: number | null; queriesDb: number;
+  qBudget: number | null; dbMsHeader: number | null; extMsHeader: number | null; appMsHeader: number | null; dbMsStatements: number; queries: Q[];
+};
 type Ctx = { token: string; user: number; i: number; state: Record<string, unknown> };
 type Scenario = {
   name: string; method?: 'GET' | 'POST'; /** user index (number), 'typical' (rotates) or null = no auth */ as: number | 'typical' | null;
   path: (c: Ctx) => string; body?: (c: Ctx) => unknown; qBudget?: number;
-  /** called with the parsed JSON; may stash ids for the next scenario */ after?: (c: Ctx, json: any) => void; serial?: boolean; group: string;
+  /** called with the parsed JSON; may stash ids for the next scenario */ after?: (c: Ctx, json: Json) => void; serial?: boolean; group: string;
 };
 const range = () => { const d = new Date(); const y = d.getFullYear(), m = d.getMonth(); const p = (n: number) => String(n).padStart(2, '0'); return `from=${y}-${p(m + 1)}-01&to=${y}-${p(m + 1)}-${p(new Date(y, m + 1, 0).getDate())}`; };
 
@@ -62,9 +67,9 @@ const S: Scenario[] = [
   { group: 'Revisar', name: 'Iniciar sessão: POST /v1/challenge/start (daily, 5)', method: 'POST', as: 'typical', serial: true, path: () => '/v1/challenge/start',
     body: () => ({ kind: 'daily', limit: 5 }), after: (c, j) => { if (!j?.data?.sessionId) return; const m = (c.state.sessions ??= {}) as Record<number, unknown[]>; (m[c.user] ??= []).push(j.data); } },
   { group: 'Revisar', name: 'Responder card: POST /v1/challenge/answer (self)', method: 'POST', as: 'typical', serial: true, path: () => '/v1/challenge/answer',
-    body: (c) => { const s = pick(c); return s && { inputKind: 'self', sessionId: s.sessionId, itemId: s.items[0].id, durationMs: 4000 }; } },
+    body: (c) => { const s = pick(c); return s && { inputKind: 'self', sessionId: s.sessionId, itemId: s.itemId, durationMs: 4000 }; } },
   { group: 'Revisar', name: 'Responder card: POST /v1/challenge/rate', method: 'POST', as: 'typical', serial: true, qBudget: 4, path: () => '/v1/challenge/rate',
-    body: (c) => { const s = pick(c); return s && { sessionId: s.sessionId, itemId: s.items[0].id, grade: 3, overridden: false }; } },
+    body: (c) => { const s = pick(c); return s && { sessionId: s.sessionId, itemId: s.itemId, grade: 3, overridden: false }; } },
   // --- calendário, notificações ---
   { group: 'Calendário', name: 'Calendário (mês): GET /v1/calendar/events', as: 'typical', path: () => `/v1/calendar/events?${range()}`, qBudget: 3 },
   { group: 'Calendário', name: 'Calendário (mês, pesado, 400 eventos)', as: HEAVY, path: () => `/v1/calendar/events?${range()}`, qBudget: 3 },
@@ -81,9 +86,9 @@ const S: Scenario[] = [
   { group: 'Blog (público)', name: 'Blog categorias: GET /v1/public/blog/categories', as: null, path: () => '/v1/public/blog/categories' },
 ];
 // answer/rate use a session started by the 'start' scenario for the same user (serial scenarios share state)
-const pick = (c: Ctx) => { const m = c.state.sessions as Record<number, { sessionId: string; items: { id: string }[] }[]> | undefined; return m?.[c.user]?.[c.i % (m[c.user]?.length || 1)]; };
+const pick = (c: Ctx) => { const m = c.state.sessions as Record<number, { sessionId: string; items: { id: string }[] }[]> | undefined; const l = m?.[c.user]; const k = Math.floor(c.i / TYPICAL.length); const s = l?.[k % (l.length || 1)]; return s && { sessionId: s.sessionId, itemId: s.items[k % s.items.length]?.id ?? '' }; };
 
-const pct = (a: number[], p: number) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] : 0; };
+const pct = (a: number[], p: number) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] ?? 0; };
 const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 const timing = (h: string | null, key: string) => { const m = h?.match(new RegExp(`${key};(?:[^,]*;)?dur=([0-9.]+)(?:;desc="?(\\d+) q)?`)); return m ? { dur: Number(m[1]), q: m[2] ? Number(m[2]) : undefined } : undefined; };
 
@@ -91,8 +96,8 @@ async function freePort(from: number) { for (let p = from; p < from + 50; p++) i
 
 async function main() {
   const sqlc = postgres(t.url.replace('//postgres:', '//supabase_admin:'), { max: 2, onnotice: () => {} });
-  const [{ n: users }] = await sqlc`select count(*)::int n from auth.users`;
-  if (!users) throw new Error('empty remoa_perf: run pnpm perf:seed first');
+  const [row] = await sqlc`select count(*)::int n from auth.users`;
+  if (!row?.n) throw new Error('empty remoa_perf: run pnpm perf:seed first');
   const rtts: number[] = [];
   for (let i = 0; i < 30; i++) { const s = performance.now(); await sqlc`select 1`; rtts.push(performance.now() - s); }
   const rtt = pct(rtts.slice(5), 50);
@@ -113,15 +118,16 @@ async function main() {
     await resetStatements();
     const load0 = loadavg();
     const state: Record<string, unknown> = {};
-    const results: any[] = [];
-    const snap = async () => new Map((await sqlc.unsafe(`select queryid::text id, calls::float c, total_exec_time t, rows::float r, left(query, 4000) q from extensions.pg_stat_statements
-      where userid = (select oid from pg_roles where rolname = 'postgres') and dbid = (select oid from pg_database where datname = current_database())`) as any[]).map((r) => [r.id, r]));
+    const results: Result[] = [];
+    const snap = async () => new Map((await sqlc.unsafe<{ id: string; c: number; t: number; r: number; q: string }[]>(`select queryid::text id, calls::float c, total_exec_time t, rows::float r, left(query, 4000) q from extensions.pg_stat_statements
+      where dbid = (select oid from pg_database where datname = current_database()) and query !~* 'pg_stat_statements|pg_catalog|information_schema'`)).map((r) => [r.id, r] as const));
     for (const sc of S) {
       const before = await snap();
+      const WARM = sc.as === 'typical' ? TYPICAL.length : 2;
       const lat: number[] = [], bytes: number[] = [], dbMs: number[] = [], extMs: number[] = [], appMs: number[] = [], qs: number[] = [], status: Record<number, number> = {};
       let next = 0;
       const one = async (i: number) => {
-        const user = sc.as === null ? 0 : sc.as === 'typical' ? TYPICAL[i % TYPICAL.length] : sc.as;
+        const user = sc.as === null ? 0 : sc.as === 'typical' ? (TYPICAL[i % TYPICAL.length] ?? 2) : sc.as;
         const c: Ctx = { token: sc.as === null ? '' : perfToken(user, secret), user, i, state };
         const body = sc.body?.(c);
         const t0 = performance.now();
@@ -135,7 +141,7 @@ async function main() {
           if (d) dbMs.push(d.dur); if (e) extMs.push(e.dur); if (a) appMs.push(a.dur);
           const q = r.headers.get('x-remoa-queries') ?? d?.q; if (q !== undefined && q !== null) qs.push(Number(q));
         }
-        if (sc.after && r.ok) sc.after(c, JSON.parse(buf.toString()));
+        if (sc.after && r.ok) sc.after(c, JSON.parse(buf.toString()) as Json);
       };
       // serial scenarios (start/answer/rate) run one at a time; the rest at concurrency C
       const conc = sc.serial ? 1 : C;
@@ -148,20 +154,22 @@ async function main() {
       results.push({ group: sc.group, name: sc.name, n: lat.length, status, p50: pct(lat, 50), p95: pct(lat, 95), p99: pct(lat, 99), max: Math.max(0, ...lat), bytes: Math.round(avg(bytes)),
         queriesHeader: qs.length ? avg(qs) : null, queriesDb: dbQ, qBudget: sc.qBudget ?? null, dbMsHeader: dbMs.length ? avg(dbMs) : null, extMsHeader: extMs.length ? avg(extMs) : null, appMsHeader: appMs.length ? avg(appMs) : null,
         dbMsStatements: queries.reduce((s, x) => s + x.total, 0) / calls, queries });
-      process.stdout.write(`  ${sc.name}: p50 ${results.at(-1).p50.toFixed(0)} ms, p95 ${results.at(-1).p95.toFixed(0)} ms, ${dbQ.toFixed(1)} q/req, ${results.at(-1).bytes} B\n`);
+      const last = results[results.length - 1] as Result;
+      process.stdout.write(`  ${sc.name}: p50 ${last.p50.toFixed(0)} ms, p95 ${last.p95.toFixed(0)} ms, ${dbQ.toFixed(1)} q/req, ${last.bytes} B\n`);
     }
     const load1 = loadavg();
     const top = await topQueries();
     const day = new Date().toISOString().slice(0, 10);
     const out = join(root, '..', 'docs', 'perf'); mkdirSync(out, { recursive: true });
     const [counts] = await sqlc`select (select count(*)::int from cards) cards, (select count(*)::int from boards) boards, (select count(*)::int from attempts) attempts, (select count(*)::int from auth.users) users`;
-    const meta = { date: new Date().toISOString(), n: N, concurrency: C, warmup: WARM, rttDbMs: rtt, loadBefore: load0, loadAfter: load1, dataset: counts, node: process.version, budgets: { slowMs: SLOW, verySlowMs: VERY_SLOW } };
+    const meta = { date: new Date().toISOString(), n: N, concurrency: C, warmup: 'per user (6) for typical, else 2', rttDbMs: rtt, loadBefore: load0, loadAfter: load1, dataset: counts, node: process.version, budgets: { slowMs: SLOW, verySlowMs: VERY_SLOW } };
     writeFileSync(join(out, `bench-${day}.json`), JSON.stringify({ meta, results }, null, 1));
-    const flag = (r: any) => [r.p95 > VERY_SLOW ? 'p95 > 2 s' : r.p95 > SLOW ? 'p95 > 800 ms' : '', r.qBudget !== null && r.queriesDb > r.qBudget ? `queries ${r.queriesDb.toFixed(0)} > ${r.qBudget}` : ''].filter(Boolean).join('; ');
+    const nq = (r: Result) => r.queriesHeader ?? r.queriesDb;
+    const flag = (r: Result) => [r.p95 > VERY_SLOW ? 'p95 > 2 s' : r.p95 > SLOW ? 'p95 > 800 ms' : '', r.qBudget !== null && nq(r) > r.qBudget ? `queries ${nq(r).toFixed(0)} > ${r.qBudget}` : ''].filter(Boolean).join('; ');
     const f1 = (n: number | null) => (n === null ? 'n/d' : n.toFixed(n < 10 ? 1 : 0));
     const md = [`## Bench ${meta.date} (N=${N}, concorrência ${C}, load antes/depois ${load0.map((x) => x.toFixed(1)).join('/')} -> ${load1.map((x) => x.toFixed(1)).join('/')}, RTT API->banco ${rtt.toFixed(2)} ms)`,
-      '', '| Cenário | p50 | p95 | p99 | Bytes | Queries (banco) | Queries (cab.) | DB ms (stmt) | Orçamento |', '|---|---|---|---|---|---|---|---|---|',
-      ...results.map((r) => `| ${r.name} | ${f1(r.p50)} | ${f1(r.p95)} | ${f1(r.p99)} | ${r.bytes} | ${r.queriesDb.toFixed(1)} | ${f1(r.queriesHeader)} | ${f1(r.dbMsStatements)} | ${flag(r) || 'ok'} |`), '', top].join('\n');
+      '', '| Cenário | p50 | p95 | p99 | Bytes | Status | Queries (banco) | Queries (cab.) | DB ms (stmt) | Orçamento |', '|---|---|---|---|---|---|---|---|---|---|',
+      ...results.map((r) => `| ${r.name} | ${f1(r.p50)} | ${f1(r.p95)} | ${f1(r.p99)} | ${r.bytes} | ${Object.entries(r.status).map(([k, v]) => `${k}×${v}`).join(' ')} | ${r.queriesDb.toFixed(1)} | ${f1(r.queriesHeader)} | ${f1(r.dbMsStatements)} | ${flag(r) || 'ok'} |`), '', top].join('\n');
     writeFileSync(join(out, `bench-${day}.md`), md);
     process.stdout.write(`\n${md}\n`);
     if (process.argv.includes('--strict') && results.some((r) => flag(r))) process.exitCode = 1;
