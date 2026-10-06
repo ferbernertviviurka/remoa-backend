@@ -3,7 +3,7 @@
   "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
   "replies": [
     {
-      "id": "gen-1759700000-synthetic001",
+      "id": "gen-1759700000-synthetic004",
       "provider": "Nvidia",
       "model": "nvidia/nemotron-3-super-120b-a12b:free",
       "object": "chat.completion",
@@ -21,12 +21,12 @@
             "reasoning": null,
             "tool_calls": [
               {
-                "id": "call_1",
+                "id": "call_4",
                 "index": 0,
                 "type": "function",
                 "function": {
                   "name": "grade",
-                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Você cobriu os dois pontos essenciais: carboidrato por via oral e nova glicemia em 15 minutos. Também lembrou de investigar a causa. Fonte: Hipoglicemia no adulto.\"}"
+                  "arguments": "{\"verdict\":\"partial\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Você indicou açúcar por via oral, mas faltou a quantidade de 15 gramas e a nova glicemia em 15 minutos. Fonte: Hipoglicemia no adulto.\"}"
                 }
               }
             ]
@@ -40,7 +40,7 @@
       }
     },
     {
-      "id": "gen-1759700000-synthetic002",
+      "id": "gen-1759700000-synthetic005",
       "provider": "Nvidia",
       "model": "nvidia/nemotron-3-super-120b-a12b:free",
       "object": "chat.completion",
@@ -58,12 +58,12 @@
             "reasoning": null,
             "tool_calls": [
               {
-                "id": "call_2",
+                "id": "call_5",
                 "index": 0,
                 "type": "function",
                 "function": {
                   "name": "grade",
-                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Resposta completa: 15 gramas de carboidrato por via oral e nova medida em 15 minutos, além de investigar a causa. Fonte: texto sintético de avaliação.\"}"
+                  "arguments": "{\"verdict\":\"partial\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"A ideia de dar açúcar por via oral está no caminho, porém faltaram a dose de 15 gramas e a reavaliação em 15 minutos.\"}"
                 }
               }
             ]
@@ -77,7 +77,7 @@
       }
     },
     {
-      "id": "gen-1759700000-synthetic003",
+      "id": "gen-1759700000-synthetic006",
       "provider": "Nvidia",
       "model": "nvidia/nemotron-3-super-120b-a12b:free",
       "object": "chat.completion",
@@ -95,12 +95,12 @@
             "reasoning": null,
             "tool_calls": [
               {
-                "id": "call_3",
+                "id": "call_6",
                 "index": 0,
                 "type": "function",
                 "function": {
                   "name": "grade",
-                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Acertou a conduta inicial e a reavaliação em 15 minutos, como pede a rubrica. Fonte: Hipoglicemia no adulto.\"}"
+                  "arguments": "{\"verdict\":\"partial\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Parcial: faltou dizer 15 gramas de carboidrato de absorção rápida e medir a glicemia de novo em 15 minutos. Fonte: Hipoglicemia no adulto.\"}"
                 }
               }
             ]

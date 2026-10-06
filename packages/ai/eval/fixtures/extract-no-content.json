@@ -1,0 +1,32 @@
+{
+  "recorded": false,
+  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "replies": [
+    {
+      "id": "gen-1759700000-synthetic023",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"cards\":[],\"edges\":[]}",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 650,
+        "completion_tokens": 12,
+        "total_tokens": 662
+      }
+    }
+  ]
+}

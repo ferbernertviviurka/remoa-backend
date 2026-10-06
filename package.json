@@ -19,6 +19,7 @@
     "db:seed": "pnpm --filter @remoa/db seed",
     "db:make-admin": "pnpm --silent --filter @remoa/db make-admin",
     "ai:eval": "pnpm --silent --filter @remoa/ai exec tsx --env-file-if-exists=../../.env scripts/eval.ts",
+    "ai:report": "pnpm --silent --filter @remoa/ai exec tsx --env-file-if-exists=../../.env scripts/eval.ts --report",
     "ai:doctor": "pnpm --silent --filter @remoa/ai exec tsx --env-file-if-exists=../../.env scripts/doctor.ts",
     "ai:smoke": "pnpm --silent --filter @remoa/ai exec tsx --env-file-if-exists=../../.env scripts/smoke.ts",
     "coverage": "turbo test:coverage",

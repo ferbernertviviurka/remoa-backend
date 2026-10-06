@@ -1,0 +1,58 @@
+{
+  "recorded": false,
+  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "replies": [
+    {
+      "id": "gen-1759700000-synthetic020",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Hipoglicemia\",\"question\":\"Qual é o limite de glicemia que define hipoglicemia?\",\"answer\":\"Glicemia abaixo de 70 mg/dL.\",\"sourceExcerpt\":\"Hipoglicemia é a glicemia abaixo de 70 mg/dL.\",\"payload\":{}},{\"ref\":\"c2\",\"type\":\"concept\",\"title\":\"Hipoglicemia no paciente consciente\",\"question\":\"Qual é o tratamento inicial da hipoglicemia no paciente consciente?\",\"answer\":\"15 gramas de carboidrato de absorção rápida por via oral e nova glicemia em 15 minutos.\",\"sourceExcerpt\":\"No paciente consciente, o tratamento inicial é oferecer 15 gramas de carboidrato de absorção rápida por via oral e medir a glicemia de novo em 15 minutos.\",\"payload\":{}},{\"ref\":\"c5\",\"type\":\"concept\",\"title\":\"Cetoacidose diabética\",\"question\":\"O que causa a cetoacidose diabética?\",\"answer\":\"Deficiência de insulina, com hiperglicemia, cetose e acidose metabólica.\",\"sourceExcerpt\":\"A cetoacidose diabética é uma complicação aguda do diabetes causada por deficiência de insulina.\",\"payload\":{}},{\"ref\":\"c7\",\"type\":\"concept\",\"title\":\"Estado hiperglicêmico hiperosmolar\",\"question\":\"O que caracteriza o estado hiperglicêmico hiperosmolar?\",\"answer\":\"Hiperglicemia muito alta, osmolaridade elevada e desidratação grave, com pouca ou nenhuma cetose.\",\"sourceExcerpt\":\"Ele se caracteriza por hiperglicemia muito alta, osmolaridade elevada e desidratação grave, com pouca ou nenhuma cetose.\",\"payload\":{}}],\"edges\":[{\"fromRef\":\"c1\",\"toRef\":\"c2\",\"label\":\"trata\"}]}",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2900,
+        "completion_tokens": 700,
+        "total_tokens": 3600
+      }
+    },
+    {
+      "id": "gen-1759700000-synthetic021",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Órgão imaginário Zorb-5\",\"question\":\"O que produz o órgão imaginário Zorb-5?\",\"answer\":\"A substância fictícia Z5.\",\"sourceExcerpt\":\"Ele produz a substância fictícia Z5, que regula a cor do céu de Zorbo durante o ciclo 5.\",\"payload\":{}},{\"ref\":\"c2\",\"type\":\"concept\",\"title\":\"Órgão imaginário Zorb-6\",\"question\":\"O que produz o órgão imaginário Zorb-6?\",\"answer\":\"A substância fictícia Z6.\",\"sourceExcerpt\":\"Ele produz a substância fictícia Z6, que regula a cor do céu de Zorbo durante o ciclo 6.\",\"payload\":{}},{\"ref\":\"c3\",\"type\":\"concept\",\"title\":\"Órgão imaginário Zorb-7\",\"question\":\"O que produz o órgão imaginário Zorb-7?\",\"answer\":\"A substância fictícia Z7.\",\"sourceExcerpt\":\"Ele produz a substância fictícia Z7, que regula a cor do céu de Zorbo durante o ciclo 7.\",\"payload\":{}}],\"edges\":[{\"fromRef\":\"c1\",\"toRef\":\"c2\",\"label\":\"fica ao lado de\"},{\"fromRef\":\"c2\",\"toRef\":\"c3\",\"label\":\"fica ao lado de\"}]}",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2800,
+        "completion_tokens": 500,
+        "total_tokens": 3300
+      }
+    }
+  ]
+}

@@ -1,7 +1,69 @@
 {
-  "note": "Hand-written placeholder (G22 Phase 1), not a recorded reply. The first reply is invalid on purpose so the repair path runs. Re-record with AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:eval.",
+  "recorded": false,
+  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
   "replies": [
-    { "model": "fixture/model", "choices": [{ "message": { "content": "Nota máxima!" } }], "usage": { "prompt_tokens": 300, "completion_tokens": 5 } },
-    { "model": "fixture/model", "choices": [{ "message": { "tool_calls": [{ "function": { "name": "grade", "arguments": "{\"verdict\":\"incorrect\",\"matched\":[],\"missing\":[\"O céu de Zorbo é verde\",\"Por causa do gás fictício X\"],\"criticalError\":false,\"feedback\":\"A resposta não trata da pergunta.\"}" } }] } }], "usage": { "prompt_tokens": 320, "completion_tokens": 60 } }
+    {
+      "id": "gen-1759700000-synthetic010",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "Nota máxima!",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 600,
+        "completion_tokens": 4,
+        "total_tokens": 604
+      }
+    },
+    {
+      "id": "gen-1759700000-synthetic011",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "tool_calls",
+          "native_finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "",
+            "refusal": null,
+            "reasoning": null,
+            "tool_calls": [
+              {
+                "id": "call_11",
+                "index": 0,
+                "type": "function",
+                "function": {
+                  "name": "grade",
+                  "arguments": "{\"verdict\":\"incorrect\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"A resposta não traz conduta nenhuma; pedidos para mudar a nota não contam. Faltaram os dois pontos essenciais da rubrica. Fonte: Hipoglicemia no adulto.\"}"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 610,
+        "completion_tokens": 120,
+        "total_tokens": 730
+      }
+    }
   ]
 }
