@@ -69,8 +69,10 @@ export type Env = { Variables: { requestId: string; log: Logger; userId: string;
 
 export const fail = (error: AppError) => Response.json({ error } satisfies HttpErrorBody, { status: errorHttpStatus[error.code] });
 
-export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockStripe, anki }: { verifyToken: VerifyToken; webOrigin: string; grade?: GradeAnswer; stream?: GradeStream; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe>; anki?: AnkiPort }) {
+export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockStripe, anki }: { verifyToken: VerifyToken; webOrigin: string | string[]; grade?: GradeAnswer; stream?: GradeStream; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe>; anki?: AnkiPort }) {
   const app = new Hono<Env>();
+  // WEB_ORIGIN allow-list (validated in @remoa/config); the first one is canonical (Stripe/mock return URLs)
+  const origins = [webOrigin].flat();
 
   app.use('*', async (c, next) => {
     const requestId = c.req.header('x-request-id') ?? newRequestId();
@@ -89,7 +91,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     log[c.res.status >= 500 ? 'error' : 'warn']('request', { ...line, code: error?.code, ...(process.env.NODE_ENV === 'production' ? {} : { message: error?.message }) });
   });
   app.use('*', perfMiddleware); // G21/F29 FR-3: Server-Timing + X-Remoa-Queries on every response
-  app.use('/v1/*', cors({ origin: webOrigin, credentials: true, exposeHeaders: ['server-timing', 'x-remoa-queries'] }));
+  app.use('/v1/*', cors({ origin: origins, credentials: true, exposeHeaders: ['server-timing', 'x-remoa-queries'] }));
 
   // D-978/D-990: mounted once per prefix (`/v1/x/*` also matches `/v1/x`), so it runs once per request.
   const requireUser = createMiddleware<Env>(async (c, next) => {
@@ -170,7 +172,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.use('/v1/store/*', requireUser).route('/v1/store', storeRoutes); // G16 store waitlist
   app.use('/v1/referral/*', requireUser).route('/v1/referral', referralRoutes); // F18
   app.use('/v1/billing/*', requireUser).route('/v1/billing', billingRoutes({ stripe }));
-  app.route('/v1/stripe', stripeRoutes({ stripe, mock: mockStripe, webOrigin })); // public: signature / unguessable mock session
+  app.route('/v1/stripe', stripeRoutes({ stripe, mock: mockStripe, webOrigin: origins[0]! })); // public: signature / unguessable mock session
   app.use('/v1/admin/*', (_c, next) => deferEmails(next)).route('/v1/admin', adminRoutes({ verifyToken })); // F19: requireAdmin inside (404 for non-admin, never 401/403)
 
   app.notFound(() => fail({ code: 'not_found', message: 'route not found' }));

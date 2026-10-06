@@ -11,6 +11,8 @@ export type Env = {
   production: boolean;
   /** Web origin for links in e-mails, no trailing slash. APP_URL, else the legacy WEB_ORIGIN. */
   appUrl: string;
+  /** CORS allow-list from WEB_ORIGIN (comma-separated http(s) origins, no path, no wildcard); the first is the canonical web origin. */
+  webOrigins: string[];
   /** API public origin (unsubscribe, .ics and webhook URLs), no trailing slash. */
   apiOrigin: string;
   emailProvider: EmailProvider;
@@ -113,7 +115,11 @@ export function parseEnv(source: Source = process.env): Env {
     return v;
   };
 
-  const appUrl = checkUrl('APP_URL', need('APP_URL (or WEB_ORIGIN)', get('APP_URL') ?? get('WEB_ORIGIN'), DEV.appUrl));
+  const webOrigins = (get('WEB_ORIGIN') ?? DEV.appUrl).split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean);
+  if (!webOrigins.length || webOrigins.some((o) => o.includes('*') || !url.safeParse(o).success || new URL(o).origin !== o)) {
+    problems.push('WEB_ORIGIN must be a comma-separated list of http(s) origins (no path, no wildcard)');
+  }
+  const appUrl = checkUrl('APP_URL', need('APP_URL (or WEB_ORIGIN)', get('APP_URL') ?? (get('WEB_ORIGIN') && webOrigins[0]), DEV.appUrl));
   const apiOrigin = checkUrl('API_ORIGIN', need('API_ORIGIN', get('API_ORIGIN'), `http://localhost:${get('PORT') ?? 4000}`));
 
   const rawProvider = get('EMAIL_PROVIDER');
@@ -182,6 +188,7 @@ export function parseEnv(source: Source = process.env): Env {
   return {
     production,
     appUrl,
+    webOrigins,
     apiOrigin,
     emailProvider,
     resendApiKey,

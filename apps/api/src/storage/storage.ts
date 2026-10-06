@@ -1,5 +1,5 @@
 import {
-  CopyObjectCommand, CreateBucketCommand, DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
+  AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand, CreateBucketCommand, CreateMultipartUploadCommand, UploadPartCommand, DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
 } from '@aws-sdk/client-s3';
 import { env as configEnv } from '@remoa/config';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -62,6 +62,35 @@ export async function getBytes(Key: string) {
 
 export const putBytes = (Key: string, Body: Buffer, ContentType: string) =>
   client().send(new PutObjectCommand({ Bucket: Bucket(), Key, Body, ContentType }));
+
+const PART = 8 * 1024 * 1024;
+/** D-1443: streams `body` to `Key` holding at most one 8 MB part in memory (S3 multipart; one PutObject when it fits in a part).
+ * If `body` throws (size cap, bad type, client gone), the multipart upload is aborted and the error rethrown: nothing stays in the bucket. */
+export async function putStream(Key: string, body: AsyncIterable<Uint8Array>, ContentType: string) {
+  let buf: Uint8Array[] = [], len = 0, UploadId: string | undefined;
+  const Parts: { ETag?: string; PartNumber: number }[] = [];
+  const flush = async () => {
+    UploadId ??= (await client().send(new CreateMultipartUploadCommand({ Bucket: Bucket(), Key, ContentType }))).UploadId!;
+    const PartNumber = Parts.length + 1;
+    const { ETag } = await client().send(new UploadPartCommand({ Bucket: Bucket(), Key, UploadId, PartNumber, Body: Buffer.concat(buf) }));
+    Parts.push({ ETag, PartNumber });
+    buf = [];
+    len = 0;
+  };
+  try {
+    for await (const chunk of body) {
+      buf.push(chunk);
+      len += chunk.byteLength;
+      if (len >= PART) await flush();
+    }
+    if (!UploadId) return void (await putBytes(Key, Buffer.concat(buf), ContentType));
+    if (len) await flush();
+    await client().send(new CompleteMultipartUploadCommand({ Bucket: Bucket(), Key, UploadId, MultipartUpload: { Parts } }));
+  } catch (e) {
+    if (UploadId) await client().send(new AbortMultipartUploadCommand({ Bucket: Bucket(), Key, UploadId })).catch(() => undefined);
+    throw e;
+  }
+}
 
 export const deleteObject = (Key: string) => client().send(new DeleteObjectCommand({ Bucket: Bucket(), Key }));
 

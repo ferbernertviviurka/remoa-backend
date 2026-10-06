@@ -17,6 +17,22 @@ describe('api', () => {
     expect(body.ai.status).toMatch(/^(ok|degraded|off|mock|pending)$/);
   });
 
+  it('CORS: every WEB_ORIGIN in the list is echoed with credentials; others are not; timing headers stay exposed', async () => {
+    const multi = createApp({ webOrigin: ['https://remoa.com.br', 'https://www.remoa.com.br'], verifyToken: async () => null });
+    for (const origin of ['https://remoa.com.br', 'https://www.remoa.com.br']) {
+      const res = await multi.request('/v1/me', { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'POST' } });
+      expect(res.headers.get('access-control-allow-origin')).toBe(origin);
+      expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+      const get = await multi.request('/v1/me', { headers: { origin } });
+      expect(get.headers.get('access-control-allow-origin')).toBe(origin);
+      expect(get.headers.get('access-control-expose-headers')).toBe('server-timing,x-remoa-queries');
+    }
+    for (const origin of ['https://evil.example', 'https://remoa.com.br.evil.example', 'null']) {
+      const res = await multi.request('/v1/me', { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'POST' } });
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    }
+  });
+
   it('rejects /v1 without a valid token using the contracts error body', async () => {
     for (const headers of [{}, { authorization: 'Bearer bad' }] as Record<string, string>[]) {
       const res = await app.request('/v1/me', { headers });

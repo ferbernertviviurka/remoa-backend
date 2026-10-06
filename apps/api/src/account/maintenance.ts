@@ -2,6 +2,7 @@
 import { pathToFileURL } from 'node:url';
 import { asJob } from '../db';
 import { createLogger } from '@remoa/log';
+import { env } from '@remoa/config';
 import { createStripe, installStripe } from '../billing/stripe';
 import { expireAnswerTexts, purgeDeletedAccounts } from './jobs';
 import { sweepReferrals } from '../referral/sweep';
@@ -29,7 +30,7 @@ export async function runHourly(now = new Date()) {
 
 /** Daily (cron `0 6 * * *` UTC): LGPD purge and answer-text retention (F08 FR-8). */
 export async function runDaily(now = new Date()) {
-  const stripe = process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000' }) : undefined;
+  const stripe = process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: env().webOrigins[0]! }) : undefined;
   installStripe(stripe); // F18: the referral sweep re-applies pending credits
   const purged = await purgeDeletedAccounts(now, stripe);
   const expired = await expireAnswerTexts(now);

@@ -9,7 +9,7 @@ import {
   type InspectImport, type Result, type SignImportUpload, type StartImport, type FindExistingBoard, type StartImportInput,
 } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
-import { getBytes, headObject, presignPut, putBytes } from '../storage/storage';
+import { getBytes, headObject, presignPut, putBytes, putStream } from '../storage/storage';
 import { limitFor, overAnkiImports, overTotal } from '../billing/quota';
 import { planOf } from '../billing/plan';
 import { asJob, dbm, run, uuids } from '../db';
@@ -92,6 +92,31 @@ async function createAssetFromBytes(userId: string, bytes: Uint8Array): Promise<
   }
 }
 
+const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]); // PK\x03\x04: an .apkg is a zip
+class UploadRejected extends Error {}
+/** Request body as chunks: cuts at APKG_MAX_BYTES while streaming and refuses a non-zip on the first 4 bytes, before anything is stored. */
+async function* apkgChunks(body: ReadableStream<Uint8Array>) {
+  const reader = body.getReader();
+  let size = 0, head: Buffer | null = Buffer.alloc(0);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > APKG_MAX_BYTES) throw new UploadRejected('file_too_large');
+      if (!head) { yield value; continue; }
+      head = Buffer.concat([head, value]);
+      if (head.length < ZIP_MAGIC.length) continue;
+      if (!head.subarray(0, ZIP_MAGIC.length).equals(ZIP_MAGIC)) throw new UploadRejected('not_apkg');
+      yield head;
+      head = null;
+    }
+    if (head) throw new UploadRejected('not_apkg'); // empty or shorter than the magic
+  } finally {
+    reader.cancel().catch(() => undefined);
+  }
+}
+
 type Stats = Partial<ImportReport> & { processed?: number; total?: number };
 
 export function createImports({ anki }: { anki: AnkiPort }) {
@@ -110,6 +135,22 @@ export function createImports({ anki }: { anki: AnkiPort }) {
     if (await overAnkiImports(userId)) return err('quota_exceeded', 'anki'); // D-648: before the upload, not after it
     const key = `imports/${userId}/${crypto.randomUUID()}.apkg`;
     return ok({ url: await presignPut(key, 'application/octet-stream', input.sizeBytes), key });
+  };
+
+  /** D-1443: the .apkg goes through the API (no browser PUT to the bucket, so no bucket CORS). Same key and quota check as `sign`.
+   * `file_too_large` is answered 413 by the route. */
+  const upload = async (userId: string, body: ReadableStream<Uint8Array> | null, declaredBytes: number | null): Promise<Result<{ key: string }>> => {
+    if (declaredBytes !== null && declaredBytes > APKG_MAX_BYTES) return err('validation', 'file_too_large');
+    if (!body) return err('validation', 'not_apkg');
+    if (await overAnkiImports(userId)) return err('quota_exceeded', 'anki');
+    const key = `imports/${userId}/${crypto.randomUUID()}.apkg`;
+    try {
+      await putStream(key, apkgChunks(body), 'application/octet-stream');
+    } catch (e) {
+      if (e instanceof UploadRejected) return err('validation', e.message);
+      throw e;
+    }
+    return ok({ key });
   };
 
   /** Max 2 concurrent inspect/start across users: each holds a whole .apkg in memory and parses on the event loop. */
@@ -382,6 +423,6 @@ export function createImports({ anki }: { anki: AnkiPort }) {
     );
   };
 
-  return { sign, inspectImport, start, progress, report, findExistingBoard };
+  return { sign, upload, inspectImport, start, progress, report, findExistingBoard };
 }
 export type Imports = ReturnType<typeof createImports>;
