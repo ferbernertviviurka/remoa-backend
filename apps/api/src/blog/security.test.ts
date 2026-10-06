@@ -9,7 +9,8 @@ import { fakeToken } from '../admin/core/test-helpers';
 config({ path: '../../.env' });
 
 vi.mock('../storage/storage', async (orig: () => Promise<object>) => ({ ...(await orig()), putPublicBytes: async () => undefined }));
-vi.mock('./revalidate', () => ({ revalidateBlog: async () => undefined }));
+vi.mock('./revalidate', () => ({ blogChanged: async () => undefined }));
+vi.mock('../cache', async (orig) => ({ ...(await orig<typeof import('../cache')>()), invalidate: async () => ({ tags: [], dropped: 0 }) }));
 
 const XSS = '<img src=x onerror=alert(1)></script><script>alert(2)</script>';
 const evilDoc = {

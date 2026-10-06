@@ -14,6 +14,7 @@ import { initialShareColumns } from '../share/crypto';
 import { shareUrlOf } from '../share/url';
 import { turnOffShare } from './share';
 import { maybeQualifyReferral } from '../referral/qualify';
+import { invalidate } from '../cache';
 
 const notFound = () => err<never>('not_found', 'board not found');
 const isUuid = (v: string) => idSchema.safeParse(v).success;
@@ -34,10 +35,12 @@ const liveCardEnds = sql`join cards f on f.id = e.from_card_id and f.deleted_at 
 /** G14 D-574: permanent, owner-only, own maps only (seed = 404). One row; FKs cascade (cards/edges/fsrs/attempts/queue) or set null (sessions, copies). */
 export const deleteBoard: DeleteBoard = async (userId, boardId) => {
   if (!isUuid(boardId)) return notFound();
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const [row] = await tx.delete(s.boards).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId), eq(s.boards.status, 'private'))).returning({ id: s.boards.id });
     return row ? ok({ id: row.id }) : notFound();
   });
+  if (r.ok) await invalidate('map.changed', { userId, mapId: boardId });
+  return r;
 };
 
 export const listBoards: ListBoards = async (userId, query = {}) => {
@@ -113,7 +116,7 @@ export const createBoard: CreateBoard = async (userId, input) => {
   const area = input.area ?? 'CM';
   // Sharing: generates token + hash before the transaction (scrypt is async and cpu-heavy).
   const share = await initialShareColumns({ access: input.access ?? 'owner', password: input.password });
-  return guard(() =>
+  const r = await guard(() =>
     run(userId, async (tx, s) => {
       // F17: validate every item — must be a leaf of the board's area.
       for (const itemId of itemIds) {
@@ -129,6 +132,8 @@ export const createBoard: CreateBoard = async (userId, input) => {
       return toBoard(row!);
     }),
   );
+  if (r.ok) await invalidate('map.changed', { userId, mapId: r.data.id });
+  return r;
 };
 
 export const updateBoard: UpdateBoard = async (userId, boardId, input) => {
@@ -158,6 +163,7 @@ export const updateBoard: UpdateBoard = async (userId, boardId, input) => {
     }
     return ok({ ...toBoard(row), matrixItemIds: await linkedItems(tx, s, boardId) });
   });
+  if (r.ok) await invalidate('map.changed', { userId, mapId: boardId });
   // F17: archiving turns the link off (server connection, after the tx above has released the row; D-288).
   if (!r.ok || input.archived !== true || r.data.access === 'owner') return r;
   const off = await turnOffShare(userId, boardId);
@@ -180,7 +186,10 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
     await cloneBoardContent(tx, s, copy!.id, cards, edges, { status: (c) => (src.status === 'private' ? c.status : 'draft'), tags: (c) => c.tags });
     return ok(toBoard(copy!));
   });
-  if (r.ok) await maybeQualifyReferral(userId); // F18 (D-384): a copied seed/own board can be the first map; never throws
+  if (r.ok) {
+    await invalidate('map.changed', { userId, mapId: r.data.id });
+    await maybeQualifyReferral(userId); // F18 (D-384): a copied seed/own board can be the first map; never throws
+  }
   return r;
 };
 
@@ -310,6 +319,7 @@ export const applyMapOps: ApplyMapOps = async (userId, ops) => {
       return { applied: ops.map((o) => o.opId) };
     }),
   );
+  if (r.ok) for (const mapId of new Set(ops.map((o) => o.boardId))) await invalidate('card.changed', { userId, mapId }); // after COMMIT
   if (r.ok && cardLimit !== null) await maybeQualifyReferral(userId); // F18 (D-384): after the commit; never throws
   return r;
 };

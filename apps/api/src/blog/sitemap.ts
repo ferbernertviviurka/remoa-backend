@@ -5,7 +5,7 @@ import { SITEMAP_STATIC_PATHS, type SitemapEntry, type SitemapStatus } from '@re
 import { createLogger, newRequestId } from '@remoa/log';
 import type { Tx } from '@remoa/db';
 import { dbm } from '../db';
-import { revalidateBlog } from './revalidate';
+import { invalidate } from '../cache';
 
 type Exec = Pick<Tx, 'execute'>;
 type Row = { path: string; kind: 'category' | 'post'; lastmod: Date | string };
@@ -71,6 +71,6 @@ export async function regenerateSitemap(opts: { force?: boolean; reason?: string
     return { entries, hash, changed, at: new Date(s!.generated_at) };
   });
   log.info('sitemap regenerated', { reason: opts.reason ?? null, force: !!opts.force, changed: r.changed, urlCount: total(r.entries), hash: r.hash });
-  if (r.changed || opts.force) await revalidateBlog(['sitemap'], log);
+  if (r.changed || opts.force) await invalidate('blog.changed', {}, log); // the catalog's blog.changed always carries the `sitemap` tag
   return { urlCount: total(r.entries), lastGeneratedAt: r.at, nextRunAt: nextSitemapRun(now), hash: r.hash };
 }

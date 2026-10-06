@@ -3,6 +3,7 @@ import { ok, type CoverageRow, type GetCoverage, type LinkBoardMatrix, type List
 import type { Tx } from '@remoa/db';
 import { boardCardStats } from '../review/queue';
 import { Abort, dbm, guard, run } from '../db';
+import { invalidate } from '../cache';
 
 export const listMatrixItems: ListMatrixItems = async (area) =>
   ok(
@@ -63,8 +64,8 @@ const boardOrNotFound = async (tx: Parameters<Parameters<typeof run>[1]>[0], s: 
 export const isLinkableItem = async (tx: Tx, id: string) =>
   (await tx.execute(sql`select 1 from matrix_items m where m.id = ${id} and not exists (select 1 from matrix_items c where c.parent_id = m.id)`)).length > 0;
 
-export const linkBoardMatrix: LinkBoardMatrix = async (userId, link) =>
-  guard(() =>
+export const linkBoardMatrix: LinkBoardMatrix = async (userId, link) => {
+  const r = await guard(() =>
     run(userId, async (tx, s) => {
       const b = await boardOrNotFound(tx, s, userId, link.boardId);
       if (!(await isLinkableItem(tx, link.matrixItemId))) throw new Abort({ code: 'validation', message: 'unknown or group matrixItemId' });
@@ -73,9 +74,12 @@ export const linkBoardMatrix: LinkBoardMatrix = async (userId, link) =>
       return link;
     }),
   );
+  if (r.ok) await invalidate('map.changed', { userId, mapId: link.boardId }); // after COMMIT: coverage and the map list
+  return r;
+};
 
-export const unlinkBoardMatrix: UnlinkBoardMatrix = async (userId, link) =>
-  guard(() =>
+export const unlinkBoardMatrix: UnlinkBoardMatrix = async (userId, link) => {
+  const r = await guard(() =>
     run(userId, async (tx, s) => {
       const b = await boardOrNotFound(tx, s, userId, link.boardId);
       await tx.delete(s.boardMatrixItems).where(and(eq(s.boardMatrixItems.boardId, b.id), eq(s.boardMatrixItems.matrixItemId, link.matrixItemId)));
@@ -86,3 +90,6 @@ export const unlinkBoardMatrix: UnlinkBoardMatrix = async (userId, link) =>
       return null;
     }),
   );
+  if (r.ok) await invalidate('map.changed', { userId, mapId: link.boardId });
+  return r;
+};

@@ -9,7 +9,10 @@ const DAY = 86_400_000;
 
 const revalidate = vi.hoisted(() => vi.fn<(tags: string[], log?: unknown) => Promise<void>>(async () => {}));
 const deletePrefix = vi.hoisted(() => vi.fn<(prefix: string, bucket?: string) => Promise<number>>(async () => 1));
-vi.mock('../blog/revalidate', () => ({ revalidateBlog: revalidate }));
+vi.mock('../cache', async (orig) => {
+  const { tagsFor } = await import('@remoa/contracts');
+  return { ...(await orig<typeof import('../cache')>()), invalidate: async (event: Parameters<typeof tagsFor>[0], ctx: never, log?: unknown) => (revalidate(tagsFor(event, ctx), log), { tags: [], dropped: 0 }) };
+});
 vi.mock('../storage/storage', () => ({ deletePrefix }));
 
 describe('sitemap helpers', () => {
@@ -87,7 +90,7 @@ describe.skipIf(!process.env.DATABASE_URL)('blog sitemap and jobs (DB)', () => {
     expect(revalidate).not.toHaveBeenCalled();
     await sm.regenerateSitemap({ force: true, reason: 'test' });
     expect(await count()).toBe(n + 1);
-    expect(revalidate).toHaveBeenCalledWith(['sitemap'], expect.anything());
+    expect(revalidate).toHaveBeenCalledWith(expect.arrayContaining(['sitemap']), expect.anything()); // invalidate('blog.changed', {})
     const status = await sm.getSitemapStatus();
     expect(status.hash).toBe(first.hash);
     expect(status.urlCount).toBeGreaterThanOrEqual(6); // 4 static + this post + its category

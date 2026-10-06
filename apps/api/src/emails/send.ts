@@ -1,5 +1,6 @@
 // G18 F24 FR-15/FR-16/FR-20: the only place that talks to the e-mail provider (and the only importer of the `resend` SDK).
 // Callers go through notify() (rule 10); the Supabase Send Email hook is the other caller allowed by contracts/api.ts.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
@@ -91,6 +92,24 @@ export function emailTransport(): Transport {
 
 /** Waits before the 2nd and 3rd tries. */
 const BACKOFF_MS = [500, 2000];
+/** FR-11: one provider call never holds a caller longer than this (Resend dedupes a late success by the idempotency key). */
+export const TRY_TIMEOUT_MS = 3_000;
+
+// P-441 (D-992): user and admin requests run inside `defer`: the claim (idempotency, suppression, reminder cap) stays in the request,
+// render + provider calls go after the response, in this process. `inline` = the caller must know the outcome (D-810 receipt):
+// in the request, at most 1 retry. No scope (jobs, cron, webhooks, Auth hook) = inline with 3 tries, as before.
+const emailMode = new AsyncLocalStorage<'defer' | 'inline'>();
+export const deferEmails = <T>(fn: () => T): T => emailMode.run('defer', fn);
+export const emailsInline = <T>(fn: () => T): T => emailMode.run('inline', fn);
+const inFlight = new Set<Promise<unknown>>();
+/** SIGTERM: wait (bounded) for deferred sends. ponytail: a crash still loses them (row stays `queued`); a resend job needs the payload stored. */
+export const drainEmails = (maxMs: number) => Promise.race([Promise.allSettled([...inFlight]), new Promise((r) => setTimeout(r, maxMs).unref())]);
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const t = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new EmailSendError(`timeout after ${ms} ms`, false)), ms)));
+  return Promise.race([p, t]).finally(() => clearTimeout(timer));
+}
 const sleep = (ms: number) => (hooks.sleep ?? ((t: number) => new Promise<void>((r) => setTimeout(r, t))))(ms);
 
 /** One-click unsubscribe scope of each reminder/list template (the preference row it turns off). */
@@ -218,44 +237,56 @@ export async function deliverEmail<T extends EmailTemplate>(input: SendEmailInpu
       update email_deliveries set status = ${status}, attempts = ${attempts}, provider_id = ${extra.providerId ?? null}, error = ${extra.error ?? null},
         redirected = ${extra.redirected ?? false}, sent_at = ${status === 'sent' ? sql`now()` : null} where id = ${c.id}`);
 
-    let rendered;
-    try {
-      rendered = await render(template, data.data as EmailData<T>, linked.links);
-    } catch (e) {
-      await done('failed', 0, { error: `render: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300) });
-      return fail('render_error', c.id);
-    }
-
-    const e = env();
-    const redirected = !!e.emailTestRedirect;
-    const mail: OutgoingEmail = {
-      to: e.emailTestRedirect ?? base.data.to,
-      subject: rendered.subject,
-      text: rendered.text,
-      html: rendered.html,
-      headers: linked.headers,
-      tags: [{ name: 'template', value: template }, { name: 'class', value: EMAIL_CLASS[template] }],
-      idempotencyKey: `${template}/${input.reference}`,
-      label: `${template}-${input.reference}`,
-    };
-    const transport = emailTransport();
-    let lastError = '';
-    let tries = 0;
-    for (; tries < 3; ) {
-      tries++;
+    const deliver = async (maxTries: number): Promise<DeliverResult> => {
+      let rendered;
       try {
-        const { id } = await transport(mail);
-        await done('sent', tries, { providerId: id, redirected });
-        log.info('email_sent', { event: 'email_sent', template, attempts: tries, redirected });
-        return { status: 'sent', deliveryId: c.id, duplicate: false };
-      } catch (err) {
-        lastError = (err instanceof Error ? err.message : String(err)).slice(0, 300);
-        if (err instanceof EmailSendError && err.permanent) break;
-        if (tries < 3) await sleep(BACKOFF_MS[tries - 1]!);
+        rendered = await render(template, data.data as EmailData<T>, linked.links);
+      } catch (e) {
+        await done('failed', 0, { error: `render: ${e instanceof Error ? e.message : String(e)}`.slice(0, 300) });
+        return fail('render_error', c.id);
       }
-    }
-    await done('failed', tries, { error: lastError, redirected });
-    return fail(lastError.split(':')[0] || 'provider_error', c.id);
+
+      const e = env();
+      const redirected = !!e.emailTestRedirect;
+      const mail: OutgoingEmail = {
+        to: e.emailTestRedirect ?? base.data.to,
+        subject: rendered.subject,
+        text: rendered.text,
+        html: rendered.html,
+        headers: linked.headers,
+        tags: [{ name: 'template', value: template }, { name: 'class', value: EMAIL_CLASS[template] }],
+        idempotencyKey: `${template}/${input.reference}`,
+        label: `${template}-${input.reference}`,
+      };
+      const transport = emailTransport();
+      let lastError = '';
+      let tries = 0;
+      for (; tries < maxTries; ) {
+        tries++;
+        try {
+          const { id } = await withTimeout(transport(mail), TRY_TIMEOUT_MS);
+          await done('sent', tries, { providerId: id, redirected });
+          log.info('email_sent', { event: 'email_sent', template, attempts: tries, redirected });
+          return { status: 'sent', deliveryId: c.id, duplicate: false };
+        } catch (err) {
+          lastError = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+          if (err instanceof EmailSendError && err.permanent) break;
+          if (tries < maxTries) await sleep(BACKOFF_MS[tries - 1]!);
+        }
+      }
+      await done('failed', tries, { error: lastError, redirected });
+      return fail(lastError.split(':')[0] || 'provider_error', c.id);
+    };
+
+    const mode = emailMode.getStore();
+    if (mode !== 'defer') return await deliver(mode === 'inline' ? 2 : 3);
+    // After the response: setImmediate lets the handler finish first; deliver never throws, the catch is for the `done` update.
+    const job = new Promise<void>((r) => setImmediate(r))
+      .then(() => deliver(3))
+      .catch((e: unknown) => log.error('email crashed', { template, error: e instanceof Error ? e.message : String(e) }))
+      .finally(() => inFlight.delete(job));
+    inFlight.add(job);
+    return { status: 'queued', deliveryId: c.id, duplicate: false };
   } catch (e) {
     log.error('email crashed', { template, error: e instanceof Error ? e.message : String(e) });
     return fail('internal');

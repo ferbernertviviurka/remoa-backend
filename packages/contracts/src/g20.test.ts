@@ -1,9 +1,10 @@
 // G20 contracts (F28, CCR-050): required name/phone, institution, `not_med`.
 import { describe, expect, it } from 'vitest';
 import {
-  MEDICAL_SCHOOLS, findMedicalSchool, institutionInputSchema, missingRequiredProfile, onboardingAnswersPatchSchema, profileSchema,
+  institutionInputSchema, missingRequiredProfile, onboardingAnswersPatchSchema, profileSchema,
   segments, signUpInputSchema, updateProfileInputSchema,
 } from './index';
+import { MEDICAL_SCHOOLS, findMedicalSchool } from './medical-schools';
 
 const school = MEDICAL_SCHOOLS[0]!;
 

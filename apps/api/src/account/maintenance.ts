@@ -1,5 +1,6 @@
 // Maintenance jobs. Scheduled by Inngest crons (inngest/maintenance.ts); `pnpm job:maintenance` still runs both once by hand.
 import { pathToFileURL } from 'node:url';
+import { asJob } from '../db';
 import { createLogger } from '@remoa/log';
 import { createStripe, installStripe } from '../billing/stripe';
 import { expireAnswerTexts, purgeDeletedAccounts } from './jobs';
@@ -36,10 +37,13 @@ export async function runDaily(now = new Date()) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await runDaily();
-  await runHourly();
-  // G18: the Railway cron also runs the notice jobs once (idempotent; Inngest runs them on their own schedule).
-  const { noticeJobs } = await import('../inngest/notices');
-  for (const [job, j] of Object.entries(noticeJobs)) log.info('notice job done', { job, result: await j.run(new Date()) });
+  // FR-25 (D-993): job timeouts (30 s) for every run() of this process.
+  await asJob(async () => {
+    await runDaily();
+    await runHourly();
+    // G18: the Railway cron also runs the notice jobs once (idempotent; Inngest runs them on their own schedule).
+    const { noticeJobs } = await import('../inngest/notices');
+    for (const [job, j] of Object.entries(noticeJobs)) log.info('notice job done', { job, result: await j.run(new Date()) });
+  });
   process.exit(0);
 }

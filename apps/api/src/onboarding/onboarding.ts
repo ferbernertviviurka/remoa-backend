@@ -4,6 +4,7 @@ import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
 import { env } from '@remoa/config';
 import { notify } from '../notifications/notify';
+import { invalidate } from '../cache';
 
 const log = createLogger({ requestId: 'onboarding' });
 
@@ -49,6 +50,7 @@ export const saveOnboarding: SaveOnboarding = async (userId, patch: OnboardingAn
       goals = case when ${goals ? JSON.stringify(goals) : null}::jsonb is null then goals
         else array(select jsonb_array_elements_text(${JSON.stringify(goals ?? [])}::jsonb)) end
     where user_id = ${userId}`);
+  await invalidate('profile.changed', { userId }); // goal, stage and the answers are part of the profile snapshot
   try {
     if (await claimEmail(userId, 'welcome')) {
       const [u] = await db.execute<{ name: string | null }>(sql`select name from profiles where user_id = ${userId}`);
@@ -64,5 +66,6 @@ export const completeOnboarding: CompleteOnboarding = async (userId) => {
   const { db } = await dbm();
   await db.execute(sql`
     update profiles set onboarding_done_at = now() where user_id = ${userId} and onboarding_done_at is null`);
+  await invalidate('profile.changed', { userId });
   return ok(await load(userId));
 };

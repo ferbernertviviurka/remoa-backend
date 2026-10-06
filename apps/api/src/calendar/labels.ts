@@ -5,6 +5,7 @@ import {
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { dbm, run } from '../db';
+import { invalidate } from '../cache';
 
 /** D-740: seeded on the first read, only when the user has no label at all (a deleted default must not come back). */
 const seed = async (tx: Tx, s: typeof import('@remoa/db'), userId: string) => {
@@ -54,6 +55,7 @@ export async function createLabel(userId: string, input: CalendarLabelInput): Pr
     return r!.id;
   });
   if (!id) return err('conflict', calendarErrors.labelLimit);
+  await invalidate('calendar.changed', { userId });
   return ok((await one(userId, id))!);
 }
 
@@ -72,6 +74,7 @@ export async function updateLabel(userId: string, id: string, patch: CalendarLab
     const next = hidden ? [...new Set([...cur, id])] : cur.filter((x) => x !== id);
     await db.insert(up).values({ userId, calendarHiddenLabels: next }).onConflictDoUpdate({ target: up.userId, set: { calendarHiddenLabels: next, updatedAt: new Date() } });
   }
+  await invalidate('calendar.changed', { userId });
   return ok((await one(userId, id))!);
 }
 
@@ -89,6 +92,7 @@ export async function deleteLabel(userId: string, id: string): Promise<Result<Ca
     return ok({ movedTo: personal.id, moved: moved.filter((m) => !m.deletedAt).length });
   });
   if (r.ok) {
+    await invalidate('calendar.changed', { userId });
     const cur = await hiddenOf(userId);
     if (cur.includes(id)) {
       const { db, userPreferences: up } = await dbm();

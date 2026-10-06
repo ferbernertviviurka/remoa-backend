@@ -8,6 +8,7 @@ import { recordEvent } from '../account/events';
 import { emailHash } from '../referral/email-normalize';
 import { suppress } from './webhook';
 import type { UnsubscribeClaim } from './tokens';
+import { invalidate } from '../cache';
 
 const log = createLogger({ requestId: 'email-unsubscribe' });
 
@@ -45,6 +46,7 @@ export async function applyUnsubscribe(c: UnsubscribeClaim): Promise<void> {
         if (r.count) await recordEvent(db, userId, 'reminder_unsubscribed');
       }
     }
+    await invalidate('prefs.changed', { userId }); // after the writes: Preferências and the notification matrix
   }
   log.info('email_unsubscribed', { event: 'email_unsubscribed', scope, legacy: c.legacy });
 }

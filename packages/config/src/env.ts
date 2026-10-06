@@ -235,3 +235,8 @@ export const perfEnv = (source: Source = process.env): PerfEnv => {
   const n = Number(source.PERF_SLOW_QUERY_MS);
   return { slowQueryMs: source.PERF_SLOW_QUERY_MS && Number.isFinite(n) && n >= 0 ? n : 150, logQueries: source.PERF_LOG_QUERIES === '1' };
 };
+
+export type CacheEnv = { version: string; disabled: boolean };
+
+/** G21/F29 FR-38 (D-999): read per call like perfEnv. CACHE_VERSION goes into every key (bump = drop all); CACHE_DISABLED=1 bypasses every cache. */
+export const cacheEnv = (source: Source = process.env): CacheEnv => ({ version: source.CACHE_VERSION?.trim() || '1', disabled: source.CACHE_DISABLED === '1' });

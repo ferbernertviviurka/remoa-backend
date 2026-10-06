@@ -4,6 +4,7 @@
 import { sql } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
 import { dbm } from '../../db';
+import { invalidate } from '../../cache';
 
 export const TZ = 'America/Sao_Paulo';
 /** YYYY-MM-DD of `d` in São Paulo. */
@@ -34,6 +35,7 @@ export async function refreshMetrics(from: string, to: string, tx?: Tx) {
     on conflict (day) do update set new_accounts = excluded.new_accounts, new_maps = excluded.new_maps, new_pro = excluded.new_pro,
       revenue_cents = excluded.revenue_cents, referrals_qualified = excluded.referrals_qualified, tickets_opened = excluded.tickets_opened, updated_at = now()
     returning day`);
+  await invalidate('admin.action', {}); // the cached admin:overview reads these rows
   return rows.length;
 }
 

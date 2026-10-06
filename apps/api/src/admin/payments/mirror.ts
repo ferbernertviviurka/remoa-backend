@@ -47,7 +47,8 @@ const refund = z.object({ payment_intent: idOf, status: z.literal('succeeded'), 
 const itemOf = (period: string | undefined): PaymentItem => (period === 'lifetime' ? 'founder_lifetime' : period === 'annual' ? 'pro_annual' : 'pro_monthly');
 
 /** Builds the transaction step for `event`, or null when it is not a payment event of ours. Network (invoice → PaymentIntent) happens here, before the transaction. */
-export async function mirrorPayment(event: Event, opts: { released: boolean }): Promise<Mirror | null> {
+/** `touched` collects the users whose plan a refund changed: the webhook invalidates their cache after COMMIT (this runs inside the transaction). */
+export async function mirrorPayment(event: Event, opts: { released: boolean; touched?: string[] }): Promise<Mirror | null> {
   const log = createLogger({ requestId: event.id });
   const at = new Date((event.created ?? Date.now() / 1000) * 1000).toISOString();
   const o = event.data.object;
@@ -99,13 +100,13 @@ export async function mirrorPayment(event: Event, opts: { released: boolean }): 
       const p = charge.safeParse(o);
       // A pending refund (Pix refunds are async) waits for refund.updated.
       if (!p.success || p.data.refunds?.data.some((r) => r.status !== 'succeeded')) return null;
-      return async (tx) => (await refunded(tx, at, p.data.payment_intent, null, event), null);
+      return async (tx) => (await refunded(tx, at, p.data.payment_intent, null, event, opts.touched), null);
     }
     case 'refund.created':
     case 'refund.updated': {
       const p = refund.safeParse(o);
       if (!p.success) return null;
-      return async (tx) => (await refunded(tx, at, p.data.payment_intent, p.data.amount, event), null);
+      return async (tx) => (await refunded(tx, at, p.data.payment_intent, p.data.amount, event, opts.touched), null);
     }
   }
   if (event.type.startsWith('refund.') || event.type.startsWith('charge.')) log.info('payment event not mirrored', { type: event.type });
@@ -147,7 +148,7 @@ async function upsert(tx: Tx, at: string, u: Upsert): Promise<PaidNotice | null>
  * is reviewed (D-457): Pix Pro loses the refunded period, Founder goes back to Free, a card subscription is left to its
  * own Stripe lifecycle (a refund there is usually a duplicate charge; cancel = customer.subscription.deleted).
  */
-async function refunded(tx: Tx, at: string, pi: string, amount: number | null, event: Event) {
+async function refunded(tx: Tx, at: string, pi: string, amount: number | null, event: Event, touched?: string[]) {
   const { payments: t, subscriptions: s } = await dbm();
   const [p] = await tx.select().from(t).where(or(eq(t.id, pi), eq(t.stripePaymentIntent, pi))).limit(1).for('update');
   if (!p || p.status === 'refunded' || (amount !== null && amount < p.amountCents)) return; // unknown, done, or partial (P2)
@@ -164,6 +165,7 @@ async function refunded(tx: Tx, at: string, pi: string, amount: number | null, e
       .where(sql`${s.userId} = ${p.userId} and ${s.plan} = 'pro' and ${s.stripeSubscriptionId} is null and ${s.renewsAt} is not null`).returning({ u: s.userId });
     if (r.length) plan = 'pix_period_removed';
   }
+  if (p.userId) touched?.push(p.userId);
   await writeAudit({
     actorType: 'stripe', actorId: null, action: 'payment.webhook', targetType: 'payment', targetId: p.id, reason: `Stripe ${event.type}`,
     result: 'success', before: { status: p.status }, after: { status: 'refunded', plan }, requestId: event.id,

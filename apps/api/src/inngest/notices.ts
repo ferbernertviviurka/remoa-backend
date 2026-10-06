@@ -7,6 +7,7 @@ import { sendDailyReminders } from '../account/reminders';
 import { sendInactivityNotices } from '../account/inactivity';
 import { inngest } from './client';
 import { blogJobs } from './blog';
+import { invalidate } from '../cache';
 
 // Loaded when a job runs: the app (and its tests) boot without pulling the e-mail stack.
 const notify: Notify = async (userId, type, payload, opts) => (await import('../notifications/notify')).notify(userId, type, payload, opts);
@@ -15,13 +16,16 @@ const notify: Notify = async (userId, type, payload, opts) => (await import('../
 export async function purgeOldNotifications(now: Date) {
   const { db } = await dbm();
   const at = now.toISOString();
-  const r = await db.execute(sql`
+  const r = await db.execute<{ user_id: string }>(sql`
     delete from notifications
-    where created_at < ${at}::timestamptz - make_interval(days => case when read_at is null then ${NOTIFICATION_RETENTION_DAYS.unread}::int else ${NOTIFICATION_RETENTION_DAYS.read}::int end)`);
-  return r.count;
+    where created_at < ${at}::timestamptz - make_interval(days => case when read_at is null then ${NOTIFICATION_RETENTION_DAYS.unread}::int else ${NOTIFICATION_RETENTION_DAYS.read}::int end)
+    returning user_id`);
+  for (const userId of new Set(r.map((x) => x.user_id))) await invalidate('notification.changed', { userId }); // the list and the unread count lose rows by the clock
+  return r.length;
 }
 
-/** Soft-deleted events are purged after 30 days (reminders cascade); the cover becomes an orphan asset and leaves with cleanOrphanAssets. */
+/** (No invalidate: only rows soft-deleted 30+ days ago go, and no read lists a soft-deleted event.)
+ * Soft-deleted events are purged after 30 days (reminders cascade); the cover becomes an orphan asset and leaves with cleanOrphanAssets. */
 export async function purgeDeletedEvents(now: Date) {
   const { db } = await dbm();
   const r = await db.execute(sql`delete from calendar_events where deleted_at < ${now.toISOString()}::timestamptz - make_interval(days => ${CALENDAR_LIMITS.deletedRetentionDays})`);

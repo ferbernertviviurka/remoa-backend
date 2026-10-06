@@ -9,6 +9,7 @@ import { grade as mockGrader } from '@remoa/contracts/mocks';
 import { gradeAnswer, streamGradeAnswer } from './ai/service';
 import { aiMode } from '@remoa/ai';
 import { env as configEnv } from '@remoa/config';
+import { drainEmails } from './notifications/notify';
 
 const env = (k: string) => {
   const v = process.env[k];
@@ -48,5 +49,10 @@ syncLegalVersions().catch((e) => createLogger({ requestId: 'boot' }).error('lega
 ensureBucket().catch((e) => createLogger({ requestId: 'boot' }).error('storage bucket unavailable', { error: String(e) }));
 
 const port = Number(process.env.PORT ?? 4000);
-serve({ fetch: app.fetch, port });
+const server = serve({ fetch: app.fetch, port });
+// D-992: deploys send SIGTERM; stop taking requests and give deferred e-mails up to 8 s to leave.
+process.once('SIGTERM', () => {
+  server.close();
+  void drainEmails(8_000).finally(() => process.exit(0));
+});
 process.stdout.write(`api on http://localhost:${port}\n`);

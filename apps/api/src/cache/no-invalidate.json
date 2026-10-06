@@ -1,0 +1,56 @@
+{
+  "account/events.ts": {
+    "reason": "account_events é log de auditoria e contador de limite: só inclusão, nunca cacheado (neverCache: auditoria)"
+  },
+  "account/reminders.ts": {
+    "reason": "só carimba reminder_last_sent_on (controle interno do job de lembrete); nenhuma leitura cacheada usa"
+  },
+  "account/sessions.ts": {
+    "reason": "revoga sessões (auth.sessions): sessão e autenticação nunca são cacheadas (D-565)"
+  },
+  "admin/payments/mirror.ts": {
+    "reason": "roda dentro da transação do webhook do Stripe (reembolso muda o plano); o webhook (billing/webhook.ts) invalida plan.changed depois do COMMIT com os usuários que ela reporta (touched)"
+  },
+  "admin/users/test-kit.ts": {
+    "reason": "só testes de integração (cria usuários e mapas de teste); não roda em produção"
+  },
+  "billing/checkout.ts": {
+    "reason": "só grava o stripe_customer_id antes do checkout; o plano muda no webhook (billing/webhook.ts, plan.changed)"
+  },
+  "billing/grants.ts": {
+    "reason": "só funções que recebem a tx do chamador; quem chama invalida depois do COMMIT (referral/qualify.ts e admin/referrals referral.changed, billing/webhook.ts plan.changed, admin/users grant.changed)"
+  },
+  "billing/quota.ts": {
+    "reason": "contador de uso: invalidar plan.changed a cada resposta/geração derrubaria mapas e estatísticas à toa; a leitura dos direitos (ent) com uso não é cacheada no T7 e, quando for, o TTL de 5 min vale ou o uso sai dos direitos"
+  },
+  "blog/posts.ts": {
+    "reason": "funções que recebem a tx do withAdmin e devolvem Fx (tags); blog/routes.ts invalida blog.changed (blogChanged) depois do COMMIT"
+  },
+  "calendar/reminders/schedule.ts": {
+    "reason": "funções que recebem a tx do chamador (calendar/events.ts, account/profile.ts), que invalidam calendar.changed depois do COMMIT"
+  },
+  "cleanup/assets.ts": {
+    "reason": "apaga arquivos órfãos (sem dono visível); nenhuma leitura cacheada lista órfãos"
+  },
+  "emails/send.ts": {
+    "reason": "email_deliveries é log de entrega, nunca cacheado (arquivo da lane backend-deep agora)"
+  },
+  "emails/webhook.ts": {
+    "reason": "eventos de entrega do Resend (email_deliveries): log, nunca cacheado"
+  },
+  "public/shared.ts": {
+    "reason": "limite de taxa por IP do link compartilhado (shared_link_views): contador, nunca cacheado"
+  },
+  "public/waitlist.ts": {
+    "reason": "lista de espera da landing: só inclusão, nenhuma leitura pública cacheada"
+  },
+  "referral/summary.ts": {
+    "reason": "só cria o código do próprio usuário na primeira leitura; a leitura que o cria já o devolve, nenhum cache fica velho"
+  },
+  "store/waitlist.ts": {
+    "reason": "lista de espera da loja (G16), sem leitura cacheada; se o T7 cachear o estado da loja do usuário, ligar profile.changed"
+  },
+  "support/admin-inbox.ts": {
+    "reason": "funções que recebem a tx do withAdmin; admin/tickets/routes.ts invalida support.changed depois do COMMIT (e withAdmin solta admin.action)"
+  }
+}

@@ -1,10 +1,11 @@
 import { sql } from 'drizzle-orm';
 import {
   PLAN_LIMITS, REVIEW_HUB_ACTIVITY_WEEKS, REVIEW_HUB_AHEAD_DAYS, REVIEW_HUB_DEFAULT_SECONDS_PER_CARD, REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_HARD_CARDS_MAX,
-  activityLevel, areas, effectiveNewCardsPerDay, ok, type Area, type GetReviewHub, type MapState, type ReviewHub,
+  activityLevel, areas, cacheTags, effectiveNewCardsPerDay, ok, type Area, type GetReviewHub, type MapState, type ReviewHub,
 } from '@remoa/contracts';
 import { retrievability } from '@remoa/fsrs';
 import { run } from '../db';
+import { cached, type UserCacheDef } from '../cache';
 import { planOf } from '../billing/plan';
 import { active, buildQueue, cardState, dayWindow, isDue, itemsOf, loadCards, loadStates, stateKey } from './queue';
 
@@ -199,15 +200,11 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
   };
 }
 
-// ponytail: in-process cache, correct for a single API instance only (same ceiling as the retrievability cache in ./queue). Shared cache (Redis) when the API scales out.
-const TTL_MS = 60_000;
-const cache = new Map<string, { at: number; nowMs: number; hub: ReviewHub }>();
-export const invalidateReviewHub = (userId: string) => void cache.delete(userId);
+// G21 T7: L1 cache of the cache/ module (FR-32/FR-44). Dropped by review.answered, card.changed, map.changed, plan.changed.
+// The minute of `now` is in the key, as the old Map compared it (a different clock never reuses a hub).
+const hubCache = (now: Date): UserCacheDef<{ userId: string }> => ({
+  scope: 'user', name: 'review-hub', ttl: 'live', key: () => [Math.floor(now.getTime() / 60_000)],
+  tags: ({ userId }) => [cacheTags.user(userId, 'review'), cacheTags.user(userId, 'stats'), cacheTags.user(userId, 'progress')],
+});
 
-export const getReviewHub: GetReviewHub = async (userId, now) => {
-  const hit = cache.get(userId);
-  if (hit && Date.now() - hit.at < TTL_MS && Math.abs(now.getTime() - hit.nowMs) < TTL_MS) return ok(hit.hub);
-  const hub = await computeReviewHub(userId, now);
-  cache.set(userId, { at: Date.now(), nowMs: now.getTime(), hub });
-  return ok(hub);
-};
+export const getReviewHub: GetReviewHub = async (userId, now) => ok(await cached(hubCache(now), { userId }, () => computeReviewHub(userId, now)));

@@ -12,6 +12,7 @@ import { grantBothSides } from '../../referral/grant';
 import { notifyRewardGranted } from '../../referral/notify';
 import { notFound, reasonOf, registerExport, send, withAdmin, type AdminEnv } from '../core';
 import { dt, dtReq, isUuid, likeOf, trailOf } from '../users/util';
+import { invalidate } from '../../cache';
 
 const conflict = () => err<never>('conflict', adminErrors.invalidState);
 type Raw = Record<string, unknown>;
@@ -106,9 +107,11 @@ export const referralsRoutes = new Hono<AdminEnv>()
     const id = c.req.param('id') ?? '';
     if (!(await referralOf(id))) return notFound();
     let granted: Awaited<ReturnType<typeof grantBothSides>> = [];
+    let sides: (string | null)[] = [];
     const r = await withAdmin(c, 'referral.approve', { reason: reasonOf(json), target: { type: 'referral', id } }, async (tx, audit) => {
       const row = await lockRow(tx, id);
       if (!row || row.status !== 'rejected' || !row.referee_id) return conflict();
+      sides = [row.referrer_id, row.referee_id];
       audit.before({ status: row.status, rejectReason: row.reject_reason });
       await tx.execute(sql`update referrals set status = 'qualified', reject_reason = null, qualified_at = now() where id = ${id}`);
       granted = await grantBothSides(tx, { id, referrerId: row.referrer_id, refereeId: row.referee_id });
@@ -116,6 +119,7 @@ export const referralsRoutes = new Hono<AdminEnv>()
       return ok({ granted });
     });
     if (r.ok) {
+      for (const u of sides) await invalidate('referral.changed', { userId: u! }); // after COMMIT: grants + referral summary of both sides
       for (const g of granted) if (g.kind === 'credit') await applyPendingCredits(g.userId).catch(() => null); // Stripe only after commit; the sweep retries
       await notifyRewardGranted(id); // never throws
     }
@@ -126,15 +130,19 @@ export const referralsRoutes = new Hono<AdminEnv>()
     const json: unknown = await c.req.json().catch(() => null);
     const id = c.req.param('id') ?? '';
     if (!(await referralOf(id))) return notFound();
-    return send(await withAdmin(c, 'referral.reject', { reason: reasonOf(json), target: { type: 'referral', id } }, async (tx, audit) => {
+    let sides: (string | null)[] = [];
+    const r = await withAdmin(c, 'referral.reject', { reason: reasonOf(json), target: { type: 'referral', id } }, async (tx, audit) => {
       const row = await lockRow(tx, id);
+      sides = [row?.referrer_id ?? null, row?.referee_id ?? null];
       const reviewing = row?.status === 'rejected' && (row.reject_reason === 'velocity_limit' || row.reject_reason === 'fraud_signals');
       if (!row || (row.status !== 'signed_up' && !reviewing)) return conflict();
       audit.before({ status: row.status, rejectReason: row.reject_reason });
       await tx.execute(sql`update referrals set status = 'rejected', reject_reason = 'manual' where id = ${id}`);
       audit.after({ status: 'rejected', rejectReason: 'manual' });
       return ok({});
-    }));
+    });
+    if (r.ok) for (const u of sides) if (u) await invalidate('referral.changed', { userId: u });
+    return send(r);
   })
   .post('/:id/revoke-grant', async (c: C) => {
     const json: unknown = await c.req.json().catch(() => null);
@@ -143,9 +151,11 @@ export const referralsRoutes = new Hono<AdminEnv>()
     if (!body.ok) return send(body);
     if (!(await referralOf(id))) return notFound();
     const { grantId } = body.data;
-    return send(await withAdmin(c, 'grant.revoke', { reason: reasonOf(json), target: { type: 'grant', id: grantId } }, async (tx, audit) => {
+    let owner: string | null = null;
+    const r = await withAdmin(c, 'grant.revoke', { reason: reasonOf(json), target: { type: 'grant', id: grantId } }, async (tx, audit) => {
       const { entitlementGrants: g } = await dbm();
       const [x] = await tx.execute<{ user_id: string; revoked_at: string | null }>(sql`select user_id, revoked_at from entitlement_grants where id = ${grantId} and referral_id = ${id}`);
+      owner = x?.user_id ?? null;
       if (!x || x.revoked_at) return conflict(); // unknown to this referral, already revoked or converted (F18)
       await lockGrants(tx, x.user_id);
       audit.before({ referralId: id, revoked: false });
@@ -153,5 +163,7 @@ export const referralsRoutes = new Hono<AdminEnv>()
       if (!rows.length) return conflict();
       audit.after({ referralId: id, revoked: true, revokedReason: 'manual' });
       return ok({});
-    }));
+    });
+    if (r.ok && owner) await invalidate('grant.changed', { userId: owner });
+    return send(r);
   });

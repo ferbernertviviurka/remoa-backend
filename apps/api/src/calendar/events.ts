@@ -8,6 +8,7 @@ import { run } from '../db';
 import { presignGet } from '../storage/storage';
 import { localCols, profileTz } from './common';
 import { replanEventReminders } from './reminders/schedule';
+import { invalidate } from '../cache';
 
 type S = typeof import('@remoa/db');
 export type EventInput = ReturnType<typeof calendarEventInputSchema.parse>;
@@ -86,12 +87,13 @@ export async function createEvent(userId: string, input: EventInput, now = new D
     await replanEventReminders(tx, row!.id, now);
     return ok((await present(tx, s, await loadOne(tx, s, userId, row!.id)))[0]!);
   });
+  if (r.ok) await invalidate('calendar.changed', { userId });
   return r;
 }
 
 export async function updateEvent(userId: string, id: string, patch: EventPatch, now = new Date()): Promise<Result<CalendarEvent>> {
   if (!idSchema.safeParse(id).success) return notFound();
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const [cur] = await loadOne(tx, s, userId, id);
     if (!cur) return notFound();
     const m: Fields = {
@@ -112,23 +114,27 @@ export async function updateEvent(userId: string, id: string, patch: EventPatch,
     await replanEventReminders(tx, id, now);
     return ok((await present(tx, s, await loadOne(tx, s, userId, id)))[0]!);
   });
+  if (r.ok) await invalidate('calendar.changed', { userId });
+  return r;
 }
 
 export async function deleteEvent(userId: string, id: string, now = new Date()): Promise<Result<null>> {
   if (!idSchema.safeParse(id).success) return notFound();
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const e = s.calendarEvents;
     const done = await tx.update(e).set({ deletedAt: now }).where(and(eq(e.id, id), eq(e.userId, userId), isNull(e.deletedAt))).returning({ id: e.id });
     if (!done.length) return notFound();
     await replanEventReminders(tx, id, now); // cancels the scheduled sends of a deleted event
     return ok(null);
   });
+  if (r.ok) await invalidate('calendar.changed', { userId });
+  return r;
 }
 
 /** Same wall-clock time, `days` later (default +7), same label, cover and reminders. */
 export async function duplicateEvent(userId: string, id: string, input: Required<DuplicateEventInput>, now = new Date()): Promise<Result<CalendarEvent>> {
   if (!idSchema.safeParse(id).success) return notFound();
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const shift = (col: string) => sql.raw(`((${col} at time zone timezone) + make_interval(days => ${Math.trunc(input.days)})) at time zone timezone`);
     const [row] = await tx.execute<{ id: string }>(sql`
       insert into calendar_events (user_id, title, label_id, starts_at, ends_at, all_day, timezone, location, description, cover_asset_id, remind_d1, remind_d0)
@@ -138,17 +144,21 @@ export async function duplicateEvent(userId: string, id: string, input: Required
     await replanEventReminders(tx, row.id, now);
     return ok((await present(tx, s, await loadOne(tx, s, userId, row.id)))[0]!);
   });
+  if (r.ok) await invalidate('calendar.changed', { userId });
+  return r;
 }
 
 export async function setEventReminders(userId: string, id: string, input: EventRemindersInput, now = new Date()): Promise<Result<CalendarEvent>> {
   if (!idSchema.safeParse(id).success) return notFound();
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const done = await tx.update(s.calendarEvents).set({ ...(input.remindD1 !== undefined && { remindD1: input.remindD1 }), ...(input.remindD0 !== undefined && { remindD0: input.remindD0 }) })
       .where(and(eq(s.calendarEvents.id, id), eq(s.calendarEvents.userId, userId), isNull(s.calendarEvents.deletedAt))).returning({ id: s.calendarEvents.id });
     if (!done.length) return notFound();
     await replanEventReminders(tx, id, now);
     return ok((await present(tx, s, await loadOne(tx, s, userId, id)))[0]!);
   });
+  if (r.ok) await invalidate('calendar.changed', { userId });
+  return r;
 }
 
 const dayNumber = (d: string) => Date.parse(`${d}T00:00:00Z`) / 86_400_000;

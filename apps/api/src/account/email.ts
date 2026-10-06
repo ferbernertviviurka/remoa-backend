@@ -6,6 +6,7 @@ import { dbm } from '../db';
 import { isAccountDeleted } from './account';
 import { anonClient, authInfoOf, loadAuthUser } from './auth-admin';
 import { recordEvent, releaseSlot, takeSlot } from './events';
+import { invalidate } from '../cache';
 
 const GENERIC = 'email_change_failed'; // never reveals whether the address belongs to another account
 
@@ -35,6 +36,7 @@ export const requestEmailChange: RequestEmailChange = async (userId, { newEmail,
     await client.auth.signOut({ scope: 'local' }); // only the session created here; the default 'global' would end every session of the user
   }
   await recordEvent(db, userId, 'email_change_requested');
+  await invalidate('profile.changed', { userId });
   return ok({ pendingEmail: newEmail });
 };
 
@@ -57,5 +59,6 @@ export const cancelEmailChange: CancelEmailChange = async (userId) => {
   const { db } = await dbm();
   await db.execute(sql`update auth.users set email_change = '', email_change_token_new = '', email_change_token_current = '', email_change_sent_at = null, email_change_confirm_status = 0 where id = ${userId}`);
   await recordEvent(db, userId, 'email_change_canceled');
+  await invalidate('profile.changed', { userId });
   return ok(null);
 };

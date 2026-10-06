@@ -7,6 +7,7 @@ import { dbm } from '../db';
 import { rejectReason } from './fraud';
 import { grantBothSides, type GrantFn } from './grant';
 import { notifyRewardGranted } from './notify';
+import { invalidate } from '../cache';
 
 export type QualifyOutcome = 'none' | 'pending' | 'qualified' | 'rejected';
 
@@ -47,13 +48,17 @@ export async function maybeQualifyReferral(
       const reason = await rejectReason(tx, { referrerId: r.referrer_id, refereeId: userId, referrerEmail: email(r.referrer_id), refereeEmail: email(userId) }, now);
       if (reason) {
         await tx.execute(sql`update referrals set status = 'rejected', reject_reason = ${reason} where id = ${r.id}`);
-        return { outcome: 'rejected' as const, reason };
+        return { outcome: 'rejected' as const, reason, referrerId: r.referrer_id };
       }
       await tx.execute(sql`update referrals set status = 'qualified', qualified_at = ${now.toISOString()} where id = ${r.id}`);
       const granted = await grantBothSides(tx, { id: r.id, referrerId: r.referrer_id, refereeId: userId }, o.grant);
-      return { outcome: 'qualified' as const, id: r.id, granted };
+      return { outcome: 'qualified' as const, id: r.id, granted, referrerId: r.referrer_id };
     });
 
+    if (res.outcome === 'qualified' || res.outcome === 'rejected') {
+      // after COMMIT: both sides' referral summary and (qualified) entitlements
+      for (const id of [res.referrerId, userId]) await invalidate('referral.changed', { userId: id });
+    }
     if (res.outcome === 'rejected') {
       log.warn('referral_rejected', { event: 'referral_rejected', reason: res.reason });
     }

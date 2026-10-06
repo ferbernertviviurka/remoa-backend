@@ -5,6 +5,7 @@ import { env } from '@remoa/config';
 import { err, errorHttpStatus, legalAcceptInputSchema, ok, parseWith, type HttpErrorBody, type LegalStatus, type Result } from '@remoa/contracts';
 import type { Env } from '../app';
 import { dbm } from '../db';
+import { invalidate } from '../cache';
 
 const send = <T>(r: Result<T>) =>
   r.ok ? Response.json({ ok: true, data: r.data }) : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
@@ -14,7 +15,11 @@ export async function syncLegalVersions(): Promise<void> {
   const { db, legalVersions } = await dbm();
   const cur = env();
   for (const [document, version] of [['terms', cur.legalTermsVersion], ['privacy', cur.legalPrivacyVersion]] as const)
+  {
+    const [prev] = await db.select({ v: legalVersions.version }).from(legalVersions).where(eq(legalVersions.document, document));
     await db.insert(legalVersions).values({ document, version }).onConflictDoUpdate({ target: legalVersions.document, set: { version, updatedAt: new Date() } });
+    if (prev?.v !== version) await invalidate('legal.changed', { doc: document }); // only a real version change reaches the web
+  }
 }
 
 export async function legalStatus(userId: string): Promise<LegalStatus> {
@@ -44,6 +49,7 @@ export const accountLegalRoutes = new Hono<Env>()
         { userId, document: 'privacy', version: cur.legalPrivacyVersion, acceptedAt: at },
       ]).onConflictDoNothing();
     });
+    await invalidate('profile.changed', { userId });
     return send(ok(await legalStatus(userId)));
   });
 

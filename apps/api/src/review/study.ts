@@ -1,8 +1,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { cardStudyActionSchema, idSchema, parseWith, type CardStudyAction, type CardStudyState, type Result } from '@remoa/contracts';
 import { Abort, guard, run } from '../db';
-import { invalidateRetrievability } from './queue';
-import { invalidateReviewHub } from './hub';
+import { invalidate } from '../cache';
 
 /** F03 FR-9 (D-522): owner-only; anyone else (or a missing/deleted card) gets 404. suspend/unsuspend keep FSRS state; reset drops it (every sub_id), keeps attempts. */
 export async function setCardStudy(userId: string, cardId: string, action: CardStudyAction): Promise<Result<CardStudyState>> {
@@ -28,9 +27,6 @@ export async function setCardStudy(userId: string, cardId: string, action: CardS
       return { cardId, suspendedAt: u!.suspendedAt };
     }),
   );
-  if (r.ok) {
-    invalidateRetrievability(userId);
-    invalidateReviewHub(userId);
-  }
+  if (r.ok) await invalidate('card.changed', { userId });
   return r;
 }

@@ -11,6 +11,7 @@ import { Abort, dbm, guard, run } from '../db';
 import { recordAttempt } from '../review/record-attempt';
 import { buildSession, type Answered, type StoredItem } from './build';
 import { assertQuota, refundQuota } from './quota';
+import { invalidate } from '../cache';
 
 export const GRADER_TIMEOUT_MS = 8000;
 
@@ -293,8 +294,8 @@ export const rate: Rate = async (userId, input) =>
 
 // --- dispute -----------------------------------------------------------------------------------------------------------
 
-export const dispute: Dispute = async (userId, input) =>
-  locked(userId, input.sessionId, async (tx, s, row, items) => {
+export const dispute: Dispute = async (userId, input) => {
+  const r = await locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (!item.x.answered?.verdict) throw fail('conflict', 'only graded answers can be disputed');
@@ -307,6 +308,9 @@ export const dispute: Dispute = async (userId, input) =>
     await save(tx, s, row.id, items);
     return { reviewItemId };
   });
+  if (r.ok) await invalidate('review.answered', { userId }); // the attempt's verdict is now `disputed` (progress)
+  return r;
+};
 
 // --- skip --------------------------------------------------------------------------------------------------------------
 
@@ -324,8 +328,8 @@ export const skip: Skip = async (userId, input) =>
 
 // --- finish ------------------------------------------------------------------------------------------------------------
 
-export const finishSession: FinishSession = async (userId, sessionId) =>
-  locked(userId, sessionId, async (tx, s, row, items) => {
+export const finishSession: FinishSession = async (userId, sessionId) => {
+  const r = await locked(userId, sessionId, async (tx, s, row, items) => {
     const endedAt = row.endedAt ?? new Date();
     if (!row.endedAt) await tx.update(s.sessions).set({ endedAt, updatedAt: new Date() }).where(eq(s.sessions.id, row.id));
     const rated = items.filter((i) => i.x.rated);
@@ -340,3 +344,6 @@ export const finishSession: FinishSession = async (userId, sessionId) =>
       durationMs: endedAt.getTime() - row.startedAt.getTime(),
     };
   });
+  if (r.ok) await invalidate('review.answered', { userId }); // the session ended: stats and progress count it
+  return r;
+};

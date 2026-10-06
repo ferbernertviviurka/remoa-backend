@@ -95,4 +95,30 @@ describe.skipIf(!live)('supabaseVerifier (D-565)', () => {
     await admin.auth.admin.updateUserById(c.userId, { ban_duration: '24h' });
     expect(await me(app, c.token)).toBe(401);
   });
+
+  it('D-990: on a GET that opens run(), the session check rides in its first statement; revocation and ban still answer 401 at once', async () => {
+    const sessions = await import('./account/sessions');
+    const boards = async (t: string) => app.request('/v1/boards', { headers: { authorization: `Bearer ${t}` } });
+    const a = await signIn();
+    const ok = await boards(a.token);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('server-timing')).toMatch(/db;dur=/);
+    await sessions.deleteSessions(a.userId, { only: a.sid });
+    expect((await boards(a.token)).status).toBe(401);
+
+    const c = await signIn();
+    await admin.auth.admin.updateUserById(c.userId, { ban_duration: '24h' });
+    expect((await boards(c.token)).status).toBe(401);
+  });
+
+  it('D-990: soft-deleted account: GET /v1/boards 403 account_deleted, GET /v1/account/me still allowed (D-123)', async () => {
+    const { db } = await import('@remoa/db');
+    const { sql } = await import('drizzle-orm');
+    const a = await signIn();
+    await db.execute(sql`update profiles set deleted_at = now() where user_id = ${a.userId}`);
+    const res = await app.request('/v1/boards', { headers: { authorization: `Bearer ${a.token}` } });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe('account_deleted');
+    expect((await app.request('/v1/account/me', { headers: { authorization: `Bearer ${a.token}` } })).status).not.toBe(403);
+  });
 });

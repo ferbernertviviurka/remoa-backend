@@ -4,6 +4,7 @@ import {
   caseStages, err, idSchema, ok,
 } from '@remoa/contracts';
 import { Abort, guard, run } from '../db';
+import { invalidate } from '../cache';
 
 const isUuid = (v: string) => idSchema.safeParse(v).success;
 /** D-201: `{w,h}` or null from the two nullable columns (the CHECK keeps them together). */
@@ -102,8 +103,10 @@ export const saveCard: SaveCard = async (userId, cardId, input) => {
         if (!saved.length) throw new Abort({ code: 'validation', message: 'mask id already in use' });
       }
       await tx.update(s.boards).set({ updatedAt: new Date() }).where(eq(s.boards.id, row.boardId));
-      return null;
+      return { boardId: row.boardId };
     }),
   );
-  return r.ok ? getCard(userId, cardId) : r;
+  if (!r.ok) return r;
+  await invalidate('card.changed', { userId, mapId: r.data.boardId }); // after COMMIT
+  return getCard(userId, cardId);
 };

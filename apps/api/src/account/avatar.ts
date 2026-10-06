@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import { AVATAR_MAX_BYTES, err, imageMimes, ok, type AvatarVariants, type ConfirmAvatar, type RemoveAvatar } from '@remoa/contracts';
 import { recordEvent } from './events';
 import { deleteObject, getBytes, headObject, presignGet, putBytes } from '../storage/storage';
+import { invalidate } from '../cache';
 
 /** D-055: decompression-bomb guard, same as card images. */
 const PIXEL_LIMIT = 50e6;
@@ -25,6 +26,7 @@ const setKey = async (userId: string, avatarKey: string | null, source: 'upload'
   await db.insert(profiles).values({ userId, avatarKey }).onConflictDoUpdate({ target: profiles.userId, set: { avatarKey } });
   // ponytail: direct insert until account/events.ts (recordEvent) lands; swap then.
   await recordEvent(db, userId, 'avatar_changed', { source, zoom: null });
+  await invalidate('profile.changed', { userId });
   return prev?.k ?? null;
 };
 

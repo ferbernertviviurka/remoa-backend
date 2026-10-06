@@ -9,7 +9,11 @@ import { routePath } from 'hono/route';
 import { createLogger, type Logger } from '@remoa/log';
 import { isProduction, perfEnv } from '@remoa/config';
 
-export type PerfStore = { route: string; log: Logger; queries: number; db: number; ext: number; extNames: Set<string>; marks: Map<string, number> };
+/**
+ * `db` = sum of every query's time; `dbWall` = time with at least one query in flight (P-449: Promise.all inside a transaction
+ * pipelines on one connection, so each query also waits for its siblings and the sum can exceed the request's total).
+ */
+export type PerfStore = { route: string; log: Logger; queries: number; db: number; dbWall: number; inflight: number; wallT0: number; ext: number; extNames: Set<string>; marks: Map<string, number> };
 
 /** FR-19: query budget per route (`METHOD /path` as Hono matches it). The one place; the dev warning and the bench read it. */
 export const QUERY_BUDGETS: Record<string, number> = {
@@ -47,12 +51,15 @@ function recordQuery(query: string, dur: number, rows: number | undefined) {
 
 async function timedQuery<T>(query: string, run: () => Promise<T>): Promise<T> {
   const t0 = performance.now();
+  const s = als.getStore();
+  if (s && s.inflight++ === 0) s.wallT0 = t0;
   let rows: number | undefined;
   try {
     const r = await run();
     if (Array.isArray(r)) rows = r.length;
     return r;
   } finally {
+    if (s && --s.inflight === 0) s.dbWall += ms(s.wallT0);
     recordQuery(query, ms(t0), rows);
   }
 }
@@ -121,9 +128,12 @@ if (!GF.__remoaPerfFetch) {
 }
 
 const f1 = (n: number) => (Math.round(n * 10) / 10).toString();
-/** `db;dur=X;desc="N q", ext;dur=Y, app;dur=Z` (+ withTiming marks). app = total − db − ext, floored at 0. */
+/**
+ * `db;dur=X;desc="N q", ext;dur=Y, app;dur=Z, db-sum;dur=W` (+ withTiming marks). db = wall time with a query in flight (≤ total);
+ * db-sum = the old per-query sum (> db when queries overlap). app = total − db − ext, floored at 0.
+ */
 export function serverTiming(s: PerfStore, total: number) {
-  const parts = [`db;dur=${f1(s.db)};desc="${s.queries} q"`, `ext;dur=${f1(s.ext)}${s.extNames.size ? `;desc="${[...s.extNames].join(',')}"` : ''}`, `app;dur=${f1(Math.max(0, total - s.db - s.ext))}`];
+  const parts = [`db;dur=${f1(s.dbWall)};desc="${s.queries} q"`, `ext;dur=${f1(s.ext)}${s.extNames.size ? `;desc="${[...s.extNames].join(',')}"` : ''}`, `app;dur=${f1(Math.max(0, total - s.dbWall - s.ext))}`, `db-sum;dur=${f1(s.db)}`];
   for (const [k, v] of s.marks) parts.push(`${k.replace(/[^\w-]/g, '_')};dur=${f1(v)}`);
   return parts.join(', ');
 }
@@ -131,7 +141,7 @@ export function serverTiming(s: PerfStore, total: number) {
 /** Runs the rest of the chain inside a fresh store and writes the two headers on every response (404 and errors included). */
 export const perfMiddleware = createMiddleware<{ Variables: { log: Logger } }>(async (c, next) => {
   const route = `${c.req.method} ${routePath(c, -1)}`;
-  const s: PerfStore = { route, log: c.get('log') ?? createLogger({ requestId: 'no-request' }), queries: 0, db: 0, ext: 0, extNames: new Set(), marks: new Map() };
+  const s: PerfStore = { route, log: c.get('log') ?? createLogger({ requestId: 'no-request' }), queries: 0, db: 0, dbWall: 0, inflight: 0, wallT0: 0, ext: 0, extNames: new Set(), marks: new Map() };
   const t0 = performance.now();
   await als.run(s, () => next());
   const value = serverTiming(s, ms(t0));

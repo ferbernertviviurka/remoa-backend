@@ -30,7 +30,7 @@ describe('revalidateBlog (F27 FR-21)', () => {
     const f = mockFetch(new Error('ECONNREFUSED'), 503);
     await expect(revalidateBlog(['feed'], log)).resolves.toBeUndefined();
     expect(f).toHaveBeenCalledTimes(2);
-    expect(log.error).toHaveBeenCalledWith('blog revalidate failed', expect.objectContaining({ error: 'status 503' }));
+    expect(log.error).toHaveBeenCalledWith('web revalidate failed', expect.objectContaining({ error: 'status 503' }));
   });
 
   it('recovers on the retry', async () => {

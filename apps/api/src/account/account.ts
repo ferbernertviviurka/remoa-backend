@@ -2,6 +2,7 @@ import { and, eq, getTableColumns, inArray } from 'drizzle-orm';
 import { err, ok, type DeleteAccount, type ExportAccount } from '@remoa/contracts';
 import type { StripePort } from '../billing/stripe';
 import { run } from '../db';
+import { invalidate } from '../cache';
 
 const DAY = 86_400_000;
 const omit = <T extends object, K extends keyof T>(o: T, k: K): Omit<T, K> => Object.fromEntries(Object.entries(o).filter(([key]) => key !== k)) as Omit<T, K>; // assigned_to has no grant for `authenticated` (D-427)
@@ -58,5 +59,6 @@ export const deleteAccount = async (userId: string, stripe?: StripePort): Return
   }
   const now = new Date();
   await db.insert(profiles).values({ userId, deletedAt: now }).onConflictDoUpdate({ target: profiles.userId, set: { deletedAt: now } });
+  await invalidate('account.deleted', { userId });
   return ok({ hardDeleteAt: new Date(now.getTime() + GRACE_DAYS * DAY) });
 };

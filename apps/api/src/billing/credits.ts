@@ -3,6 +3,7 @@ import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
 import { installedStripe, type StripePort } from './stripe';
+import { invalidate } from '../cache';
 
 /**
  * Applies pending credits of one user (after the qualification/webhook commit) or of everyone (`userId` omitted: T2's daily sweep).
@@ -31,6 +32,7 @@ export async function applyPendingCredits(userId?: string, stripe: StripePort | 
       const txn = await stripe.createBalanceTransaction({ customerId: r.customerId, amountCents: r.amountCents, idempotencyKey: `referral-credit:${r.id}`, description: 'Remoa: indicação de amigo (1 mês)' });
       await db.update(c).set({ stripeBalanceTxnId: txn, appliedAt: new Date() }).where(and(eq(c.id, r.id), isNull(c.appliedAt)));
       applied++;
+      await invalidate('referral.changed', { userId: r.userId }); // after the write: the summary and the entitlements show the applied credit
       log.info('referral credit applied', { creditId: r.id, userId: r.userId, amountCents: r.amountCents });
     } catch (e) {
       log.warn('referral credit left pending', { creditId: r.id, reason: String(e) });

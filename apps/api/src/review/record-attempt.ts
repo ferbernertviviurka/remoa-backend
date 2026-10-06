@@ -3,8 +3,7 @@ import { ok, type FsrsMemory, type FsrsState, type RecordAttempt } from '@remoa/
 import { grades } from '@remoa/contracts';
 import { schedule } from '@remoa/fsrs';
 import { Abort, guard, run } from '../db';
-import { invalidateRetrievability } from './queue';
-import { invalidateReviewHub } from './hub';
+import { invalidate } from '../cache';
 
 const bad = (message: string) => new Abort({ code: 'validation', message });
 const payloadIds = (payload: unknown, key: 'steps' | 'masks') => {
@@ -54,7 +53,6 @@ export const recordAttempt: RecordAttempt = async (a) => {
     }),
   );
   if (!r.ok) return r;
-  invalidateRetrievability(a.userId);
-  invalidateReviewHub(a.userId);
+  await invalidate('review.answered', { userId: a.userId });
   return ok({ state: r.data, due: r.data.due });
 };

@@ -6,6 +6,7 @@ import {
 import { dbm } from '../db';
 import { planOf } from '../billing/plan';
 import { setPref } from '../notifications/service';
+import { invalidate } from '../cache';
 
 type Row = { theme: string; reduceMotion: boolean | null; reminderEnabled: boolean; reminderHour: number; newCardsPerDay: number | null; emailReviewReminders: boolean; emailProductNews: boolean };
 
@@ -44,5 +45,6 @@ export const updatePreferences: UpdatePreferences = async (userId, input) => {
     input = { ...input, reminderEnabled: wanted, emailReviewReminders: wanted };
   }
   const [r] = await db.insert(t).values({ userId, ...input }).onConflictDoUpdate({ target: t.userId, set: { ...input, updatedAt: new Date() } }).returning();
+  await invalidate('prefs.changed', { userId });
   return ok(toPrefs(r, cap, await reminderEmail(userId)));
 };

@@ -4,7 +4,7 @@ import { BLOG_JOBS, type BlogJob } from '@remoa/contracts';
 import { env } from '@remoa/config';
 import { createLogger, newRequestId } from '@remoa/log';
 import { dbm } from '../db';
-import { revalidateBlog } from '../blog/revalidate';
+import { invalidate } from '../cache';
 import { regenerateSitemap } from '../blog/sitemap';
 
 const CLEANUP_DAYS = 30;
@@ -35,7 +35,7 @@ export async function publishScheduled(now: Date) {
   if (rows.length) {
     const log = createLogger({ requestId: newRequestId() });
     log.info('blog scheduled posts published', { count: rows.length, slugs: rows.map((r) => r.slug) });
-    await revalidateBlog(['blog', 'landing', 'feed', ...rows.map((r) => `blog:post:${r.slug}`), ...rows.flatMap((r) => (r.category_slug ? [`blog:category:${r.category_slug}`] : []))], log);
+    await invalidate('blog.changed', { slugs: rows.map((r) => r.slug), categorySlugs: rows.flatMap((r) => (r.category_slug ? [r.category_slug] : [])) }, log);
     await regenerateSitemap({ reason: 'blog.publish-scheduled' }, now);
   }
   return { published: rows.length };
