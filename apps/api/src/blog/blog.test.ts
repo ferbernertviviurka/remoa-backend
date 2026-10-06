@@ -187,6 +187,8 @@ describe.skipIf(!process.env.DATABASE_URL)('F27 blog API', () => {
     expect(fake.status).toBe(422);
     expect(fake.json.error?.message).toBe('bad_image');
     expect((await send(Buffer.alloc(10, 1))).status).toBe(422);
+    const huge = await sharp({ create: { width: 6000, height: 5000, channels: 3, background: '#fff' } }).png({ compressionLevel: 9 }).toBuffer(); // 30 MP > 25 MP (P-435)
+    expect((await send(huge)).status).toBe(422);
 
     const jpg = await sharp({ create: { width: 1000, height: 500, channels: 3, background: '#f80' } }).jpeg().withExif({ IFD0: { Copyright: 'segredo-exif' } }).toBuffer();
     expect((await sharp(jpg).metadata()).exif).toBeTruthy();

@@ -101,6 +101,8 @@ export function isSafeHref(raw: string): boolean {
 }
 /** Internal = relative path (FR-27); anchors are neither internal nor external. */
 export const isInternalHref = (href: string) => href.trim().startsWith('/') && !href.trim().startsWith('//');
+/** Image `src` outside our bucket: https only (http = mixed content; the host of a third party is a tracking pixel anyway, P-433). */
+export const isHttpsHref = (href: string) => /^https:\/\//i.test(href.trim());
 export const isExternalHref = (href: string) => /^https?:\/\//i.test(href.trim());
 
 // --- ProseMirror document (FR-6, FR-28) ------------------------------------------------------
@@ -154,7 +156,7 @@ const imageSchema = z.object({
   type: z.literal('image'),
   attrs: z.object({
     assetId: idSchema.nullable().optional(),
-    src: z.string().url().max(BLOG_LIMITS.hrefMax).refine(isExternalHref, 'http(s) only').nullable().optional(),
+    src: z.string().url().max(BLOG_LIMITS.hrefMax).refine(isHttpsHref, 'https only').nullable().optional(),
     alt: z.string().trim().min(1).max(BLOG_LIMITS.altMax),
     caption: z.string().trim().max(BLOG_LIMITS.captionMax).nullable().optional(),
     width: z.number().int().positive().max(10_000),

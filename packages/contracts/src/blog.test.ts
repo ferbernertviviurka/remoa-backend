@@ -85,6 +85,7 @@ describe('blogDocSchema', () => {
     ['unknown mark', { type: 'paragraph', content: [{ type: 'text', text: 'x', marks: [{ type: 'underline' }] }] }],
     ['image without alt', { type: 'image', attrs: { assetId: '00000000-0000-4000-8000-000000000001', alt: '  ', width: 1, height: 1 } }],
     ['image with both sources', { type: 'image', attrs: { assetId: '00000000-0000-4000-8000-000000000001', src: 'https://a.com/x.png', alt: 'x', width: 1, height: 1 } }],
+    ['image with http src', { type: 'image', attrs: { src: 'http://a.com/x.png', alt: 'x', width: 1, height: 1 } }],
     ['image with data src', { type: 'image', attrs: { src: 'data:image/png;base64,AA', alt: 'x', width: 1, height: 1 } }],
     ['button to javascript', { type: 'button', attrs: { text: 'x', href: 'javascript:x' } }],
     ['bad callout', { type: 'callout', attrs: { variant: 'perigo' }, content: [p('x')] }],

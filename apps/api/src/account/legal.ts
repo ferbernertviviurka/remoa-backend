@@ -9,6 +9,14 @@ import { dbm } from '../db';
 const send = <T>(r: Result<T>) =>
   r.ok ? Response.json({ ok: true, data: r.data }) : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
 
+/** P-430: publishes the configured versions to legal_versions (read by the handle_new_user trigger). Called at API boot. */
+export async function syncLegalVersions(): Promise<void> {
+  const { db, legalVersions } = await dbm();
+  const cur = env();
+  for (const [document, version] of [['terms', cur.legalTermsVersion], ['privacy', cur.legalPrivacyVersion]] as const)
+    await db.insert(legalVersions).values({ document, version }).onConflictDoUpdate({ target: legalVersions.document, set: { version, updatedAt: new Date() } });
+}
+
 export async function legalStatus(userId: string): Promise<LegalStatus> {
   const { db, profiles } = await dbm();
   const [p] = await db.select({ t: profiles.termsAcceptedVersion, p: profiles.privacyAcceptedVersion, at: profiles.acceptedAt }).from(profiles).where(eq(profiles.userId, userId));

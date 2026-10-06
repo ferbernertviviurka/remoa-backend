@@ -4,11 +4,12 @@ import { eq, inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import { env } from '@remoa/config';
 import { BLOG_LIMITS, blogErrors, err, ok, slugify, type BlogAsset, type BlogAssetVariant, type Result } from '@remoa/contracts';
+import type { Tx } from '@remoa/db';
 import { dbm } from '../db';
 import { putPublicBytes } from '../storage/storage';
 import type { ImageRef, ResolvedImage } from '@remoa/blog';
 
-const PIXEL_LIMIT = 50e6;
+const PIXEL_LIMIT = 25e6;
 const SIGNATURES: { mime: string; format: string; test: (b: Buffer) => boolean }[] = [
   { mime: 'image/png', format: 'png', test: (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
   { mime: 'image/jpeg', format: 'jpeg', test: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
@@ -48,7 +49,7 @@ export async function loadAssets(ids: string[]): Promise<AssetRow[]> {
   return db.select().from(blogAssets).where(inArray(blogAssets.id, ids));
 }
 
-export async function uploadBlogImage(userId: string, input: { bytes: Buffer; slug: string; id?: string }): Promise<Result<{ asset: BlogAsset }>> {
+export async function uploadBlogImage(userId: string, input: { bytes: Buffer; slug: string; id?: string }, tx?: Tx): Promise<Result<{ asset: BlogAsset }>> {
   const { bytes } = input;
   if (!bytes.length || bytes.length > BLOG_LIMITS.imageMaxBytes) return err('validation', blogErrors.badImage);
   const sig = SIGNATURES.find((s) => s.test(bytes));
@@ -92,7 +93,7 @@ export async function uploadBlogImage(userId: string, input: { bytes: Buffer; sl
 
   const main = variants.filter((v) => v.format === 'webp').at(-1)!;
   const { db, blogAssets } = await dbm();
-  const [row] = await db.insert(blogAssets).values({ id, key: main.key, width: main.width, height: main.height, mime: 'image/webp', size: bytes.length, variants, createdBy: userId }).returning();
+  const [row] = await (tx ?? db).insert(blogAssets).values({ id, key: main.key, width: main.width, height: main.height, mime: 'image/webp', size: bytes.length, variants, createdBy: userId }).returning();
   return ok({ asset: assetDto(row!) });
 }
 

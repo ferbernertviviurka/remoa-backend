@@ -168,8 +168,8 @@ export const blogAdminRoutes = new Hono<AdminEnv>()
     if (file.size > BLOG_LIMITS.imageMaxBytes) return send(err('validation', blogErrors.badImage));
     const bytes = Buffer.from(await file.arrayBuffer());
     const id = crypto.randomUUID();
-    const r = await withAdmin(c, 'blog.upload_image', { reason: R.upload, target: { type: 'blog_post', id }, ...AUTO }, async (_tx, audit) => {
-      const res = await uploadBlogImage(c.get('admin').id, { bytes, slug, id });
+    const r = await withAdmin(c, 'blog.upload_image', { reason: R.upload, target: { type: 'blog_asset', id }, ...AUTO }, async (tx, audit) => {
+      const res = await uploadBlogImage(c.get('admin').id, { bytes, slug, id }, tx);
       if (res.ok) audit.after({ assetId: id, width: res.data.asset.width, height: res.data.asset.height, size: bytes.length });
       return res;
     });

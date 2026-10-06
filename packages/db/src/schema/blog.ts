@@ -127,3 +127,13 @@ export const legalAcceptances = pgTable('legal_acceptances', {
   check('legal_acceptances_document', inList('document', legalDocuments)),
   check('legal_acceptances_version', sql`${t.version} ~ '^[A-Za-z0-9._-]{1,32}$'`),
 ]);
+
+/** P-430: current version of each legal document, as configured in LEGAL_*_VERSION. The API upserts it at boot; handle_new_user only records a sign-up acceptance equal to it. */
+export const legalVersions = pgTable('legal_versions', {
+  document: text('document').primaryKey(),
+  version: text('version').notNull(),
+  updatedAt: timestamps.updatedAt,
+}, (t) => [
+  check('legal_versions_document', inList('document', legalDocuments)),
+  check('legal_versions_version', sql`${t.version} ~ '^[A-Za-z0-9._-]{1,32}$'`),
+]);

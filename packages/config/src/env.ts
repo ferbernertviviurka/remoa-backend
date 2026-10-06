@@ -162,6 +162,7 @@ export function parseEnv(source: Source = process.env): Env {
   const siteUrl = checkUrl('SITE_URL', need('SITE_URL', get('SITE_URL'), DEV.appUrl));
   const blogPreviewSecret = checkSecret('BLOG_PREVIEW_SECRET', need('BLOG_PREVIEW_SECRET', get('BLOG_PREVIEW_SECRET'), DEV.blogPreviewSecret));
   const s3PublicBucket = need('S3_PUBLIC_BUCKET', get('S3_PUBLIC_BUCKET'), DEV.s3PublicBucket);
+  if (s3PublicBucket && s3PublicBucket === get('S3_BUCKET')) problems.push('S3_PUBLIC_BUCKET must differ from S3_BUCKET (blog images would land in the private bucket)');
   const r2PublicBaseUrl = checkUrl('R2_PUBLIC_BASE_URL', need('R2_PUBLIC_BASE_URL', get('R2_PUBLIC_BASE_URL'), DEV.r2PublicBaseUrl));
   const revalidateUrl = checkUrl('REVALIDATE_URL', get('REVALIDATE_URL') ?? (siteUrl && `${siteUrl.replace(/\/+$/, '')}/api/revalidate`));
   const revalidateSecret = checkSecret('REVALIDATE_SECRET', need('REVALIDATE_SECRET', get('REVALIDATE_SECRET'), DEV.revalidateSecret));

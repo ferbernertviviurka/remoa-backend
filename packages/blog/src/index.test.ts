@@ -95,6 +95,7 @@ describe('renderPostHtml: blocks', () => {
     expect(html({ type: 'image', attrs: { assetId: 'a1', alt: '  ', width: 1, height: 1 } })).toBe('');
     expect(html({ type: 'image', attrs: { alt: 'x', width: 1, height: 1 } })).toBe('');
     expect(html({ type: 'image' })).toBe('');
+    expect(renderPostHtml(doc({ type: 'image', attrs: { src: 'http://img.test/a.png', alt: 'x', width: 1, height: 1 } }), { image: (r) => (r.src ? { src: r.src, width: 1, height: 1 } : null) })).toBe(''); // P-433: external src is https only
     expect(html({ type: 'image', attrs: { assetId: 'missing', alt: 'x', width: 1, height: 1 } })).toBe('');
     const bad = (r: object) => renderPostHtml(doc({ type: 'image', attrs: { assetId: 'a', alt: 'x' } }), { image: () => ({ src: 'https://c.test/a', width: 1, height: 1, ...r }) });
     expect(bad({ width: 0 })).toBe('');

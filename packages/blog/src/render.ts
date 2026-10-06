@@ -103,6 +103,7 @@ function renderImage(n: Node, opts: RenderOptions): string {
   if (!img || !posInt(img.width) || !posInt(img.height)) return '';
   const imgSrc = img.src.trim();
   if (!isSafeHref(imgSrc) || !(isExternalHref(imgSrc) || imgSrc.startsWith('/'))) return '';
+  if (!assetId && !/^https:\/\//i.test(imgSrc)) return ''; // external src: https only (P-433); asset URLs come from our own base
   const caption = str(a.caption).trim();
   return `<figure><img src="${escapeHtml(imgSrc)}"${img.srcset ? ` srcset="${escapeHtml(img.srcset)}"` : ''}${img.sizes ? ` sizes="${escapeHtml(img.sizes)}"` : ''}`
     + ` alt="${escapeHtml(alt)}" width="${img.width}" height="${img.height}" loading="lazy" decoding="async">`

@@ -46,7 +46,7 @@ export const adminActions = [
   /** Written by the blog.publish-scheduled job (actor system), not by withAdmin. */
   'blog.auto_publish',
 ] as const;
-export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route', 'blog_post', 'blog_category', 'sitemap'] as const;
+export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route', 'blog_post', 'blog_category', 'blog_asset', 'sitemap'] as const;
 /** List filters. `deleting` = account in the 7-day grace (F13); `pending` = e-mail not confirmed. */
 export const adminUserStatuses = ['active', 'pending', 'suspended', 'deleting'] as const;
 export const adminUserOrigins = ['direct', 'referral'] as const;
