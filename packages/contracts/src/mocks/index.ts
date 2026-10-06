@@ -29,6 +29,7 @@ export * from './admin';
 export * from './notifications';
 export * from './calendar';
 export * from './emails';
+export * from './blog';
 
 // --- store -------------------------------------------------------------------
 const clone = <T>(v: T): T => structuredClone(v);

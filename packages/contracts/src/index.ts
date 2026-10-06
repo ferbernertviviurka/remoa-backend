@@ -25,3 +25,4 @@ export * from './store';
 export * from './emails';
 export * from './notifications';
 export * from './calendar';
+export * from './blog';
