@@ -217,9 +217,19 @@ const replyCardSchema = z.object({
   payload: z.unknown().optional(),
 });
 
-const literalIn = (haystack: string, excerpt: string) => {
-  const needle = fold(excerpt.replace(/[^\p{L}\p{N}]+/gu, ' '));
-  return needle.length > 0 && fold(haystack.replace(/[^\p{L}\p{N}]+/gu, ' ')).includes(needle);
+const words = (t: string) => fold(t.replace(/[^\p{L}\p{N}]+/gu, ' '));
+
+/**
+ * The excerpt is in the text, ignoring accents, case, spaces and punctuation (quotes, dashes, list numbers). An excerpt that
+ * joins lines from different places ("Apresentação: …\nDiagnóstico: …", or cut with "…") passes only if EVERY line is
+ * literally there and has 3+ words (G22 live round, D-1439): nothing invented gets through, but a faithful splice is not thrown away.
+ */
+export const literalIn = (haystack: string, excerpt: string) => {
+  const hay = words(haystack);
+  const parts = excerpt.split(/\n|\.{3}|…/).map(words).filter(Boolean);
+  // A splice of tiny pieces ("não" + "dar insulina") could build a new claim: with more than one piece, each needs 3+ words.
+  const big = parts.length === 1 || parts.every((p) => p.split(' ').length >= 3);
+  return parts.length > 0 && big && parts.every((p) => hay.includes(p));
 };
 
 /** Valid items become drafts; an item whose excerpt is not in `chunk` is dropped and counted. Edges need a name. */
@@ -309,7 +319,7 @@ export async function extractWithMeta(
       const chunk = redact(piece).slice(0, LIMITS.chunk);
       try {
         const done = await generateJson(extractReply(source, chunk), {
-          fn: 'extract', system: extractPrompt, user: extractUser(chunk, maxCards - merged.cards.length), signal: AbortSignal.timeout(remaining), fetchImpl,
+          fn: 'extract', system: extractPrompt, user: extractUser(chunk, maxCards - merged.cards.length), temperature: 0, signal: AbortSignal.timeout(remaining), fetchImpl,
         });
         tokensIn += done.tokensIn;
         tokensOut += done.tokensOut;

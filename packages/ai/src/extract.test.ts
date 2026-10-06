@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { extractOffline, extractWithMeta } from './extract';
+import { extractOffline, extractWithMeta, literalIn } from './extract';
 
 afterEach(() => { delete process.env.OPENROUTER_API_KEY; });
 const reply = (content: string) => (async () => Response.json({ model: 'm', choices: [{ message: { content } }], usage: { prompt_tokens: 1, completion_tokens: 2 } })) as unknown as typeof fetch;
@@ -79,5 +79,22 @@ describe('extractWithMeta over several chunks', () => {
     const fetchImpl = (async () => Response.json({ model: 'm', choices: [{ message: { content: JSON.stringify(replies.shift()) } }] })) as unknown as typeof fetch;
     const r = await extractWithMeta(`${a}\n\n${b}`, 'fonte', fetchImpl);
     expect(r.extracted.cards.map((c) => c.ref)).toEqual(['c1', 'k1-c1']);
+  });
+});
+
+// G22 live round 2026-10-06 (D-1439): excerpts copied from the recorded replies (synthetic text, eval/model/texts.ts).
+describe('literalIn on live replies', () => {
+  const caseText = 'Apresentação: paciente fictício de 68 anos, com diabetes tipo 2, chega sonolento após três dias de poliúria.\n\nExames: glicemia muito alta, osmolaridade elevada e ausência de cetose.\n\nDiagnóstico: estado hiperglicêmico hiperosmolar.';
+  const flowText = 'Fluxo de atendimento da hipoglicemia\n\n1. Confirmar a glicemia capilar.\n2. Avaliar se o paciente está consciente e consegue engolir.\n5. Investigar a causa do episódio.';
+  it('keeps a faithful splice of two literal lines (liquid, extract-1-page)', () => {
+    expect(literalIn(caseText, 'Apresentação: paciente fictício de 68 anos, com diabetes tipo 2, chega sonolento após três dias de poliúria.\nDiagnóstico: estado hiperglicêmico hiperosmolar.')).toBe(true);
+    expect(literalIn(caseText, '“Exames — glicemia muito alta…”')).toBe(true); // quotes, dash, ellipsis
+  });
+  it('still drops an invented line, an invented single excerpt and a splice of tiny pieces', () => {
+    // liquid, extract-3-pages: step 5 rewritten with content that is not in the text
+    expect(literalIn(flowText, '1. Confirmar a glicemia capilar.\n5. Investigar a causa e ajusta-se o esquema de tratamento para evitar novos episódios.')).toBe(false);
+    expect(literalIn(caseText, 'Diagnóstico: cetoacidose diabética.')).toBe(false);
+    expect(literalIn(caseText, 'com diabetes\nausência de cetose')).toBe(false);
+    expect(literalIn(caseText, '\n…\n')).toBe(false);
   });
 });
