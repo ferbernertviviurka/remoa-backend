@@ -18,7 +18,8 @@ const client = () =>
     endpoint: env('S3_ENDPOINT'),
     region: env('S3_REGION'),
     credentials: { accessKeyId: env('S3_ACCESS_KEY_ID'), secretAccessKey: env('S3_SECRET_ACCESS_KEY') },
-    forcePathStyle: true,
+    // Supabase Storage needs path-style; Railway buckets (new ones) only accept virtual-hosted (S3_URL_STYLE=virtual).
+    forcePathStyle: process.env.S3_URL_STYLE !== 'virtual',
   })));
 // G21/F29 FR-3: R2/S3 time in Server-Timing `ext` (the SDK uses node http, not fetch).
 const timed = (c: S3Client) => {
@@ -81,6 +82,17 @@ export async function deletePrefix(Prefix: string, Bucket_ = Bucket()) {
   }
 }
 
-/** G19 F27 (D-914): blog images go to the PUBLIC bucket (S3_PUBLIC_BUCKET), served by R2_PUBLIC_BASE_URL. Immutable: keys carry the asset id. */
+/** G19 F27 (D-914): blog images go to S3_PUBLIC_BUCKET (may be the private bucket), served by R2_PUBLIC_BASE_URL. Immutable: keys carry the asset id. */
 export const putPublicBytes = (Key: string, Body: Buffer, ContentType: string) =>
   client().send(new PutObjectCommand({ Bucket: configEnv().s3PublicBucket, Key, Body, ContentType, CacheControl: 'public, max-age=31536000, immutable' }));
+
+/** Blog image bytes for the API proxy (`/v1/public/blog/files/*`); null when missing. */
+export async function getPublicObject(Key: string) {
+  try {
+    const r = await client().send(new GetObjectCommand({ Bucket: configEnv().s3PublicBucket, Key }));
+    return { body: Buffer.from(await r.Body!.transformToByteArray()), mime: r.ContentType ?? 'application/octet-stream' };
+  } catch (e) {
+    if ((e as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return null;
+    throw e;
+  }
+}

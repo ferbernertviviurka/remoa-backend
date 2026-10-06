@@ -7,6 +7,7 @@ import {
 import { dbm } from '../db';
 import { likeOf } from '../admin/users/util';
 import { assetDto } from './images';
+import { getPublicObject } from '../storage/storage';
 import { verifyPreview } from './preview';
 import { buildBlogSitemap } from './sitemap';
 import { authorOf, listCategories, toItems, type PostRow, type Q } from './posts';
@@ -15,6 +16,8 @@ const send = <T>(r: Result<T>, cache = 'public, max-age=60, stale-while-revalida
   r.ok ? Response.json({ ok: true, data: r.data }, { headers: { 'cache-control': cache } })
     : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code], ...(cache === 'no-store' ? { headers: { 'cache-control': cache } } : {}) });
 const gone = () => err<never>('not_found', 'not found');
+/** Only keys written by the blog image pipeline (images.ts); the bucket may also hold private user files. */
+export const BLOG_FILE_KEY = /^blog\/[0-9a-f-]{36}\/[a-z0-9-]*-(?:\d+\.(?:webp|avif)|og\.jpg)$/;
 
 const published = async () => {
   const { blogPosts: p } = await dbm();
@@ -95,6 +98,14 @@ export const publicBlogRoutes = new Hono()
     return send(ok(await toItems(db, await db.select().from(p).where(await indexed()).orderBy(desc(p.publishedAt), desc(p.id)).limit(BLOG_LIMITS.rssItems))));
   })
   .get('/sitemap', async () => send(ok(await buildBlogSitemap((await dbm()).db))))
+  // Blog images when the bucket is private (R2_PUBLIC_BASE_URL = <api>/v1/public/blog/files).
+  // ponytail: every image read goes through the API; put a CDN in front if blog traffic grows.
+  .get('/files/*', async (c) => {
+    const key = decodeURIComponent(c.req.path.slice(c.req.path.indexOf('/files/') + '/files/'.length));
+    const file = BLOG_FILE_KEY.test(key) ? await getPublicObject(key) : null;
+    if (!file) return send(gone(), 'no-store');
+    return new Response(new Uint8Array(file.body), { headers: { 'content-type': file.mime, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' } });
+  })
   // FR-10: any status, never cached, never indexed.
   .get('/preview/:token', async (c) => {
     const id = verifyPreview(c.req.param('token'));
