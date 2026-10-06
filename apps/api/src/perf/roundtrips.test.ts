@@ -18,8 +18,11 @@ const DELAY = 40; // ms each way: large next to local CPU noise (CI runs 3 test 
 export const ROUND_TRIPS: Record<string, number> = {
   'GET /v1/home': 1,
   'GET /v1/boards': 1, // +1 when a map_stats row is stale (upsert)
+  'GET /v1/boards?include=preview': 1, // D-1117: extras in the list's flight (was 4: list, extras loads, edges); +1 when map_stats is stale
   'GET /v1/coverage': 1,
-  'GET /v1/onboarding': 2, // server-connection reads, then the session check (D-990)
+  'GET /v1/onboarding': 1, // P-541 (D-1114): one run() (was 2: server-connection reads, then the session check)
+  'GET /v1/account/me': 1, // P-541 (D-1114): one run(), the Auth read in parallel (was 3: 7 connections + session check)
+  'GET /v1/billing/entitlements': 1, // P-541 (D-1114): one run() (was 2)
   'GET /v1/calendar/upcoming': 1,
   'GET /v1/review/queue': 1,
   'GET /v1/review/retrievability': 1,
@@ -115,10 +118,11 @@ describe.skipIf(!process.env.DATABASE_URL)('round trips to the database per requ
       one.push(performance.now() - t0);
     }
     rtt = one.sort((a, b) => a - b)[6]!;
-    student = uuid();
+    // through Auth, not a bare auth.users row: GET /v1/account/me reads the user from GoTrue (loadAuthUser)
+    const made = await (await import('../account/auth-admin')).adminClient().auth.admin.createUser({ email: `${uuid()}@test.local`, email_confirm: true });
+    student = made.data.user!.id;
     ids.push(student);
     sessions.set(student, uuid());
-    await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${student}', '${student}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
     await dbm.db.execute(sql`insert into auth.sessions (id, user_id, created_at, updated_at) values (${sessions.get(student)}, ${student}, now(), now())`);
     boardId = (await dbm.db.insert(dbm.boards).values({ userId: student, title: 'Mapa' }).returning())[0]!.id;
     const cards = await dbm.db.insert(dbm.cards).values(Array.from({ length: 30 }, (_, i) => ({ boardId, type: 'concept' as const, title: `c${i}`, front: `f${i}`, back: `b${i}`, payload: {}, order: i }))).returning();
@@ -138,8 +142,11 @@ describe.skipIf(!process.env.DATABASE_URL)('round trips to the database per requ
   const gets: [string, () => string][] = [
     ['GET /v1/home', () => '/v1/home'],
     ['GET /v1/boards', () => '/v1/boards'],
+    ['GET /v1/boards?include=preview', () => '/v1/boards?include=preview'],
     ['GET /v1/coverage', () => '/v1/coverage'],
     ['GET /v1/onboarding', () => '/v1/onboarding'],
+    ['GET /v1/account/me', () => '/v1/account/me'],
+    ['GET /v1/billing/entitlements', () => '/v1/billing/entitlements'],
     ['GET /v1/calendar/upcoming', () => '/v1/calendar/upcoming?limit=4'],
     ['GET /v1/review/queue', () => '/v1/review/queue'],
     ['GET /v1/review/retrievability', () => `/v1/review/retrievability?boardId=${boardId}`],

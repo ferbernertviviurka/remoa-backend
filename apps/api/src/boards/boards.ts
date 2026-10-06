@@ -83,7 +83,8 @@ export async function listBoardsPage(userId: string, query: BoardListPageQuery =
       const now = new Date();
       // G21 D-1094: one flight; the map_stats statement takes the page's ids as the same query (subquery), not from the rows
       const pageIds = tx.select({ id: s.boards.id }).from(s.boards).where(where).orderBy(...order).limit(limit + 1);
-      const [rows, [st]] = await Promise.all([
+      // D-1117: include=preview joins the same flight (was 3 more round trips after it)
+      const [rows, [st], extra] = await Promise.all([
         tx
           .select({
             id: s.boards.id, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, updatedAt: s.boards.updatedAt,
@@ -95,12 +96,12 @@ export async function listBoardsPage(userId: string, query: BoardListPageQuery =
           .orderBy(...order)
           .limit(limit + 1),
         tx.execute<{ m: MapStatsData }>(withWindow(userId, now, sql`select ${mapStatsSql(userId, sql`array(${pageIds})`, now.getTime(), W.endMs)} as m`)),
+        include === 'preview' ? boardListExtras(tx, userId, now, sql`array(${pageIds})`) : null, // legacy path (F03 FR-8 badge + G01 state bar/preview)
       ]);
       const more = rows.length > limit;
       const page = more ? rows.slice(0, limit) : rows;
       const ids = page.map((r) => r.id);
       const stats = await mapStatsFrom(tx, userId, ids, st!.m, now); // G21 P-474 (D-1038): map_stats rollup, 0 per-board scans (+1 upsert when one is stale)
-      const extra = include === 'preview' ? await boardListExtras(tx, userId, new Date(), ids) : null; // legacy path (F03 FR-8 badge + G01 state bar/preview)
       const last = page[page.length - 1];
       const items = page.map((r) => {
         const m = stats.get(r.id);

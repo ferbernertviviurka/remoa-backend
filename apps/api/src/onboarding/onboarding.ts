@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { ACTIVATION_TARGETS, activationItems, ok, onboardingAnswersSchema, type ActivationItem, type GetOnboarding, type CompleteOnboarding, type OnboardingAnswersPatch, type OnboardingState, type SaveOnboarding } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
-import { dbm } from '../db';
+import { dbm, run } from '../db';
 import { ownTotals } from '../review/stats';
 import { env } from '@remoa/config';
 import { notify } from '../notifications/notify';
@@ -16,14 +16,14 @@ type Row = { done_at: string | null; answers: Record<string, unknown>; sessions:
  * (connections = both ends live, the map's rule), not a count(*) over every card of the user.
  */
 async function load(userId: string): Promise<OnboardingState> {
-  const { db } = await dbm();
-  const [[r], totals] = await Promise.all([
-    db.execute<Row>(sql`
+  // P-541 (D-1114): one run() (RLS, session check fused, one flight); was the server connection + a separate session check
+  const [[r], totals] = await run(userId, (tx) => Promise.all([
+    tx.execute<Row>(sql`
       select p.onboarding_done_at as done_at, p.onboarding_answers as answers,
         (select count(*)::int from sessions s where s.user_id = ${userId} and s.ended_at is not null) as sessions
       from profiles p where p.user_id = ${userId}`),
-    ownTotals(userId),
-  ]);
+    ownTotals(userId, new Date(), tx),
+  ]));
   const counts = { cards: totals.cards, edges: totals.edges, sessions: r?.sessions ?? 0 };
   const checklist: ActivationItem[] = activationItems.map((id) => ({ id, current: counts[id], target: ACTIVATION_TARGETS[id], done: counts[id] >= ACTIVATION_TARGETS[id] }));
   return {

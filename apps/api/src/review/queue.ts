@@ -312,16 +312,25 @@ export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) =>
 /**
  * FR-8 + G01, one pass over the user's cards/states (D-058: computed on read, no job). Per board: due items today (same rule as the
  * queue), card-level state counts and the graph thumbnail (<= PREVIEW_MAX_NODES cards by order, positions in the bounding box of
- * all live cards, same span for x and y so the aspect ratio is kept).
+ * all live cards, same span for x and y so the aspect ratio is kept). G21 D-1117: `boards` is an SQL uuid array (the list's page
+ * subquery), so cards, states, the study day and edges go out together with the caller's other statements (one flight, was 3).
+ * Cards are the page's non-archived boards (the page is the user's own boards, so this is the old daily scope narrowed to the page).
  */
-export async function boardListExtras(tx: Tx, userId: string, now: Date, boardIds: string[]) {
-  const [withNotes, states, win] = await Promise.all([loadCards(tx, userId, null, true), loadStates(tx, userId, null), dayWindow(tx, userId, now)]);
+export async function boardListExtras(tx: Tx, userId: string, now: Date, boards: SQL) {
+  const [withNotes, states, win, edgeRows] = await Promise.all([
+    tx.execute<CardSqlRow>(cardsSql(userId, sql`b.archived_at is null and c.board_id = any(${boards})`, true)).then((r) => r.map(toCardRow)),
+    loadStates(tx, userId, null),
+    dayWindow(tx, userId, now),
+    tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
+      sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${boards})`,
+    ),
+  ]);
+  return boardExtrasFrom(withNotes, states, win.endMs, now, edgeRows);
+}
+
+/** Pure part of boardListExtras (exported for the byte-identity test). */
+export function boardExtrasFrom(withNotes: CardRow[], states: Map<string, StateRow>, endMs: number, now: Date, edgeRows: readonly { board_id: string; from_card_id: string; to_card_id: string }[]) {
   const cards = withNotes.filter((c) => c.type !== 'note');
-  const edgeRows = boardIds.length
-    ? await tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
-        sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${uuids(boardIds)})`,
-      )
-    : [];
   const out = new Map<string, { dueCount: number; stateCounts: Record<MapState, number>; preview: BoardSummary['preview'] }>();
   const of = (id: string) => {
     let o = out.get(id);
@@ -330,7 +339,7 @@ export async function boardListExtras(tx: Tx, userId: string, now: Date, boardId
   };
   for (const it of itemsOf(active(cards), false)) {
     const m = states.get(stateKey(it.cardId, it.subId));
-    if (m && isDue(m, win.endMs)) of(it.boardId).dueCount++;
+    if (m && isDue(m, endMs)) of(it.boardId).dueCount++;
   }
   const byBoard = new Map<string, CardRow[]>();
   for (const c of withNotes) byBoard.set(c.boardId, [...(byBoard.get(c.boardId) ?? []), c]);

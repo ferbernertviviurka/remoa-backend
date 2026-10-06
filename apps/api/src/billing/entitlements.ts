@@ -2,17 +2,20 @@ import { sql } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { ok, PLAN_LIMITS, type GetEntitlements } from '@remoa/contracts';
 import type { Env } from '../app';
-import { dbm } from '../db';
+import type { Tx } from '@remoa/db';
+import { asServer, run } from '../db';
 import { ownTotals } from '../review/stats';
 import { planOf } from './plan';
 import { daySql } from './quota';
 
 /** F08: plan, limits and current usage. Counters/totals are read with the server connection, always filtered by user. */
-export const getEntitlements = async (userId: string, now = new Date()): ReturnType<GetEntitlements> => {
+export const getEntitlements = async (userId: string, now = new Date(), tx?: Tx): ReturnType<GetEntitlements> => {
+  // P-541 (D-1114): one run() (session check fused, one connection, statements shared warm) instead of 3 server connections
+  if (!tx) return run(userId, (t) => getEntitlements(userId, now, t));
   // G21 D-1094: one flight (the local day is a subquery of the usage statement, not a read before it)
-  const { db } = await dbm();
   const day = sql`${daySql(userId, now)}`;
-  const [p, totals, [u]] = await Promise.all([planOf(userId, now), ownTotals(userId, now), db.execute<{ ai_grades: number; ai_generations: number; boards: number; anki_imports_used: number; referral_pending: boolean }>(sql`
+  // usage as the server role (asServer): `referrals` has no grant for `authenticated`; every subquery filters by this user
+  const [p, totals, [u]] = await Promise.all([planOf(userId, now, tx), ownTotals(userId, now, tx), asServer<{ ai_grades: number; ai_generations: number; boards: number; anki_imports_used: number; referral_pending: boolean }>(tx, sql`
     select
       (select coalesce(sum(ai_grades), 0)::int from usage_counters where user_id = ${userId} and period = ${day}::date) as ai_grades,
       (select coalesce(sum(ai_generations), 0)::int from usage_counters where user_id = ${userId}

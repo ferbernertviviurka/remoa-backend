@@ -217,7 +217,8 @@ export const uuids = (xs: readonly string[]) => pgArray(xs, 'uuid');
  * D-1104 (P-532): `q` inside an RLS transaction, as the connection's own role (what the server connection would do), without taking a
  * second pool connection while this one is held (10 such transactions waiting for an 11th connection = the pool stuck until the idle
  * timeout). Three statements in call order, one flight: role back to the login role, `q`, role `authenticated` again. If `q` fails
- * the transaction is aborted, so nothing runs with the wider role afterwards. Only for writes `authenticated` has no grant for.
+ * the transaction is aborted, so nothing runs with the wider role afterwards. Only for statements on tables `authenticated` has no
+ * grant for, filtered by the transaction's user: writes, and the entitlements usage read (`referrals`, P-541 D-1114).
  */
 export async function asServer<R>(tx: Tx, q: SQL): Promise<R[]> {
   const off = Promise.resolve(tx.execute(sql`select set_config('role', 'none', true)`));

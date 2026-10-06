@@ -382,6 +382,39 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
       expect(empty.stateCounts).toEqual({ review: 0, watch: 0, steady: 0, unknown: 0 });
       expect(empty.preview).toEqual({ nodes: [], edges: [] });
     });
+
+    it('D-1117: one-flight body is byte-identical to the legacy path (daily-scope loads, then extras over the page)', async () => {
+      const u = await newUser();
+      const real = new Date();
+      const [a, b, arch] = [await mkBoard(u), await mkBoard(u), await mkBoard(u)];
+      const flow = await mkFlow(a, 4);
+      const [c1, c2, hub, gone] = [await mkCard(a), await mkCard(a), await mkCard(a, { type: 'note' }), await mkCard(a)];
+      const [d1, d2, x1] = [await mkCard(b, { type: 'case' }), await mkCard(b), await mkCard(arch)];
+      await putState(u, flow, { sub: 's2', lastReview: new Date(real.getTime() - 9 * DAY), stability: 2, due: new Date(real.getTime() - 3 * DAY) });
+      await putState(u, c1, { lastReview: new Date(real.getTime() - DAY), stability: 60, due: new Date(real.getTime() + 40 * DAY) });
+      for (const id of [d1, x1]) await putState(u, id, { lastReview: new Date(real.getTime() - 5 * DAY), stability: 3, due: new Date(real.getTime() - DAY) });
+      await dbm.db.update(dbm.cards).set({ suspendedAt: real }).where(eq(dbm.cards.id, c2));
+      await dbm.db.update(dbm.cards).set({ deletedAt: real }).where(eq(dbm.cards.id, gone));
+      await dbm.db.update(dbm.boards).set({ archivedAt: real }).where(eq(dbm.boards.id, arch));
+      await dbm.db.insert(dbm.edges).values([
+        { boardId: a, fromCardId: hub, toCardId: flow }, { boardId: a, fromCardId: flow, toCardId: c1 }, { boardId: a, fromCardId: c1, toCardId: gone }, { boardId: b, fromCardId: d1, toCardId: d2 },
+      ]);
+      const got = JSON.stringify((await call(u, '/boards?include=preview')).json.data);
+      // the pre-D-1117 handler: the plain list, then extras from the daily-scope loads (cards with notes, every state, the study day) and the page's edges
+      const plain = (await call(u, '/boards')).json.data as { id: string }[];
+      const { run, uuids } = await import('../db');
+      const legacy = await run(u, async (tx) => {
+        const ids = plain.map((p) => p.id);
+        const [withNotes, states, win] = await Promise.all([q.loadCards(tx, u, null, true), q.loadStates(tx, u, null), q.dayWindow(tx, u, real)]);
+        const edges = await tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
+          sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${uuids(ids)})`,
+        );
+        const extra = q.boardExtrasFrom(withNotes, states, win.endMs, real, [...edges]);
+        return plain.map((p) => ({ ...p, ...(extra.get(p.id) ?? {}) }));
+      });
+      expect(got).toBe(JSON.stringify(legacy));
+      expect(got).toContain('"dueCount":1'); // not vacuous: extras present (a: s2 due; archived board keeps map_stats)
+    });
   });
 
   describe('dueCount (FR-8)', () => {

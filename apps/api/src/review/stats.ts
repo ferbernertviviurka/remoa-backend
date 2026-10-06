@@ -152,24 +152,23 @@ export const scopeBoardsSql = (userId: string) => sql`
  * nulls `stale_at`, so a row with `stale_at` set has right counts even after its clock expiry: the common case is this one indexed
  * statement (server connection, filtered by user); only boards whose row is missing or invalidated are recomputed.
  */
-export async function ownTotals(userId: string, now = new Date()) {
-  const { db } = await dbm();
-  const [r] = await db.execute<{ cards: number; notes: number; edges: number; missing: number }>(sql`
+// P-541 (D-1114): through run() (or the caller's), never the server connection: one flight with the caller's other reads.
+export async function ownTotals(userId: string, now = new Date(), tx?: Tx): Promise<{ cards: number; notes: number; edges: number }> {
+  if (!tx) return run(userId, (t) => ownTotals(userId, now, t));
+  const [r] = await tx.execute<{ cards: number; notes: number; edges: number; missing: number }>(sql`
     select coalesce(sum(m.cards), 0)::int as cards, coalesce(sum(m.notes), 0)::int as notes, coalesce(sum(m.edges), 0)::int as edges,
       (count(*) filter (where m.stale_at is null))::int as missing
     from boards b left join map_stats m on m.board_id = b.id and m.user_id = b.user_id
     where b.user_id = ${userId} and b.archived_at is null`);
   if (r && !r.missing) return { cards: r.cards, notes: r.notes, edges: r.edges };
-  return run(userId, async (tx) => {
-    const ids = await tx.execute<{ id: string }>(sql`select id from boards where user_id = ${userId} and archived_at is null`);
-    const t = { cards: 0, notes: 0, edges: 0 };
-    for (const s of (await mapStatsFor(tx, userId, ids.map((x) => x.id), now)).values()) {
-      t.cards += s.cards;
-      t.notes += s.notes;
-      t.edges += s.edges;
-    }
-    return t;
-  });
+  const ids = await tx.execute<{ id: string }>(sql`select id from boards where user_id = ${userId} and archived_at is null`);
+  const t = { cards: 0, notes: 0, edges: 0 };
+  for (const s of (await mapStatsFor(tx, userId, ids.map((x) => x.id), now)).values()) {
+    t.cards += s.cards;
+    t.notes += s.notes;
+    t.edges += s.edges;
+  }
+  return t;
 }
 
 /**

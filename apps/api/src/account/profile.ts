@@ -4,6 +4,7 @@ import {
   RETENTION, addressSchema, computeCompleteness, err, goalSchema, normalizeName, ok, sexSchema, stageSchema, syncGoals, userTypeSchema,
   type AccountSnapshot, type CancelDeletion, type LinkedIdentity, type Profile, type UpdateProfile,
 } from '@remoa/contracts';
+import type { Tx } from '@remoa/db';
 import { dbm, run } from '../db';
 import { dayWindow, withWindow } from '../review/queue';
 import { getEntitlements } from '../billing/entitlements';
@@ -39,28 +40,26 @@ const profileOf = (userId: string, r: ProfileRow | undefined): Profile => ({
 });
 
 /** Consecutive study days (04:00 rollover, profile tz) with attempts, ending today or yesterday. null = never answered. */
-async function streakOf(userId: string, now: Date): Promise<number | null> {
-  return run(userId, async (tx) => {
-    const [win, rows] = await Promise.all([dayWindow(tx, userId, now), tx.execute<{ d: string }>(withWindow(userId, now, sql`
-      select distinct ((created_at at time zone (select tz from w)) - interval '4 hours')::date::text as d
-      from attempts where user_id = ${userId} order by d desc limit 400`))]); // D-1094: one flight
-    if (!rows.length) return null;
-    const have = new Set(rows.map((r) => r.d));
-    const prev = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - DAY).toISOString().slice(0, 10);
-    let day = have.has(win.day) ? win.day : prev(win.day); // not having studied yet today does not break the streak
-    let n = 0;
-    while (have.has(day)) {
-      n++;
-      day = prev(day);
-    }
-    return n;
-  });
+async function streakOf(userId: string, now: Date, tx: Tx): Promise<number | null> {
+  const [win, rows] = await Promise.all([dayWindow(tx, userId, now), tx.execute<{ d: string }>(withWindow(userId, now, sql`
+    select distinct ((created_at at time zone (select tz from w)) - interval '4 hours')::date::text as d
+    from attempts where user_id = ${userId} order by d desc limit 400`))]); // D-1094: one flight
+  if (!rows.length) return null;
+  const have = new Set(rows.map((r) => r.d));
+  const prev = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - DAY).toISOString().slice(0, 10);
+  let day = have.has(win.day) ? win.day : prev(win.day); // not having studied yet today does not break the streak
+  let n = 0;
+  while (have.has(day)) {
+    n++;
+    day = prev(day);
+  }
+  return n;
 }
 
 /** Uses the (user_id, type, created_at) index of account_events. */
-async function passwordChangedAt(userId: string): Promise<Date | null> {
-  const { db, accountEvents } = await dbm();
-  const [r] = await db
+async function passwordChangedAt(userId: string, tx: Tx): Promise<Date | null> {
+  const { accountEvents } = await dbm();
+  const [r] = await tx
     .select({ at: sql<Date | null>`max(${accountEvents.createdAt})` })
     .from(accountEvents)
     .where(sql`${accountEvents.userId} = ${userId} and ${accountEvents.type} = 'password_changed'`);
@@ -72,12 +71,13 @@ async function passwordChangedAt(userId: string): Promise<Date | null> {
 export async function getAccount(userId: string, auth: AuthData, now?: Date): Promise<AccountSnapshot>;
 export async function getAccount(userId: string, auth: PromiseLike<AuthData | null>, now?: Date): Promise<AccountSnapshot | null>;
 export async function getAccount(userId: string, authIn: AuthData | PromiseLike<AuthData | null>, now = new Date()): Promise<AccountSnapshot | null> {
-  const { db, profiles } = await dbm();
-  // G21 D-1094: every read in parallel (was 6 in sequence, ~8 round trips)
-  const [[row], ent, prefsFor, streakDays, pwdAt] = await Promise.all([
-    db.select(pick(profiles, ...PROFILE_COLS)).from(profiles).where(eq(profiles.userId, userId)),
-    getEntitlements(userId, now), loadPreferences(userId), streakOf(userId, now), passwordChangedAt(userId),
-  ]);
+  const { profiles } = await dbm();
+  // G21 D-1094: every read in parallel (was 6 in sequence, ~8 round trips). P-541 (D-1114): all in one run(), one connection and one
+  // flight with the fused session check (was ~7 server connections + the check: the page's first wave queued on the pool)
+  const [[row], ent, prefsFor, streakDays, pwdAt] = await run(userId, (tx) => Promise.all([
+    tx.select(pick(profiles, ...PROFILE_COLS)).from(profiles).where(eq(profiles.userId, userId)),
+    getEntitlements(userId, now, tx), loadPreferences(userId, tx), streakOf(userId, now, tx), passwordChangedAt(userId, tx),
+  ]));
   if (!ent.ok) throw new Error(ent.error.message);
   const auth = await authIn;
   if (!auth) return null;
