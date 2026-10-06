@@ -25,7 +25,7 @@ const AUTO = { sensitive: false } as const;
 async function after(c: C, fx: Fx, why: string) {
   const log = c.get('log');
   if (fx.tags.length) await revalidateBlog(fx.tags).catch((e) => log.error('blog revalidate failed', { error: String(e) }));
-  if (fx.sitemap) await regenerateSitemap({ force: true, reason: why }).catch((e) => log.error('blog sitemap failed', { error: String(e) }));
+  if (fx.sitemap) await regenerateSitemap({ reason: why }).catch((e) => log.error('blog sitemap failed', { error: String(e) }));
 }
 
 /** { post, audit } response after running the effects. */
