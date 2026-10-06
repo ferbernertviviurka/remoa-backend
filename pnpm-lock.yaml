@@ -117,6 +117,9 @@ importers:
       '@remoa/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@remoa/log':
+        specifier: workspace:*
+        version: link:../log
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
