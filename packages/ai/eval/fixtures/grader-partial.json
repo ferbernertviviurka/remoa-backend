@@ -1,117 +1,56 @@
 {
-  "recorded": false,
-  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "recorded": true,
+  "note": "Gravado ao vivo com entrada sintética (G22).",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
+  "recordedAt": "2026-10-06T17:31:43.227Z",
+  "reps": 1,
   "replies": [
     {
-      "id": "gen-1759700000-synthetic004",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "id": "gen-1791307900-x26oCpp8rUf4BG4WnKi4",
       "object": "chat.completion",
-      "created": 1759700000,
+      "created": 1791307900,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "Nvidia",
+      "system_fingerprint": null,
+      "service_tier": null,
       "choices": [
         {
-          "logprobs": null,
-          "finish_reason": "tool_calls",
-          "native_finish_reason": "tool_calls",
           "index": 0,
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
           "message": {
             "role": "assistant",
-            "content": "",
+            "content": "{\"verdict\": \"partial\", \"matched\": [\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\"], \"missing\": [\"Medir a glicemia de novo em 15 minutos\"], \"criticalError\": false, \"sourceQuote\": \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\", \"feedback\": \"A resposta menciona a administração de carboidrato oral, mas não inclui a reavaliação da glicemia em 15 minutos, que é essencial. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto\"}",
             "refusal": null,
-            "reasoning": null,
-            "tool_calls": [
-              {
-                "id": "call_4",
-                "index": 0,
-                "type": "function",
-                "function": {
-                  "name": "grade",
-                  "arguments": "{\"verdict\":\"partial\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Você indicou açúcar por via oral, mas faltou a quantidade de 15 gramas e a nova glicemia em 15 minutos. Fonte: Hipoglicemia no adulto.\"}"
-                }
-              }
-            ]
+            "reasoning": null
           }
         }
       ],
       "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
-      }
-    },
-    {
-      "id": "gen-1759700000-synthetic005",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
-      "object": "chat.completion",
-      "created": 1759700000,
-      "choices": [
-        {
-          "logprobs": null,
-          "finish_reason": "tool_calls",
-          "native_finish_reason": "tool_calls",
-          "index": 0,
-          "message": {
-            "role": "assistant",
-            "content": "",
-            "refusal": null,
-            "reasoning": null,
-            "tool_calls": [
-              {
-                "id": "call_5",
-                "index": 0,
-                "type": "function",
-                "function": {
-                  "name": "grade",
-                  "arguments": "{\"verdict\":\"partial\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"A ideia de dar açúcar por via oral está no caminho, porém faltaram a dose de 15 gramas e a reavaliação em 15 minutos.\"}"
-                }
-              }
-            ]
-          }
+        "prompt_tokens": 739,
+        "completion_tokens": 138,
+        "total_tokens": 877,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0,
+          "upstream_inference_prompt_cost": 0,
+          "upstream_inference_completions_cost": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
         }
-      ],
-      "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
-      }
-    },
-    {
-      "id": "gen-1759700000-synthetic006",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
-      "object": "chat.completion",
-      "created": 1759700000,
-      "choices": [
-        {
-          "logprobs": null,
-          "finish_reason": "tool_calls",
-          "native_finish_reason": "tool_calls",
-          "index": 0,
-          "message": {
-            "role": "assistant",
-            "content": "",
-            "refusal": null,
-            "reasoning": null,
-            "tool_calls": [
-              {
-                "id": "call_6",
-                "index": 0,
-                "type": "function",
-                "function": {
-                  "name": "grade",
-                  "arguments": "{\"verdict\":\"partial\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Parcial: faltou dizer 15 gramas de carboidrato de absorção rápida e medir a glicemia de novo em 15 minutos. Fonte: Hipoglicemia no adulto.\"}"
-                }
-              }
-            ]
-          }
-        }
-      ],
-      "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
-      }
+      },
+      "_latencyMs": 3114
     }
   ]
 }

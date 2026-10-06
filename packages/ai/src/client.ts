@@ -187,6 +187,11 @@ export type ChatOptions = {
   tool?: Tool;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * false = ask the model not to think before answering (OpenRouter `reasoning.enabled`; ignored by models without reasoning).
+   * The free Nemotron spent ~1 000 reasoning tokens (~8 s) per grade and blew the 8 s budget (G22 live round, D-1442).
+   */
+  reasoning?: false;
   /** Per attempt; default AI_TIMEOUT_MS. */
   timeoutMs?: number;
   /** Caller cancellation: no retry, no fallback. */
@@ -212,6 +217,7 @@ function body(model: string, messages: Message[], o: ChatOptions, c: AiConfig, s
     ...(stream ? { stream: true } : {}),
     ...(o.maxTokens ? { max_tokens: o.maxTokens } : {}),
     ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+    ...(o.reasoning === false ? { reasoning: { enabled: false } } : {}),
     ...(o.tool
       ? { tools: [o.tool], tool_choice: { type: 'function', function: { name: o.tool.function.name } } }
       : o.json

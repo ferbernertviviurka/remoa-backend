@@ -103,6 +103,12 @@ describe('generateText: request', () => {
     expect(f.calls[0]!.headers).toMatchObject({ authorization: `Bearer ${SECRET_KEY}`, 'HTTP-Referer': 'https://app.example.test', 'X-Title': 'Remoa' });
     expect(f.calls[0]!.body).toMatchObject({ model: 'test/model', max_tokens: 50, temperature: 0, provider: { data_collection: 'allow' } });
     expect(f.calls[0]!.body.response_format).toBeUndefined();
+    expect(f.calls[0]!.body.reasoning).toBeUndefined();
+  });
+  it('asks for no reasoning when told to (grader, rubric)', async () => {
+    const f = scripted(Response.json({ choices: [{ message: { content: 'oi' } }] }));
+    await generateText(opts({ fetchImpl: f.impl, reasoning: false }));
+    expect(f.calls[0]!.body).toMatchObject({ reasoning: { enabled: false } });
   });
   it('sends a forced tool and reads its arguments', async () => {
     const f = scripted(Response.json({ choices: [{ message: { tool_calls: [{ function: { arguments: '{"a":1}' } }] } }] }));

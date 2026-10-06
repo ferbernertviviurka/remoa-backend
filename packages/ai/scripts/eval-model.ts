@@ -96,10 +96,11 @@ const jaccard = (a: Set<string>, b: Set<string>) => {
 /**
  * `_status`: an HTTP error the provider returned (recorded since the 2026-10-06 live round; before it only OK bodies were kept,
  * so a case whose calls all failed kept its hand-written fixture). `reps`: repetitions recorded, when fewer than the case asks.
+ * `_aborted`: the caller's budget (8 s for a grade) ran out before the body arrived; replays as that final timeout.
  * `knownIssue`: a model-quality finding of that recording, written by hand. The row still fails in the report; replay (CI) does
  * not break on it, so CI catches regressions in our code, not the free model's quality (D-1440). Re-recording drops it.
  */
-type Fixture = { recorded: boolean; note: string; model?: string; recordedAt?: string; reps?: number; knownIssue?: string; replies: (Record<string, unknown> & { _latencyMs?: number; _status?: number })[] };
+type Fixture = { recorded: boolean; note: string; model?: string; recordedAt?: string; reps?: number; knownIssue?: string; replies: (Record<string, unknown> & { _latencyMs?: number; _status?: number; _aborted?: boolean })[] };
 
 const fixturePath = (id: string) => join(fixtures, `${id}.json`);
 const readFixture = (id: string): Fixture => JSON.parse(readFileSync(fixturePath(id), 'utf8')) as Fixture;
@@ -113,10 +114,18 @@ function session(id: string, live: boolean): Session {
   if (live) {
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       const t = Date.now();
-      const res = await fetch(url, init);
       calls += 1;
-      // Time until the whole body is in: OpenRouter sends the headers before the model finishes (D-1440).
-      const text = await res.text();
+      let res: Response;
+      let text: string;
+      try {
+        res = await fetch(url, init);
+        // Time until the whole body is in: OpenRouter sends the headers before the model finishes (D-1440).
+        text = await res.text();
+      } catch (e) {
+        latencies.push(Date.now() - t);
+        recorded.push({ _aborted: true, _latencyMs: latencies.at(-1) });
+        throw e;
+      }
       latencies.push(Date.now() - t);
       let body: Record<string, unknown>;
       try {
@@ -135,8 +144,9 @@ function session(id: string, live: boolean): Session {
     calls += 1;
     const next = replies.shift();
     if (!next) return Response.json({ error: { code: 599, message: 'fixture exhausted' } }, { status: 599 });
-    const { _latencyMs, _status, ...body } = next;
+    const { _latencyMs, _status, _aborted, ...body } = next;
     if (typeof _latencyMs === 'number') latencies.push(_latencyMs);
+    if (_aborted) throw new AiError('timeout', { final: true, detail: 'aborted' }); // as the live budget abort: no fallback
     return Response.json(body, { status: _status ?? 200 });
   }) as typeof fetch;
   return { fetchImpl, calls: () => calls, latencies, recorded };
@@ -351,7 +361,8 @@ export async function runModelEval(all: ModelCase[] = modelCases): Promise<EvalR
     const liveReps = Math.min(c.reps ?? 1, Number(process.env.AI_EVAL_REPS) || Infinity);
     const reps = live ? liveReps : (readFixture(c.id).reps ?? c.reps ?? 1);
     const base = { id: c.id, title: c.title, fn: c.fn };
-    if (live && (aiUsage().day - startDay + reps > LIVE_CALL_CAP || budgetLeft() <= 2)) {
+    // AI_EVAL_RESERVE: calls of the day kept for the smoke and normal use (default 2); 0 for a last confirmation run.
+    if (live && (aiUsage().day - startDay + reps > LIVE_CALL_CAP || budgetLeft() <= Number(process.env.AI_EVAL_RESERVE ?? 2))) {
       rows.push({ ...base, pass: false, detail: '', calls: 0, jsonFirst: '—', jsonAfterRepair: '—', latencies: [], consistent: null, injectionObeyed: null, sourceOk: null, skipped: 'não rodado: orçamento de chamadas' });
       continue;
     }

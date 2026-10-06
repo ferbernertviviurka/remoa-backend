@@ -1,6 +1,6 @@
 {
   "recorded": true,
-  "note": "Gravado ao vivo com entrada sintética (G22).",
+  "note": "Gravado ao vivo com entrada sintética (G22). Tempo removido: a rodada de 2026-10-06 mediu só até os cabeçalhos, não até o fim da resposta (D-1440).",
   "model": "nvidia/nemotron-3-super-120b-a12b:free",
   "recordedAt": "2026-10-06T17:18:05.239Z",
   "replies": [
@@ -56,8 +56,7 @@
           "image_tokens": 0,
           "audio_tokens": 0
         }
-      },
-      "_latencyMs": 350
+      }
     }
   ]
 }

@@ -74,9 +74,9 @@ const offlineVerdict = (input: GraderInput): GradedVerdict => {
   return { ...v, ...(blankAnswer(input.answer) ? { verdict: 'incorrect' as const, matched: [] } : {}), source: input.rubric.source, sourceQuote: null };
 };
 
-/** JSON mode, not a forced `grade` tool call: the free provider failed the forced call with a non-fallback error (D-1438). Temperature 0: the same answer gets the same verdict (D-1441). */
+/** JSON mode, not a forced `grade` tool call: the free provider failed the forced call with a non-fallback error (D-1438). Temperature 0: the same answer gets the same verdict (D-1441). No reasoning: it cost ~8 s per grade on the free model (D-1442). */
 const graderCall = (input: GraderInput, fetchImpl?: typeof fetch) => ({
-  fn: 'grader', system: graderPrompt, user: graderUser(input), json: true, temperature: 0, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
+  fn: 'grader', system: graderPrompt, user: graderUser(input), json: true, temperature: 0, reasoning: false as const, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
 });
 
 /** `error` (G22, D-1413): the provider failed and the local grader answered; the API marks it `fallback` and gives the quota back. */
@@ -173,7 +173,7 @@ export async function rubricWithMeta(title: string, back: string | null, source:
   if (aiMode() !== 'live') return offline();
   try {
     const done = await generateJson(rubricReply(source), {
-      fn: 'rubric', system: rubricPrompt, user: rubricUser(title, back, source), temperature: 0, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
+      fn: 'rubric', system: rubricPrompt, user: rubricUser(title, back, source), temperature: 0, reasoning: false, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
     });
     // G22 (D-1418): the model's rubric is never cached in memory; the card row is the only copy (P-610).
     return { rubric: done.data, meta: { model: done.model, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: done.latencyMs } };
