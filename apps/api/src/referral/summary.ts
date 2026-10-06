@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { generateReferralCode, ok, referralLink, REFERRAL_LIMITS, type ReferralFriend, type ReferralSummary, type RewardGrant } from '@remoa/contracts';
 import { env } from '@remoa/config';
-import { dbm } from '../db';
+import { dbm, run } from '../db';
 
 const DAY_MS = 86_400_000;
 const iso = (d: unknown) => new Date(d as string);
@@ -31,10 +31,10 @@ type RewardRow = { id: string; kind: 'month' | 'credit'; side: 'referrer' | 'ref
 
 export async function getReferralSummary(userId: string, now = new Date()) {
   const code = await ensureCode(userId);
-  const { db, withUser } = await dbm();
+  const { db } = await dbm();
   const origin = env().appUrl;
   const [friends, rewards, [months], [chain], [credit], [sub], left] = await Promise.all([
-    withUser(userId, (tx) => tx.execute<{ id: string; display_name: string | null; removed: boolean; status: ReferralFriend['status']; invited_at: string | null; signed_up_at: string | null; qualified_at: string | null }>(sql`select * from public.referral_friends()`)),
+    run(userId, (tx) => tx.execute<{ id: string; display_name: string | null; removed: boolean; status: ReferralFriend['status']; invited_at: string | null; signed_up_at: string | null; qualified_at: string | null }>(sql`select * from public.referral_friends()`)),
     db.execute<RewardRow>(sql`
       select * from (
         select g.id, 'month' as kind, case when r.referrer_id = ${userId} then 'referrer' else 'referee' end as side,

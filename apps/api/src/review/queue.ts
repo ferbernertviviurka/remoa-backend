@@ -1,11 +1,12 @@
 import { sql } from 'drizzle-orm';
 import {
-  PLAN_LIMITS, PREVIEW_MAX_NODES, REVIEW_HUB_AHEAD_DAYS, type Area, type QueueFilter, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
+  PLAN_LIMITS, PREVIEW_MAX_NODES, cacheTags, REVIEW_HUB_AHEAD_DAYS, type Area, type QueueFilter, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
   type BoardSummary, type GetDailyQueue, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
 } from '@remoa/contracts';
 import { aggregate, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
 import { run } from '../db';
+import { cached, type UserCacheDef } from '../cache';
 import { planOf } from '../billing/plan';
 
 const ROLLOVER_HOUR = 4; // FRD: the study day rolls over at 04:00 local
@@ -281,19 +282,10 @@ export async function computeRetrievability(userId: string, boardId: string, now
   });
 }
 
-// ponytail: in-process cache, correct for a single API instance only (a recordAttempt on another instance leaves a stale map for <= 60 s).
-// Upgrade to a shared cache (Redis) or drop it when the API scales out.
-const TTL_MS = 60_000;
-const cache = new Map<string, { at: number; nowMs: number; map: RetrievabilityMap }>();
-export const invalidateRetrievability = (userId: string) => {
-  for (const k of cache.keys()) if (k.startsWith(`${userId}|`)) cache.delete(k);
-};
+// G21 T7: L1 cache of the cache/ module; dropped by map.changed (mapId), card.changed (mapId) and review.answered (`review` tag).
+const retrCache = (boardId: string, now: Date): UserCacheDef<{ userId: string }> => ({
+  scope: 'user', name: 'retrievability', ttl: 'live', key: () => [boardId, Math.floor(now.getTime() / 60_000)],
+  tags: ({ userId }) => [cacheTags.user(userId, 'review'), ...(idSchema.safeParse(boardId).success && !boardId.includes(':') ? [cacheTags.map(userId, boardId)] : [])],
+});
 
-export const getRetrievability: GetRetrievability = async (userId, boardId, now) => {
-  const key = `${userId}|${boardId}`;
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS && Math.abs(now.getTime() - hit.nowMs) < TTL_MS) return ok(hit.map);
-  const r = await computeRetrievability(userId, boardId, now);
-  if (r.ok) cache.set(key, { at: Date.now(), nowMs: now.getTime(), map: r.data });
-  return r;
-};
+export const getRetrievability: GetRetrievability = (userId, boardId, now) => cached(retrCache(boardId, now), { userId }, () => computeRetrievability(userId, boardId, now));

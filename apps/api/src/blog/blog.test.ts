@@ -12,7 +12,8 @@ config({ path: '../../.env' });
 const stored = new Map<string, Buffer>();
 vi.mock('../storage/storage', async (orig: () => Promise<object>) => ({ ...(await orig()), putPublicBytes: async (k: string, b: Buffer) => void stored.set(k, b) }));
 const revalidate = vi.fn<(t: string[]) => Promise<void>>(async () => {});
-vi.mock('./revalidate', () => ({ revalidateBlog: (t: string[]) => revalidate(t) }));
+vi.mock('./revalidate', () => ({ blogChanged: (t: string[]) => revalidate(t) }));
+vi.mock('../cache', async (orig) => ({ ...(await orig<typeof import('../cache')>()), invalidate: async () => ({ tags: [], dropped: 0 }) })); // sitemap.ts invalidates directly
 
 const doc = (h2 = true) => ({ type: 'doc', content: [...(h2 ? [{ type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Por que revisar' }] }] : []), { type: 'paragraph', content: [{ type: 'text', text: 'Texto do post.' }] }] });
 const DESC = 'Uma descrição longa o bastante para passar na regra de publicação do blog, com mais de setenta caracteres.';

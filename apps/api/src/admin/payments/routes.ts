@@ -7,13 +7,14 @@ import { adminErrors, adminPaymentListQuerySchema, err, markPaidInputSchema, ok,
 import type { ZodTypeAny } from 'zod';
 import type { Tx } from '@remoa/db';
 import { randomUUID } from 'node:crypto';
-import { notify } from '../../notifications/notify';
+import { emailsInline, notify } from '../../notifications/notify';
 import { applyStripeEvent } from '../../billing/webhook';
 import { installedStripe, type StripePort } from '../../billing/stripe';
 import { dbm } from '../../db';
 import { reasonOf, registerExport, send, withAdmin, type AdminEnv, type AuditCapture } from '../core';
 import { paymentsPort } from './port';
 import { getPayment, listPayments, periodOf } from './queries';
+import { invalidate } from '../../cache';
 
 const EXPORT_MAX_ROWS = 10_000;
 const conflict = () => err<never>('conflict', adminErrors.invalidState);
@@ -29,12 +30,14 @@ const action = (name: AdminAction, fn: (tx: Tx, audit: AuditCapture, p: Payment,
   if (other && !other.ok) return send(other);
   const id = c.req.param('id') ?? '';
   const { db, payments: t } = await dbm();
-  const [known] = await db.select({ id: t.id }).from(t).where(eq(t.id, id));
+  const [known] = await db.select({ id: t.id, userId: t.userId }).from(t).where(eq(t.id, id));
   if (!known) return send(err('not_found', 'payment not found'));
-  return send(await withAdmin(c, name, { reason: reasonOf(json), target: { type: 'payment', id } }, async (tx, audit) => {
+  const r = await withAdmin(c, name, { reason: reasonOf(json), target: { type: 'payment', id } }, async (tx, audit) => {
     const [p] = await tx.select().from(t).where(eq(t.id, id)).for('update');
     return fn(tx, audit, p!, c);
-  }));
+  });
+  if (r.ok && known.userId && name !== 'payment.resend_receipt') await invalidate('plan.changed', { userId: known.userId }); // refund / mark-paid can change the plan
+  return send(r);
 };
 
 const refund = action('payment.refund', async (tx, audit, p, c) => {
@@ -89,7 +92,8 @@ const resendReceipt = action('payment.resend_receipt', async (tx, audit, p, c) =
     if (!receiptUrl) return conflict();
     // Inside the action: a failed send rolls back and leaves a denied `error` row instead of a success that never reached the student.
     // New reference at every resend: the admin asked for another copy (a repeat of the same reference would be a silent duplicate).
-    const sent = await notify(p.userId, 'payment_receipt', { reference: randomUUID(), email: { name: u.name?.trim().split(/\s+/)[0] || null, receiptUrl } });
+    // D-810 + D-992: the admin must know it reached the provider, so this one send stays in the request (2 tries, 3 s each).
+    const sent = await emailsInline(() => notify(p.userId!, 'payment_receipt', { reference: randomUUID(), email: { name: u.name?.trim().split(/\s+/)[0] || null, receiptUrl } }));
     if (sent.email !== 'queued' && sent.email !== 'duplicate') throw new Error(`receipt e-mail ${sent.email}`);
   } catch (e) {
     c.get('log').error('receipt not sent', { paymentId: p.id, error: e instanceof Error ? e.message : String(e) });

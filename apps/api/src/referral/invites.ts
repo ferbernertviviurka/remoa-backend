@@ -6,6 +6,7 @@ import { notifyAddress } from '../notifications/notify';
 import { dbm } from '../db';
 import { emailHash, maskEmail } from './email-normalize';
 import { ensureCode, invitesLeftToday } from './summary';
+import { invalidate } from '../cache';
 
 /** FR-7. `emails` already validated/lowercased by inviteInputSchema. Same answer whether or not an address has an account. */
 export async function sendInvites(userId: string, emails: string[], log: Logger): Promise<Result<InviteResult>> {
@@ -35,6 +36,7 @@ export async function sendInvites(userId: string, emails: string[], log: Logger)
     return { fresh, name: p?.name?.trim().split(/\s+/)[0] || 'Um amigo', left: await invitesLeftToday(userId, tx) };
   });
   if (!out) return err('rate_limited', referralErrors.dailyLimit);
+  await invalidate('referral.changed', { userId });
   // D-399: not awaited. Only addresses without an account get an e-mail, so waiting for the provider would make the response
   // measurably slower for them (timing oracle on who has an account). The row is already committed; a failure only logs.
   for (const { to, referralId } of out.fresh)

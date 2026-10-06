@@ -12,6 +12,7 @@ import type { z } from 'zod';
 import { getBytes } from '../storage/storage';
 import { caller } from './caller';
 import { createLogger } from '@remoa/log';
+import { invalidate } from '../cache';
 
 /** D-582: a failed job answers 200 on /jobs/:id, so its reason only shows up in the API log through this line. */
 const logFailed = (jobId: string, error: string) => createLogger({ requestId: jobId }).warn('generation failed', { jobId, error });
@@ -183,6 +184,7 @@ export async function attachRubric(userId: string, cardId: string) {
   const remembered = cachedRubric(card.title, card.back, source);
   if (remembered) {
     await db.update(cards).set({ rubric: { ...remembered, inputHash: hash }, updatedAt: new Date() }).where(eq(cards.id, card.id));
+    await invalidate('card.changed', { userId, mapId: card.boardId });
     return ok(remembered);
   }
   const charged = Boolean(process.env.DATABASE_URL && process.env.OPENROUTER_API_KEY);
@@ -199,6 +201,7 @@ export async function attachRubric(userId: string, cardId: string) {
   }
   const { rubric, meta } = built;
   await db.update(cards).set({ rubric: { ...rubric, inputHash: hash }, updatedAt: new Date() }).where(eq(cards.id, card.id));
+  await invalidate('card.changed', { userId, mapId: card.boardId });
   if (process.env.DATABASE_URL) {
     await db.insert(aiCalls).values({
       userId, kind: 'rubric', model: meta.model, promptVersion: RUBRIC_PROMPT_VERSION,
@@ -371,6 +374,7 @@ async function executeGeneration(jobId: string) {
     if (current) jobs.set(jobId, { ...current, progress: 75, stage: 'layout' });
     if (!(await boardRoom(item.userId)).ok) throw new Error('boards'); // a concurrent map took the last slot: refund below
     const boardId = process.env.DATABASE_URL ? await saveBoard(item.userId, item.input, extracted.cards, extracted.edges, item.extras) : null;
+    if (boardId) await invalidate('map.changed', { userId: item.userId, mapId: boardId }); // after saveBoard's writes: the generated map and its draft cards
     if (boardId) await maybeQualifyReferral(item.userId); // F18 (D-485): after saveBoard's writes; never throws. Draft cards count (D-402 does not filter status)
     await recordCall(item.userId, item.logKind ?? (item.input.kind === 'pdf' ? 'generate_pdf' : 'generate_text'), meta);
     const done = jobs.get(jobId);

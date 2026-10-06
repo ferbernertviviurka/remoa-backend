@@ -8,6 +8,7 @@ import { dbm, run } from '../../db';
 import { dayWindow, dueByOffset } from '../../review/queue';
 import { coverUrlFor, icsUrlFor } from '../ics';
 import { validTz } from './plan';
+import { invalidate } from '../../cache';
 
 const log = createLogger({ requestId: 'job-calendar-reminders' });
 /** D-779: a reminder more than 3 h late (outage, paused cron) is skipped instead of sent; so is one whose timed event already started. */
@@ -83,21 +84,26 @@ export async function dispatchDueReminders(now: Date, notify: Notify) {
   const { db } = await dbm();
   const nowIso = now.toISOString();
   // Safety net for writes that did not replan: deleted events and switched-off reminders never go out.
-  const canceled = await db.execute(sql`
+  const canceled = await db.execute<{ user_id: string }>(sql`
     update calendar_reminders r set status = 'canceled' from calendar_events e
     where e.id = r.event_id and r.status = 'scheduled' and r.send_at <= ${nowIso}::timestamptz
-      and (e.deleted_at is not null or (r.kind = 'd1' and not e.remind_d1) or (r.kind = 'd0' and not e.remind_d0))`);
-  const skipped = await db.execute(sql`
+      and (e.deleted_at is not null or (r.kind = 'd1' and not e.remind_d1) or (r.kind = 'd0' and not e.remind_d0))
+    returning r.user_id`);
+  const skipped = await db.execute<{ user_id: string }>(sql`
     update calendar_reminders r set status = 'skipped' from calendar_events e
     where e.id = r.event_id and r.status = 'scheduled' and r.send_at <= ${nowIso}::timestamptz
-      and (r.send_at < ${nowIso}::timestamptz - make_interval(hours => ${STALE_HOURS}) or (not e.all_day and e.starts_at <= ${nowIso}::timestamptz))`);
+      and (r.send_at < ${nowIso}::timestamptz - make_interval(hours => ${STALE_HOURS}) or (not e.all_day and e.starts_at <= ${nowIso}::timestamptz))
+    returning r.user_id`);
+  for (const userId of new Set([...canceled, ...skipped].map((r) => r.user_id))) await invalidate('calendar.changed', { userId }); // the clock changed their reminders (FR-45)
   const groups = await db.execute<Group>(sql`
     select distinct user_id, kind, occurrence_date::text as occurrence_date from calendar_reminders
     where status = 'scheduled' and send_at <= ${nowIso}::timestamptz limit 1000`);
   let sent = 0;
   for (const g of groups) {
     try {
-      sent += await sendGroup(g, now, notify);
+      const n = await sendGroup(g, now, notify);
+      sent += n;
+      if (n) await invalidate('calendar.changed', { userId: g.user_id }); // after COMMIT: the reminders are now `sent`
     } catch (e) {
       log.error('calendar reminder failed', { userId: g.user_id, kind: g.kind, error: e instanceof Error ? e.message : String(e) }); // retried next run
     }

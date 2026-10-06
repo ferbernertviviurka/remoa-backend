@@ -5,6 +5,7 @@ import type { Logger } from '@remoa/log';
 import { dbm } from '../db';
 import { emailHash } from './email-normalize';
 import { flagWeakSignals } from './fraud';
+import { invalidate } from '../cache';
 
 type Skip = (typeof attributionSkips)[number];
 
@@ -62,6 +63,7 @@ export async function attributeReferral(userId: string, code: string, ctx: { log
     else ctx.log.info('referral attribution skipped', { reason: skip });
     return { attributed: false };
   }
+  for (const id of [referrerId!, userId]) await invalidate('referral.changed', { userId: id });
   flagWeakSignals(referrerId!, ctx.ip, ctx.ua, ctx.log);
   ctx.log.info('referral attributed');
   return { attributed: true };

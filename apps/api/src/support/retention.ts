@@ -2,6 +2,7 @@
 import { sql } from 'drizzle-orm';
 import { dbm } from '../db';
 import { deleteObject } from '../storage/storage';
+import { invalidate } from '../cache';
 
 export const ATTACHMENT_RETENTION_DAYS = 90;
 export const TICKET_RETENTION_MONTHS = 12;
@@ -20,6 +21,8 @@ export async function sweepSupport(now = new Date()) {
     } catch { /* retried next run */ }
   }
   // Remaining attachment rows (resolved < 12 months) are gone by now; cascade covers messages. Objects of a ticket whose rows are not yet deleted are not orphaned: they were swept above (90 d < 12 mo).
-  const tickets = (await db.execute(sql`delete from support_tickets where resolved_at is not null and resolved_at <= ${at}::timestamptz - make_interval(months => ${TICKET_RETENTION_MONTHS}) returning id`)).length;
+  const gone = await db.execute<{ user_id: string | null }>(sql`delete from support_tickets where resolved_at is not null and resolved_at <= ${at}::timestamptz - make_interval(months => ${TICKET_RETENTION_MONTHS}) returning user_id`);
+  const tickets = gone.length;
+  for (const userId of new Set(gone.flatMap((g) => (g.user_id ? [g.user_id] : [])))) await invalidate('support.changed', { userId });
   return { attachments, tickets };
 }

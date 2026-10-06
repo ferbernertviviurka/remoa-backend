@@ -18,7 +18,7 @@ export * from './events';
 export * from './auth';
 export type * from './api';
 export * from './account';
-export * from './institutions';
+export { institutionInputSchema, type InstitutionInput } from './institutions'; // MEDICAL_SCHOOLS: @remoa/contracts/medical-schools (P-462, D-1018)
 export * from './referral';
 export * from './support';
 export * from './admin';
@@ -27,3 +27,4 @@ export * from './emails';
 export * from './notifications';
 export * from './calendar';
 export * from './blog';
+export * from './cache';

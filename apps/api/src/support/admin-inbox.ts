@@ -100,12 +100,12 @@ export async function notifyAnswered(userId: string | null, ticketId: string, nu
   });
 }
 
-export async function assignTicket(tx: Tx, adminId: string, ticketId: string): Promise<Result<{ before: string; after: string }>> {
+export async function assignTicket(tx: Tx, adminId: string, ticketId: string): Promise<Result<{ before: string; after: string; userId: string | null }>> {
   const t = UUID.test(ticketId) ? await lock(tx, ticketId) : undefined;
   if (!t) return notFound();
   if (t.status === 'resolved') return err('conflict', 'ticket resolved');
   await tx.execute(sql`update support_tickets set assigned_to = ${adminId}, status = case when status = 'open' then 'in_review'::support_ticket_status else status end, updated_at = now() where id = ${ticketId}`);
-  return ok({ before: t.status, after: t.status === 'open' ? 'in_review' : t.status });
+  return ok({ before: t.status, after: t.status === 'open' ? 'in_review' : t.status, userId: t.user_id });
 }
 
 export async function resolveTicket(tx: Tx, ticketId: string): Promise<Result<{ type: string; userId: string | null; before: string; after: string }>> {

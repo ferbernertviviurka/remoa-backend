@@ -9,6 +9,7 @@ import { dbm } from '../../db';
 import { normalizeCrm } from '../../editorial/editorial';
 import { notFound, reasonOf, registerExport, send, withAdmin, type AdminEnv, type AuditCapture } from '../core';
 import { dtReq, isUuid, likeOf, trailOf } from '../users/util';
+import { invalidate } from '../../cache';
 
 const conflict = () => err<never>('conflict', adminErrors.invalidState);
 type C = Context<AdminEnv>;
@@ -81,7 +82,12 @@ const action = (name: AdminAction, fn: Fn) => async (c: C) => {
   const id = c.req.param('id') ?? '';
   const b = await mapOf(id);
   if (!b) return notFound();
-  return send(await withAdmin(c, name, { reason: reasonOf(json), target: { type: 'board', id } }, (tx, audit) => fn(tx, audit, b)));
+  const r = await withAdmin(c, name, { reason: reasonOf(json), target: { type: 'board', id } }, (tx, audit) => fn(tx, audit, b));
+  if (r.ok && name !== 'map.open_readonly') {
+    if (typeof b.owner_id === 'string') await invalidate('map.changed', { userId: b.owner_id, mapId: id });
+    if (name.startsWith('seed.')) await invalidate('catalog.changed', {}); // a seed became (or stopped being) visible in the ready-made maps
+  }
+  return send(r);
 };
 const isSeed = (b: Raw) => b.origin === 'seed';
 

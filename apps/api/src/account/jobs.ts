@@ -4,6 +4,7 @@ import { dbm } from '../db';
 import { deletePrefix } from '../storage/storage';
 import type { StripePort } from '../billing/stripe';
 import { GRACE_DAYS } from './account';
+import { invalidate } from '../cache';
 
 const DAY = 86_400_000;
 const log = createLogger({ requestId: 'job-account' });
@@ -32,6 +33,7 @@ export async function purgeDeletedAccounts(now: Date, stripe?: StripePort) {
     // One failing user (e.g. an FK without cascade) must not stop the others' legal deletion.
     try {
       await db.execute(sql`delete from auth.users where id = ${id}`);
+      await invalidate('account.deleted', { userId: id });
       log.info('account purged', { userId: id });
     } catch (e) {
       log.error('account purge failed', { userId: id, error: e instanceof Error ? e.message : String(e) });

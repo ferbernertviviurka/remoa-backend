@@ -12,7 +12,7 @@ if (process.env.NODE_ENV !== 'development' || !/^remoa_perf[a-z0-9_]*$/.test(dbN
 const secret = process.env.SUPABASE_JWT_SECRET;
 if (!secret) throw new Error('missing env SUPABASE_JWT_SECRET');
 
-const verifyToken: VerifyToken = async (token) => {
+const verifyToken: VerifyToken = async (token, opts) => {
   const [h, p, s] = token.split('.');
   if (!h || !p || !s) return null;
   const want = createHmac('sha256', secret).update(`${h}.${p}`).digest();
@@ -20,6 +20,7 @@ const verifyToken: VerifyToken = async (token) => {
   if (got.length !== want.length || !timingSafeEqual(got, want)) return null;
   const c = JSON.parse(Buffer.from(p, 'base64url').toString()) as { sub?: string; session_id?: string; exp?: number };
   if (!c.sub || !c.session_id || (c.exp ?? 0) * 1000 < Date.now()) return null;
+  if (opts?.defer) return { userId: c.sub, sessionId: c.session_id, pending: true }; // D-990, same as supabaseVerifier
   const live = await liveSession(c.sub, c.session_id);
   return live && { userId: c.sub, sessionId: c.session_id, account: live.account };
 };

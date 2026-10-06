@@ -1,36 +1,9 @@
-// F27 FR-21/FR-33 (D-907): ask the web to drop its tag cache. Best effort: never throws, never fails the caller's action.
-import { env } from '@remoa/config';
-import { revalidateInputSchema } from '@remoa/contracts';
-import { createLogger, newRequestId, type Logger } from '@remoa/log';
+import type { Logger } from '@remoa/log';
+import { invalidate } from '../cache';
 
-const TIMEOUT_MS = 3000;
-const ATTEMPTS = 2; // one retry
+// F27 FR-21/FR-33 (D-907): the blog's tag revalidation is the generic web revalidation of the cache module (G21 T6, D-980).
+export { revalidateWeb as revalidateBlog } from '../cache/revalidate-web';
 
-/** POST REVALIDATE_URL with Bearer REVALIDATE_SECRET. Tags are de-duplicated and capped at the contract's 50. */
-export async function revalidateBlog(tags: string[], log: Logger = createLogger({ requestId: newRequestId() })): Promise<void> {
-  const parsed = revalidateInputSchema.safeParse({ tags: [...new Set(tags)].slice(0, 50) });
-  if (!parsed.success) return log.warn('blog revalidate skipped', { reason: 'invalid tags' });
-  let cfg: ReturnType<typeof env>;
-  try {
-    cfg = env();
-  } catch (e) {
-    return log.error('blog revalidate failed', { error: e instanceof Error ? e.message : String(e) });
-  }
-  let last = '';
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-    try {
-      const res = await fetch(cfg.revalidateUrl, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${cfg.revalidateSecret}`, 'content-type': 'application/json' },
-        body: JSON.stringify(parsed.data),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      if (res.ok) return log.info('blog revalidated', { tags: parsed.data.tags, attempt });
-      last = `status ${res.status}`;
-      if (res.status < 500) break; // 401/422 will not get better on retry
-    } catch (e) {
-      last = e instanceof Error ? e.name : String(e);
-    }
-  }
-  log.error('blog revalidate failed', { tags: parsed.data.tags, error: last });
-}
+const pick = (tags: string[], prefix: string) => tags.filter((t) => t.startsWith(prefix)).map((t) => t.slice(prefix.length));
+/** G21 T7: the blog's post/category tags (Fx.tags, D-908) as the `blog.changed` event; the catalog adds blog, landing, sitemap and feed. */
+export const blogChanged = (tags: string[], log?: Logger) => invalidate('blog.changed', { slugs: pick(tags, 'blog:post:'), categorySlugs: pick(tags, 'blog:category:') }, log);

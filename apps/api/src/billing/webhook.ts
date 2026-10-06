@@ -9,6 +9,7 @@ import { convertGrantsToCredits, lockGrants, monthCents } from './grants';
 import { grantChain } from './plan';
 import { notifyPurchase } from './purchase-notice';
 import { addPeriod, type StripePort } from './stripe';
+import { invalidate } from '../cache';
 
 export type StripeEventLike = { id: string; type: string; data: { object: unknown } };
 
@@ -36,6 +37,8 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
 
   // Network before the transaction: card checkouts need the live subscription period.
   let write: ((tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>) | null = null;
+  let who: string | null = null; // plan.changed after COMMIT: the user (checkout) or the subscription id that resolves to one
+  let bySubId: string | null = null;
   let creditsFor: string | null = null; // F18: user whose pending credits are pushed to Stripe after commit
   switch (event.type) {
     case 'checkout.session.completed':
@@ -58,6 +61,7 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
         const row = { plan: 'founder' as const, status: 'active' as const, stripeCustomerId: s.customer, stripeSubscriptionId: null, renewsAt: null, cancelAtPeriodEnd: false };
         write = (tx) => tx.insert(subscriptions).values({ userId, ...row }).onConflictDoUpdate({ target: subscriptions.userId, set: { ...row, updatedAt: new Date() } });
         log.info('founder_purchased', { userId });
+        who = userId;
         break;
       }
       // A Pro payment landing on a Founder (e.g. a Pix paid late) must not downgrade it.
@@ -78,6 +82,7 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
         if (perMonth) await convertGrantsToCredits(tx, userId, perMonth);
       };
       if (perMonth) creditsFor = userId;
+      who = userId;
       log.info('subscription_started', { userId: s.client_reference_id, method: s.mode === 'payment' ? 'pix' : 'card', period });
       break;
     }
@@ -86,18 +91,21 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
       const id = i.subscription ?? i.parent?.subscription_details?.subscription;
       // Proration invoices (switch to annual) list the old period's credit first: the newest period end wins (G05 M2).
       const end = i.lines?.data.length ? Math.max(...i.lines.data.map((l) => l.period.end)) : undefined;
+      bySubId = id ?? null;
       if (id && end) write = (tx) => tx.update(subscriptions).set({ status: 'active', renewsAt: new Date(end * 1000), updatedAt: new Date() }).where(bySub(id));
       break;
     }
     case 'invoice.payment_failed': {
       const i = invoice.parse(o);
       const id = i.subscription ?? i.parent?.subscription_details?.subscription;
+      bySubId = id ?? null;
       if (id) write = (tx) => tx.update(subscriptions).set({ status: 'past_due', updatedAt: new Date() }).where(bySub(id));
       break;
     }
     case 'customer.subscription.updated': {
       const s = sub.parse(o);
       // Stripe doesn't order events: re-read the live subscription so a late, stale update can't overwrite newer state.
+      bySubId = s.id;
       const live = await stripe.subscription(s.id).catch(() => null);
       const next = live ?? { status: s.status, cancelAtPeriodEnd: s.cancel_at_period_end, renewsAt: new Date(s.items.data[0]!.current_period_end * 1000) };
       write = (tx) => tx.update(subscriptions).set({ status: status(next.status), cancelAtPeriodEnd: next.cancelAtPeriodEnd, renewsAt: next.renewsAt, updatedAt: new Date() }).where(bySub(s.id));
@@ -108,6 +116,7 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
     }
     case 'customer.subscription.deleted': {
       const id = z.object({ id: z.string() }).parse(o).id;
+      bySubId = id;
       write = (tx) => tx.update(subscriptions).set({ plan: 'free', status: 'canceled', cancelAtPeriodEnd: false, updatedAt: new Date() }).where(bySub(id));
       break;
     }
@@ -115,7 +124,8 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
   // F19 T4 (D-456): payments mirror in the same dedupe + transaction; a Pix already released by "marcar como pago" is not released twice.
   // The check runs in the transaction under the payment row lock (D-475): a mark-paid in flight holds that lock, so a Pix
   // confirmation arriving at the same instant waits for it and then sees `marked_paid` instead of extending the plan again.
-  const released = { released: write !== null };
+  const touched: string[] = [];
+  const released = { released: write !== null, touched }; // mutated below: mirrorPayment reads it inside the transaction
   const paid: { notice: PaidNotice | null } = { notice: null };
   const mirror = await mirrorPayment(event, released);
   if (!write && !mirror) return 'ignored';
@@ -128,6 +138,16 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
     paid.notice = (await mirror?.(tx)) ?? null; // F19 T4
     return 'applied' as const;
   });
+  if (result === 'applied') {
+    // D-980: after COMMIT, before answering. The entitlements (and the plan-dependent lists) of every user this event touched.
+    if (who) touched.push(who);
+    if (paid.notice) touched.push(paid.notice.userId);
+    if (bySubId) {
+      const [row] = await db.select({ userId: subscriptions.userId }).from(subscriptions).where(eq(subscriptions.stripeSubscriptionId, bySubId));
+      if (row) touched.push(row.userId);
+    }
+    for (const userId of new Set(touched)) await invalidate('plan.changed', { userId });
+  }
   // After commit; failures stay pending for the daily sweep and never fail the webhook.
   if (result === 'applied' && creditsFor) await applyPendingCredits(creditsFor, stripe);
   if (result === 'applied' && paid.notice) await notifyPurchase(paid.notice); // G18: one per payment, renewals included; never throws

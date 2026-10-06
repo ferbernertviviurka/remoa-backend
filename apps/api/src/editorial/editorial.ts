@@ -5,6 +5,7 @@ import { dbm } from '../db';
 import { firstNameOf } from '../notifications/names';
 import { notify } from '../notifications/notify';
 import { maybeQualifyReferral } from '../referral/qualify';
+import { invalidate } from '../cache';
 
 async function reviewer(userId: string) {
   const { db, profiles } = await dbm();
@@ -156,7 +157,7 @@ export async function decideReview(userId: string, body: unknown) {
     `);
     if ((others?.n ?? 0) > 0) return err('forbidden', 'own card');
   }
-  return db.transaction(async (tx) => {
+  const decided = await db.transaction(async (tx) => {
     const done = await tx.update(reviewQueue).set({ status: input.data.decision, reviewerId: userId, note: input.data.note, updatedAt: new Date() })
       .where(and(eq(reviewQueue.id, item.id), eq(reviewQueue.status, 'pending'))).returning({ id: reviewQueue.id });
     if (!done.length) return err('conflict', 'already decided'); // a concurrent decision won
@@ -166,6 +167,11 @@ export async function decideReview(userId: string, body: unknown) {
     }
     return ok({ id: item.id });
   });
+  if (decided.ok && input.data.decision === 'approved') {
+    await invalidate('catalog.changed', {}); // an approved seed card changes the ready-made maps
+    await invalidate('card.changed', { userId: board.userId, mapId: card.boardId });
+  }
+  return decided;
 }
 
 export async function setReviewerCrm(userId: string, crm: string) {
@@ -175,6 +181,7 @@ export async function setReviewerCrm(userId: string, crm: string) {
   if (crm.trim() && !normalized) return err('validation', 'crm');
   const { db, profiles } = await dbm();
   await db.update(profiles).set({ crm: normalized, updatedAt: new Date() }).where(eq(profiles.userId, userId));
+  await invalidate('profile.changed', { userId });
   return ok({ crm: normalized });
 }
 
@@ -235,9 +242,11 @@ export async function resolveDispute(userId: string, body: unknown) {
     return true;
   });
   if (!resolved) return err('conflict', 'already resolved');
+  if (targetId) await invalidate('catalog.changed', {}); // a rubric adjusted on a seed card
   if (item.attemptId) {
     const [attempt] = await db.select().from(attempts).where(eq(attempts.id, item.attemptId));
     if (attempt) {
+      if (targetId) await invalidate('card.changed', { userId: attempt.userId }); // the reopened card goes back to draft
       await notify(attempt.userId, 'dispute_resolved', { reference: item.id, email: { name: await firstNameOf(attempt.userId) } });
     }
   }
@@ -250,7 +259,7 @@ export async function publishBoard(userId: string, body: unknown) {
   const input = parseWith(publishVersionInputSchema, body);
   if (!input.ok) return input;
   const { db, boards, cards, edges, boardVersions } = await dbm();
-  return db.transaction(async (tx) => {
+  const published = await db.transaction(async (tx) => {
     // D-498: only seed boards publish (seed_draft → first edition, seed_approved → next edition). A student's private board is 404.
     const [board] = await tx.select().from(boards).where(and(eq(boards.id, input.data.boardId), sql`${boards.status} <> 'private'`, sql`${boards.archivedAt} is null`)).for('update');
     if (!board) return err('not_found', 'not found');
@@ -269,6 +278,8 @@ export async function publishBoard(userId: string, body: unknown) {
     await tx.update(boards).set({ status: 'seed_approved', version: next, temporalMark: input.data.temporalMark, reviewerId: userId, updatedAt: new Date() }).where(eq(boards.id, board.id));
     return ok(version!);
   });
+  if (published.ok) await invalidate('catalog.changed', {}); // a new edition of a seed map
+  return published;
 }
 
 export async function listDrafts(userId: string) {
@@ -356,6 +367,7 @@ export async function copySeed(userId: string, boardId: string) {
     const to = map.get(edge.toCardId);
     if (from && to) await db.insert(edges).values({ boardId: copy!.id, fromCardId: from, toCardId: to, label: edge.label, question: edge.question });
   }
+  await invalidate('map.changed', { userId, mapId: copy!.id });
   await maybeQualifyReferral(userId); // F18 (D-485): a copied seed can be the first map; never throws
   return ok({ id: copy!.id });
 }

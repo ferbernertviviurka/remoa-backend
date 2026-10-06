@@ -22,7 +22,7 @@ const capture = () => {
   return { lines, restore: () => (a.mockRestore(), b.mockRestore()) };
 };
 
-const store = (): PerfStore => ({ route: 'GET /x', log: createLogger({ requestId: 't' }), queries: 2, db: 12.34, ext: 5, extNames: new Set(['stripe']), marks: new Map([['render map', 3]]) });
+const store = (): PerfStore => ({ route: 'GET /x', log: createLogger({ requestId: 't' }), queries: 2, db: 12.34, dbWall: 10, inflight: 0, wallT0: 0, ext: 5, extNames: new Set(['stripe']), marks: new Map([['render map', 3]]) });
 
 describe('perf headers', () => {
   const app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (t === 'good' ? 'user-1' : null) });
@@ -40,9 +40,30 @@ describe('perf headers', () => {
     expect(res.headers.get('access-control-expose-headers')).toMatch(/server-timing.*x-remoa-queries/i);
   });
 
-  it('serverTiming: db with query count, ext with names, app = total - db - ext, marks', () => {
-    expect(serverTiming(store(), 30)).toBe('db;dur=12.3;desc="2 q", ext;dur=5;desc="stripe", app;dur=12.7, render_map;dur=3');
-    expect(serverTiming({ ...store(), extNames: new Set(), marks: new Map() }, 1)).toBe('db;dur=12.3;desc="2 q", ext;dur=5, app;dur=0');
+  it('serverTiming: db (wall) with query count, ext with names, app = total - db - ext, db-sum, marks', () => {
+    expect(serverTiming(store(), 30)).toBe('db;dur=10;desc="2 q", ext;dur=5;desc="stripe", app;dur=15, db-sum;dur=12.3, render_map;dur=3');
+    expect(serverTiming({ ...store(), extNames: new Set(), marks: new Map() }, 1)).toBe('db;dur=10;desc="2 q", ext;dur=5, app;dur=0, db-sum;dur=12.3');
+  });
+
+  it('P-449: overlapping queries (Promise.all) add up in db-sum, db stays wall time ≤ total; concurrent requests never share a store', async () => {
+    const client = { unsafe: () => new Promise<unknown[]>((r) => setTimeout(() => r([]), 40)) };
+    const q = () => new PostgresJsPreparedQuery(client as never, 'select 1', [], new NoopLogger(), new NoopCache(), undefined, undefined, undefined, false).execute();
+    const app2 = new Hono().use(perfMiddleware).get('/p/:n', async (c) => {
+      await Promise.all(Array.from({ length: Number(c.req.param('n')) }, q)); // pipelined like loadCards + loadStates in one tx
+      await q();
+      return c.json({});
+    });
+    const t0 = performance.now();
+    const [a, b] = await Promise.all([app2.request('/p/4'), app2.request('/p/1')]);
+    const wall = performance.now() - t0;
+    const dur = (h: string, k: string) => Number(new RegExp(`(?:^|, )${k};dur=([\\d.]+)`).exec(h)![1]);
+    expect(a.headers.get('x-remoa-queries')).toBe('5');
+    expect(b.headers.get('x-remoa-queries')).toBe('2');
+    const ha = a.headers.get('server-timing')!;
+    expect(dur(ha, 'db-sum')).toBeGreaterThanOrEqual(190); // 5 × ~40 ms
+    expect(dur(ha, 'db')).toBeLessThan(dur(ha, 'db-sum') / 2);
+    expect(dur(ha, 'db')).toBeLessThanOrEqual(wall + 1);
+    expect(dur(b.headers.get('server-timing')!, 'db-sum')).toBeLessThan(150); // only its own 2 queries
   });
 
   it('timeExternal and withTiming add to the request store; outside a request they just run', async () => {

@@ -11,6 +11,7 @@ import { firstNameOf } from '../notifications/names';
 import { dbm } from '../db';
 import { deleteObject } from '../storage/storage';
 import { attachmentsOf, processAttachments, type StoredAttachment } from './attachments';
+import { invalidate } from '../cache';
 
 const DAY = 86_400_000;
 export const ticketUrl = (id: string) => `${env().appUrl}/app/hoje?suporte=${id}`;
@@ -49,6 +50,7 @@ export const submitSupportTicket: SubmitSupportTicket = async (userId, input) =>
     await cleanup();
     return out;
   }
+  await invalidate('support.changed', { userId }); // after COMMIT: the user's ticket list and the admin overview
   // Rows are committed; notify() never throws. One "received" notice per ticket.
   await notify(userId, 'support_received', { reference: out.data.id, email: { version: 'received', name: await firstNameOf(userId), ticketNumber: out.data.number, ticketUrl: ticketUrl(out.data.id) } });
   return out;
@@ -96,6 +98,7 @@ export const replyToTicket: ReplyToTicket = async (userId, ticketId, input) => {
     await dropFiles(files.data);
     return r;
   }
+  await invalidate('support.changed', { userId });
   return getMyTicket(userId, ticketId);
 };
 
@@ -103,7 +106,9 @@ export const markTicketRead: MarkTicketRead = async (userId, ticketId) => {
   if (!/^[0-9a-f-]{36}$/i.test(ticketId)) return err('not_found', 'ticket not found');
   const { db, supportTickets: t } = await dbm();
   const u = await db.update(t).set({ lastUserReadAt: new Date() }).where(and(eq(t.id, ticketId), eq(t.userId, userId))).returning({ id: t.id });
-  return u.length ? ok(null) : err('not_found', 'ticket not found');
+  if (!u.length) return err('not_found', 'ticket not found');
+  await invalidate('support.changed', { userId });
+  return ok(null);
 };
 
 export const getSupportUnread: GetSupportUnread = async (userId) => {

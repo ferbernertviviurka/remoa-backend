@@ -3,7 +3,8 @@ import { config } from 'dotenv';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MEDICAL_SCHOOLS, accountSnapshotSchema, type Notify } from '@remoa/contracts';
+import { accountSnapshotSchema, type Notify } from '@remoa/contracts';
+import { MEDICAL_SCHOOLS } from '@remoa/contracts/medical-schools';
 
 config({ path: '../../.env' });
 process.env.UNSUBSCRIBE_SECRET ||= 'test-secret-test-secret';

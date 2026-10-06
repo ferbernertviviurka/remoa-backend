@@ -9,6 +9,10 @@ import type { Tx } from '@remoa/db';
 import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
 import { deliverEmail, type DeliverResult } from '../emails/send';
+import { invalidate } from '../cache';
+
+/** D-992 scopes for callers outside emails/ (rule 10: they never import emails/send). */
+export { deferEmails, drainEmails, emailsInline } from '../emails/send';
 
 const log = createLogger({ requestId: 'notify' });
 
@@ -100,6 +104,7 @@ export const notify: Notify = async (userId, type, payload, opts = {}) => {
           const [old] = row ? [] : await db.execute<{ id: string }>(sql`select id from notifications where user_id = ${userId} and idempotency_key = ${key}`);
           res.inApp = row ? 'created' : 'duplicate';
           res.notificationId = (row ?? old)?.id ?? null;
+          if (row) await invalidate('notification.changed', { userId }); // a new row: the list and the unread count (never throws)
         }
       }
     }

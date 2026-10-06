@@ -10,6 +10,7 @@ import { signAvatarUrls } from './avatar';
 import { getPreferences } from './preferences';
 import { recordEvent } from './events';
 import { replanUserReminders } from '../calendar/reminders/schedule';
+import { invalidate } from '../cache';
 
 const DAY = 86_400_000;
 const DEFAULT_TZ = 'America/Sao_Paulo';
@@ -106,6 +107,8 @@ export const updateProfile: UpdateProfile = async (userId, input) => {
     if (input.timezone !== undefined && before?.tz !== input.timezone) await replanUserReminders(tx, userId, new Date());
     return r;
   });
+  await invalidate('profile.changed', { userId });
+  if (input.timezone !== undefined) await invalidate('calendar.changed', { userId }); // reminders were re-planned
   return ok(profileOf(userId, row));
 };
 
@@ -117,5 +120,6 @@ export const cancelDeletion: CancelDeletion = async (userId) => {
   if (Date.now() >= r.d.getTime() + RETENTION.deletionGraceDays * DAY) return err('forbidden', 'grace period over');
   await db.update(profiles).set({ deletedAt: null }).where(eq(profiles.userId, userId));
   await recordEvent(db, userId, 'deletion_canceled');
+  await invalidate('profile.changed', { userId });
   return ok(null);
 };

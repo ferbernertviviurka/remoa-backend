@@ -3,6 +3,7 @@ import { adminTicketListQuerySchema, adminTicketReplyInputSchema, errorHttpStatu
 import { assignTicket, getTicket, listTickets, notifyAnswered, replyAsAdmin, resolveTicket, ticketNumberOf } from '../../support/admin-inbox';
 import type { AdminEnv } from '../core/require-admin';
 import { withAdmin } from '../core/with-admin';
+import { invalidate } from '../../cache';
 
 const send = <T>(r: Result<T>) =>
   r.ok ? Response.json({ ok: true, data: r.data }) : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
@@ -23,14 +24,17 @@ export const ticketsRoutes = new Hono<AdminEnv>()
     if (number === null) return notFound();
     const admin = c.get('admin').id;
     let notify: (() => Promise<void>) | null = null;
+    const who: { id: string | null } = { id: null };
     const r = await withAdmin(c, body.data.internal ? 'ticket.internal_note' : 'ticket.reply', { reason: `Atendimento do chamado ${formatTicketNumber(number)}`, target: { type: 'ticket', id }, sensitive: false }, async (tx, audit) => {
       const x = await replyAsAdmin(tx, admin, id, body.data);
       if (!x.ok) return x;
+      who.id = x.data.userId;
       audit.before({ status: x.data.before });
       audit.after({ status: x.data.after, internal: x.data.internal }); // never the message text
       if (!x.data.internal) notify = () => notifyAnswered(x.data.userId, id, x.data.number, x.data.messageId);
       return { ok: true, data: {} };
     });
+    if (r.ok && who.id && !body.data.internal) await invalidate('support.changed', { userId: who.id }); // after COMMIT: the user's ticket list and the admin overview
     if (r.ok) await (notify as (() => Promise<void>) | null)?.(); // after commit
     return send(r);
   })
@@ -40,19 +44,21 @@ export const ticketsRoutes = new Hono<AdminEnv>()
 async function action(
   c: Parameters<typeof withAdmin>[0],
   name: 'ticket.assign' | 'ticket.resolve',
-  fn: (tx: Parameters<Parameters<typeof withAdmin>[3]>[0], id: string, admin: string) => Promise<Result<{ before: string; after: string }>>,
+  fn: (tx: Parameters<Parameters<typeof withAdmin>[3]>[0], id: string, admin: string) => Promise<Result<{ before: string; after: string; userId: string | null }>>,
 ) {
   const id = c.req.param('id') ?? '';
   const number = await ticketNumberOf(id);
   if (number === null) return notFound();
   const admin = c.get('admin').id;
-  return send(
-    await withAdmin(c, name, { reason: `Atendimento do chamado ${formatTicketNumber(number)}`, target: { type: 'ticket', id }, sensitive: false }, async (tx, audit) => {
+  const who: { id: string | null } = { id: null }; // set inside the transaction, read after COMMIT
+  const r = await withAdmin(c, name, { reason: `Atendimento do chamado ${formatTicketNumber(number)}`, target: { type: 'ticket', id }, sensitive: false }, async (tx, audit) => {
       const x = await fn(tx, id, admin);
       if (!x.ok) return x;
+      who.id = x.data.userId;
       audit.before({ status: x.data.before });
       audit.after({ status: x.data.after });
       return { ok: true, data: {} };
-    }),
-  );
+    });
+  if (r.ok && who.id) await invalidate('support.changed', { userId: who.id }); // the overview itself is dropped by withAdmin (admin.action)
+  return send(r);
 }

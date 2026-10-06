@@ -11,11 +11,12 @@ import { createLogger } from '@remoa/log';
 import { getBytes, headObject, presignPut, putBytes } from '../storage/storage';
 import { limitFor, overAnkiImports, overTotal } from '../billing/quota';
 import { planOf } from '../billing/plan';
-import { dbm, run } from '../db';
+import { asJob, dbm, run } from '../db';
 import { initialShareColumns } from '../share/crypto';
 import { notifyMapReady } from '../notifications/map-ready';
 import { layoutImport } from './layout';
 import { maybeQualifyReferral } from '../referral/qualify';
+import { invalidate } from '../cache';
 
 /** What T1's `@remoa/anki` produces for the job (`media[0]` = front image file name; image drafts carry `payload.media` + normalized masks). */
 export type AnkiDraft = CardDraft & { deckId: string; deckName: string; media: string[]; backMedia?: string | null; tags?: string[]; empty: boolean };
@@ -188,7 +189,7 @@ export function createImports({ anki }: { anki: AnkiPort }) {
       (await tx.insert(s.imports).values({ userId, kind: 'anki', status: 'queued', stats: { processed: 0, total: plan.estimatedCards } }).returning({ id: s.imports.id }))[0]!.id);
     // ponytail: in-process job until Inngest (F05) lands; a restart leaves it 'running'
     setImmediate(() => {
-      void job(userId, importId, f.data, plan, boardInput).catch(async (e) => {
+      void asJob(() => job(userId, importId, f.data, plan, boardInput)).catch(async (e) => { // FR-25: background job, 30 s statements
         createLogger({ requestId: importId }).error('import failed', { error: e instanceof Error ? e.message : String(e) });
         const message = e instanceof ParserError ? e.message : GENERIC_ERROR;
         await run(userId, (tx, s) => tx.update(s.imports).set({ status: 'failed', error: message.slice(0, 500), updatedAt: new Date() }).where(eq(s.imports.id, importId))).catch(() => undefined);
@@ -328,6 +329,8 @@ export function createImports({ anki }: { anki: AnkiPort }) {
       }
     } finally {
       pkg.close();
+      // after the batches' COMMITs, also when the job failed halfway (the rows already inserted stay)
+      for (const mapId of rep.boardIds) await invalidate('map.changed', { userId, mapId });
     }
     const report = { ...rep, durationMs: Date.now() - t0 };
     await setStats(userId, importId, { ...report, processed: total, total }, 'done');

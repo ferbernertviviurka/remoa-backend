@@ -2,6 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { calendarViewSchema, ok, type CalendarSettings, type CalendarTourSeen, type CalendarView, type Result } from '@remoa/contracts';
 import { dbm, run } from '../db';
 import { profileTz } from './common';
+import { invalidate } from '../cache';
 
 export async function getSettings(userId: string): Promise<Result<CalendarSettings>> {
   const { db, userPreferences: up } = await dbm();
@@ -16,11 +17,13 @@ export async function markTourSeen(userId: string, now = new Date()): Promise<Re
   const [r] = await db.insert(up).values({ userId, calendarTourSeenAt: now })
     .onConflictDoUpdate({ target: up.userId, set: { calendarTourSeenAt: sql`coalesce(${up.calendarTourSeenAt}, ${now.toISOString()}::timestamptz)`, updatedAt: now } })
     .returning({ at: up.calendarTourSeenAt });
+  await invalidate('calendar.changed', { userId });
   return ok({ tourSeenAt: r!.at! });
 }
 
 export async function setView(userId: string, view: CalendarView): Promise<Result<{ view: CalendarView }>> {
   const { db, userPreferences: up } = await dbm();
   await db.insert(up).values({ userId, calendarView: view }).onConflictDoUpdate({ target: up.userId, set: { calendarView: view, updatedAt: new Date() } });
+  await invalidate('calendar.changed', { userId });
   return ok({ view });
 }

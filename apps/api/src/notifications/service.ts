@@ -5,6 +5,7 @@ import {
   type NotificationPage, type UnreadCount, type NotificationListQuery,
 } from '@remoa/contracts';
 import { dbm, run } from '../db';
+import { invalidate } from '../cache';
 
 // G18 F26. Rows are written only by notify(); here the owner reads them, marks them read and dismisses (RLS: select + update(read_at, dismissed_at)).
 
@@ -55,24 +56,28 @@ export async function unreadCount(userId: string): Promise<Result<UnreadCount>> 
 }
 
 export async function markRead(userId: string, input: MarkReadInput): Promise<Result<{ updated: number; unread: number }>> {
-  return ok(await run(userId, async (tx, s) => {
+  const out = await run(userId, async (tx, s) => {
     const t = s.notifications;
     const done = await tx.update(t).set({ readAt: new Date() }).where(and(unreadWhere(t, userId), 'ids' in input ? inArray(t.id, input.ids) : undefined)).returning({ id: t.id });
     const [{ n = 0 } = {}] = await tx.select({ n: sql<number>`count(*)::int` }).from(t).where(unreadWhere(t, userId));
     return { updated: done.length, unread: n };
-  }));
+  });
+  if (out.updated) await invalidate('notification.changed', { userId });
+  return ok(out);
 }
 
 /** Soft: sets dismissed_at. Another user's id (invisible under RLS) = not_found; dismissing twice is fine. */
 export async function dismiss(userId: string, id: string): Promise<Result<null>> {
   if (!idSchema.safeParse(id).success) return err('not_found', 'notification not found');
-  return run(userId, async (tx, s) => {
+  const r = await run(userId, async (tx, s) => {
     const t = s.notifications;
     const done = await tx.update(t).set({ dismissedAt: new Date() }).where(and(eq(t.id, id), isNull(t.dismissedAt))).returning({ id: t.id });
     if (done.length) return ok(null);
     const [seen] = await tx.select({ id: t.id }).from(t).where(eq(t.id, id));
     return seen ? ok(null) : err('not_found', 'notification not found');
   });
+  if (r.ok) await invalidate('notification.changed', { userId });
+  return r;
 }
 
 export async function getPrefs(userId: string): Promise<Result<NotificationPrefs>> {
@@ -94,6 +99,7 @@ export async function setPref(userId: string, key: (typeof notificationPrefKeys)
     const next = { ...cur, [channel]: value };
     await tx.insert(t).values({ userId, key, inApp: next.inApp, email: next.email }).onConflictDoUpdate({ target: [t.userId, t.key], set: { inApp: next.inApp, email: next.email } });
   });
+  await invalidate('prefs.changed', { userId });
 }
 
 export async function patchPrefs(userId: string, patch: NotificationPrefsPatch): Promise<Result<NotificationPrefs>> {
@@ -105,6 +111,7 @@ export async function patchPrefs(userId: string, patch: NotificationPrefsPatch):
     const { db, userPreferences: up } = await dbm();
     const set = { ...(pauseReminders !== undefined && { notifPauseReminders: pauseReminders }), ...(reviewReminderTime && { reminderHour: reviewReminderHour(reviewReminderTime) }) };
     await db.insert(up).values({ userId, ...set }).onConflictDoUpdate({ target: up.userId, set: { ...set, updatedAt: new Date() } });
+    await invalidate('prefs.changed', { userId });
   }
   return getPrefs(userId);
 }

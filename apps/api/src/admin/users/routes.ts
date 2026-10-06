@@ -14,6 +14,7 @@ import { lockGrants } from '../../billing/grants';
 import { accountState, notFound, reasonOf, registerExport, send, withAdmin, type AdminEnv, type AuditCapture } from '../core';
 import { getUser, listUsers } from './queries';
 import { isUuid } from './util';
+import { invalidate } from '../../cache';
 
 const EXPORT_MAX_ROWS = 10_000;
 const BAN_FOREVER = '876000h';
@@ -70,7 +71,7 @@ export const usersRoutes = new Hono<AdminEnv>()
     const [row] = await tx.insert(g).values({ userId: t.id, source: 'support', startsAt, endsAt: sql`${startsAt.toISOString()}::timestamptz + interval '1 month'` }).returning();
     audit.after({ grantId: row!.id, startsAt: row!.startsAt, endsAt: row!.endsAt });
     return ok({});
-  }))
+  }, async (t) => void (await invalidate('grant.changed', { userId: t.id }))))
   // The e-mail leaves inside the action: a failure rolls the audit row back into `denied/error`. Never returns a link or a password.
   .post('/:id/password-reset', action('user.password_reset', async (_tx, audit, t, _r, c) => {
     if (t.deletedAt || !t.email) return conflict();

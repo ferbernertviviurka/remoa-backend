@@ -9,6 +9,7 @@ import type { Tx } from '@remoa/db';
 import { Abort, dbm } from '../../db';
 import { auditMeta, writeAudit } from './audit';
 import { isFresh, type AdminEnv } from './require-admin';
+import { invalidate } from '../../cache';
 
 export type AuditCapture = { before(v: unknown): void; after(v: unknown): void };
 export type WithAdminOpts = { reason: string; target: { type: AuditTargetType; id: string }; sensitive?: boolean };
@@ -48,6 +49,7 @@ export async function withAdmin<T extends object>(
       const audit = await writeAudit({ ...base, reason: reason.data, result: 'success', before, after }, tx, admin);
       return { ...r.data, audit };
     });
+    await invalidate('admin.action', { userId: opts.target.type === 'user' ? opts.target.id : undefined }); // after COMMIT: overview + the affected user's entries
     return ok(data);
   } catch (e) {
     if (e instanceof Abort) {
