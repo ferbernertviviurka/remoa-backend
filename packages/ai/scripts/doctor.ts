@@ -2,6 +2,7 @@
 // against the live catalog, and current free text-only models. Read-only: /models and /key do not spend model requests.
 import { aiConfig, aiMode, chainFor, missingConfig } from '../src/config';
 import { fetchCatalog, freeTextModels, validateAi } from '../src/catalog';
+import { ocrEnabled } from '../src/ocr';
 
 // Scripts run outside the API: an unset NODE_ENV means a local run here, not production (the prod guard still applies on Railway).
 process.env.NODE_ENV ??= 'development';
@@ -28,6 +29,7 @@ out('AI_RPM_LIMIT / RPD', `${c.rpmLimit} / ${c.rpdLimit}`);
 out('AI_APP_URL / NAME', `${c.appUrl ?? '(vazio)'} / ${c.appName ?? '(vazio)'}`);
 out('OCR (AI_OCR_MODEL)', process.env.AI_OCR_MODEL || undefined);
 out('MISTRAL_API_KEY', process.env.MISTRAL_API_KEY ? 'definida' : 'ausente');
+out('OCR ligado', ocrEnabled() ? 'sim (Mistral, pago)' : c.requireFree ? 'não (AI_REQUIRE_FREE=1: a Mistral é paga)' : 'não');
 if (missingConfig().length) console.log(`\nFaltam para chamadas reais: ${missingConfig().join(', ')}`);
 if (c.production && c.dataCollection !== 'deny') console.log('\nAtenção: produção com AI_DATA_COLLECTION diferente de deny.');
 

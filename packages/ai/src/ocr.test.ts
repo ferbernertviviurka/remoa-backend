@@ -46,6 +46,16 @@ describe('ocr', () => {
     expect(text).toBe('');
   });
 
+  it('AI_REQUIRE_FREE=1 turns OCR off (Mistral is paid, P-621)', async () => {
+    process.env.MISTRAL_API_KEY = 'test-key';
+    process.env.AI_REQUIRE_FREE = '1';
+    try {
+      expect(await ocrPdf(scanned, () => { throw new Error('should not fetch'); })).toBe('');
+    } finally {
+      delete process.env.AI_REQUIRE_FREE;
+    }
+  });
+
   it('keeps the literal text when Mistral fails', async () => {
     process.env.MISTRAL_API_KEY = 'test-key';
     const bytes = new TextEncoder().encode('(Sepse grave no pronto atendimento)');

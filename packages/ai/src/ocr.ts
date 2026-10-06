@@ -1,4 +1,5 @@
 import { withRetries } from './client';
+import { aiConfig } from './config';
 import { readPdfText } from './pdf';
 
 type OcrPage = { markdown?: string };
@@ -10,12 +11,17 @@ const OCR_TIMEOUT_MS = 10 * 60 * 1000;
 /**
  * Mistral OCR when MISTRAL_API_KEY and AI_OCR_MODEL are set (G22: no model id in code). Otherwise the literal strings already in
  * the file. Same retry, classification and content-free log as chat (`withRetries`); it does not spend the OpenRouter counter.
+ * G22 qa (P-621): Mistral OCR is paid and has no per-request data policy (AI_DATA_COLLECTION applies to OpenRouter only), so
+ * AI_REQUIRE_FREE=1 turns it off: a scanned PDF then fails as `pdf_unreadable` and `pnpm ai:doctor` says why.
  */
+export const ocrEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
+  Boolean(env.MISTRAL_API_KEY?.trim() && env.AI_OCR_MODEL?.trim() && env.AI !== 'mock' && !aiConfig(env).requireFree);
+
 export async function ocrPdf(bytes: Uint8Array, fetchImpl: typeof fetch = fetch): Promise<string> {
   const literal = await readPdfText(bytes);
-  const key = process.env.MISTRAL_API_KEY?.trim();
-  const model = process.env.AI_OCR_MODEL?.trim();
-  if (!key || !model || process.env.AI === 'mock') return literal; // D-580: the mock never calls a provider
+  if (!ocrEnabled()) return literal; // D-580: the mock never calls a provider
+  const key = process.env.MISTRAL_API_KEY!.trim();
+  const model = process.env.AI_OCR_MODEL!.trim();
   try {
     const document = Buffer.from(bytes).toString('base64');
     const raw = await withRetries(
