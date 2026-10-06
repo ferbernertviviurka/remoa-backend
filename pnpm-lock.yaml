@@ -180,6 +180,9 @@ importers:
       '@remoa/ai':
         specifier: workspace:^
         version: link:../ai
+      '@remoa/blog':
+        specifier: workspace:*
+        version: link:../blog
       '@remoa/contracts':
         specifier: workspace:*
         version: link:../contracts
