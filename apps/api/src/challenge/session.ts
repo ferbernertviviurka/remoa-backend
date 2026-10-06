@@ -24,6 +24,23 @@ async function keepIfAi(verdict: GraderVerdict, held: Reservation): Promise<Grad
   return { ...verdict, ai: { ...verdict.ai, quota } };
 }
 
+/**
+ * G22 qa (P-618): the unit is taken on the server connection (`authenticated` cannot write usage_counters), outside the RLS
+ * transaction, so a rollback after it (error in `save`/`previewOf`, commit failure) would keep it spent. `keep` registers it;
+ * any failed or thrown result gives it back (refund runs at most once, so a unit already returned is not returned twice).
+ */
+async function refundOnRollback<T>(work: (keep: (held: Reservation) => void) => Promise<Result<T>>): Promise<Result<T>> {
+  let held: Reservation | undefined;
+  try {
+    const r = await work((h) => (held = h));
+    if (!r.ok) await held?.refund().catch(() => undefined);
+    return r;
+  } catch (e) {
+    await held?.refund().catch(() => undefined);
+    throw e;
+  }
+}
+
 const fail = (code: Parameters<typeof err>[0], message: string) => new Abort({ code, message });
 type SessionRow = { id: string; userId: string; boardId: string | null; startedAt: Date; endedAt: Date | null; items: unknown; options?: unknown };
 const selfGraded = (row: SessionRow) => challengeOptionsSchema.parse(row.options ?? {}).gradingMode === 'self';
@@ -110,7 +127,7 @@ const outputOf = (item: StoredItem, a: Answered, pv: AnswerOutput['preview']): A
 });
 
 export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, input) =>
-  locked(userId, input.sessionId, async (tx, s, row, items) => {
+  refundOnRollback((keep) => locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (item.x.answered) return outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)); // idempotent: no regrade, no quota
@@ -132,6 +149,7 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
       else if (!grade) a.fallback = 'grader_error'; // no grader wired (prod before F05): do not burn quota
       else {
         const held = await reserveAi(userId, 'ai_grades');
+        if (held.ok) keep(held);
         if (!held.ok) a.fallback = 'quota';
         else if (!allowGrade(userId)) {
           a.fallback = 'grader_error';
@@ -155,7 +173,7 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
     items[idx] = { ...item, x: { ...item.x, answered: a } };
     await save(tx, s, row.id, items);
     return outputOf(item, a, await previewOf(tx, s, userId, item));
-  });
+  }));
 
 // --- streamed answer (F05: feedback reaches the student while the model writes) -------------------------------------
 
@@ -186,7 +204,7 @@ async function* limitStream(source: AsyncIterable<GradeStreamEvent>, ms: number)
 
 /** Reserves the quota and the row, then returns the grader input. The model call happens after the lock is released. */
 async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>> {
-  return locked(userId, input.sessionId, async (tx, s, row, items) => {
+  return refundOnRollback((keep) => locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (item.x.answered) return { type: 'done' as const, output: outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)) };
@@ -197,6 +215,7 @@ async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>
     if (selfGraded(row) || item.grading === 'none' || !rubric.success) return { type: 'delegate' as const };
     const held = await reserveAi(userId, 'ai_grades');
     if (!held.ok) return { type: 'delegate' as const };
+    keep(held);
     if (!allowGrade(userId)) {
       await held.refund();
       const a: Answered = { inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.text, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: 'grader_error' };
@@ -207,7 +226,7 @@ async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>
     items[idx] = { ...item, x: { ...item.x, grading: true } };
     await save(tx, s, row.id, items);
     return { type: 'live' as const, held, input: { prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text } };
-  });
+  }));
 }
 
 async function commitStream(userId: string, input: Spoken, verdict: GraderVerdict | null, held: Reservation): Promise<Result<AnswerOutput>> {
