@@ -12,7 +12,7 @@ import {
 } from '@remoa/ai';
 import type { Tx } from '@remoa/db';
 import { dispatchBoardJob, inngest, inngestConfigured } from '../inngest/client';
-import { assertQuota, liveCardsSql, refundAt, reserveAi, type Reservation } from '../billing/quota';
+import { assertQuota, liveCardsSql, reserveAi, type Reservation } from '../billing/quota';
 import { planOf } from '../billing/plan';
 import { dbm, run } from '../db';
 import { maybeQualifyReferral } from '../referral/qualify';
@@ -348,18 +348,23 @@ async function pdfSource(userId: string, assetId: string): Promise<string> {
   return text;
 }
 
-/** Ends a queued/running job as failed and gives its unit back exactly once (`charged` flips in the same statement). */
+/**
+ * Ends a queued/running job as failed and gives its unit back in the SAME statement (`charged` flips with the status), so a
+ * reader that sees `failed` also sees the unit returned, and it is returned exactly once. A job that already has its board is left alone.
+ */
 async function failJob(jobId: string, code: string, ai: AiInfo = failedInfo('error', code, messageOf(code)), extra: { clearText?: boolean; userId?: string } = {}) {
   const { db } = await dbm();
-  const [r] = await db.execute<{ user_id: string; charged: boolean; quota_period: string | null }>(sql`
+  const [r] = await db.execute<{ id: string }>(sql`
     with old as (select id, user_id, charged, quota_period from ai_jobs
-      where id = ${jobId} and status in ('queued', 'running') and board_id is null ${extra.userId ? sql`and user_id = ${extra.userId}` : sql``} for update)
-    update ai_jobs j set status = 'failed', progress = 100, stage = null, error = ${code}, ai = ${JSON.stringify(ai)}::jsonb, charged = false,
-      text = ${extra.clearText ? null : sql`j.text`}, updated_at = now()
-    from old where j.id = old.id
-    returning old.user_id, old.charged, old.quota_period::text as quota_period`);
+      where id = ${jobId} and status in ('queued', 'running') and board_id is null ${extra.userId ? sql`and user_id = ${extra.userId}` : sql``} for update),
+    j as (update ai_jobs j set status = 'failed', progress = 100, stage = null, error = ${code}, ai = ${JSON.stringify(ai)}::jsonb, charged = false,
+        text = ${extra.clearText ? null : sql`j.text`}, updated_at = now()
+      from old where j.id = old.id
+      returning old.id, old.user_id, old.charged, old.quota_period),
+    back as (update usage_counters u set ai_generations = u.ai_generations - 1, updated_at = now()
+      from j where j.charged and u.user_id = j.user_id and u.period = j.quota_period and u.ai_generations > 0 returning 1)
+    select j.id, (select count(*) from back) as refunded from j`);
   if (!r) return false;
-  if (r.charged && r.quota_period) await refundAt(r.user_id, 'ai_generations', r.quota_period).catch(() => undefined);
   if (code !== 'canceled') logFailed(jobId, code);
   return true;
 }
