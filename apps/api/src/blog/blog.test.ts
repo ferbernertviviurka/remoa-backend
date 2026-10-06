@@ -154,12 +154,17 @@ describe.skipIf(!process.env.DATABASE_URL)('F27 blog API', () => {
     expect((await A(`/posts/${other.id}`, 'PATCH', { slug: s2 })).json.error?.message).toBe('slug_taken');
   });
 
+  it('reserved slugs (preview, pagina, categoria) are rejected on update (create/duplicate derive from titles of 10+ chars and never hit them)', async () => {
+    const p = await create('Slug reservado');
+    for (const r of ['preview', 'pagina', 'categoria']) expect((await A(`/posts/${p.id}`, 'PATCH', { slug: r })).json.error?.message).toBe('slug_taken');
+  });
+
   it('preview: token shows a draft, tampered and expired tokens do not', async () => {
     const p = await create('Pré-visualização');
     const r = await A(`/posts/${p.id}/preview`, 'POST');
     expect(r.status).toBe(200);
     const { token, url } = r.json.data as { token: string; url: string };
-    expect(url).toContain(`/preview/blog/${token}`);
+    expect(url).toContain(`/blog/preview/${token}`);
     const seen = await pub(`/preview/${token}`);
     expect(seen.json.data).toMatchObject({ id: p.id, preview: true });
     expect((await pub(`/preview/${token.slice(0, -2)}xx`)).status).toBe(404);

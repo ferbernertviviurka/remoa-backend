@@ -86,12 +86,15 @@ export async function toPost(q: Q, r: PostRow): Promise<BlogPost> {
 
 // --- helpers ------------------------------------------------------------------------------------
 
+/** Collide with web routes (/blog/preview/[token], /blog/pagina/[n], /blog/categoria/[slug]); isValidSlug in contracts does not know them. */
+const RESERVED_SLUGS = ['preview', 'pagina', 'categoria'];
+
 async function uniqueSlug(q: Q, wanted: string, exceptId?: string): Promise<string> {
   const { blogPosts } = await dbm();
   const base = (slugify(wanted) || 'post').slice(0, BLOG_LIMITS.slugMax - 4).replace(/-+$/, '');
   const rows = await q.select({ slug: blogPosts.slug }).from(blogPosts)
     .where(and(isNull(blogPosts.deletedAt), or(eq(blogPosts.slug, base), like(blogPosts.slug, `${base}-%`)), exceptId ? ne(blogPosts.id, exceptId) : undefined));
-  const taken = new Set(rows.map((r) => r.slug));
+  const taken = new Set([...rows.map((r) => r.slug), ...RESERVED_SLUGS]);
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }

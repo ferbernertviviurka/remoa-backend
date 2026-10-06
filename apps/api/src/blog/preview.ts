@@ -9,7 +9,7 @@ export function signPreview(postId: string, now = Date.now()): PreviewLink {
   const exp = now + BLOG_LIMITS.previewHours * 3_600_000;
   const payload = Buffer.from(JSON.stringify({ p: postId, e: exp })).toString('base64url');
   const token = `${payload}.${sign(payload)}`;
-  return { token, url: `${env().siteUrl.replace(/\/+$/, '')}/preview/blog/${token}`, expiresAt: new Date(exp) };
+  return { token, url: `${env().siteUrl.replace(/\/+$/, '')}/blog/preview/${token}`, expiresAt: new Date(exp) };
 }
 
 /** Post id, or null when forged, malformed or expired. */
