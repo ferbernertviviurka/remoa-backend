@@ -14,6 +14,13 @@ const prod = {
   EMAIL_UNSUBSCRIBE_SECRET: S32,
   SEND_EMAIL_HOOK_SECRET: 'v1,whsec_test',
   CRON_SECRET: S32,
+  SITE_URL: 'https://www.example.com/',
+  BLOG_PREVIEW_SECRET: S32,
+  S3_PUBLIC_BUCKET: 'blog-public',
+  R2_PUBLIC_BASE_URL: 'https://img.example.com',
+  REVALIDATE_SECRET: S32,
+  LEGAL_TERMS_VERSION: '2026-10-01',
+  LEGAL_PRIVACY_VERSION: '2026-10-01',
 };
 const problems = (src: Record<string, string | undefined>) => {
   try {
@@ -106,4 +113,20 @@ describe('addressOf', () => {
     ['contato@example.com', 'contato@example.com'],
     ['Remoa', null],
   ])('%s', (from, want) => expect(addressOf(from)).toBe(want));
+
+  it('G19 blog/legal: production values, revalidate default, dev fallbacks and validation', () => {
+    const e = parseEnv(prod);
+    expect(e).toMatchObject({ siteUrl: 'https://www.example.com', revalidateUrl: 'https://www.example.com/api/revalidate', s3PublicBucket: 'blog-public',
+      r2PublicBaseUrl: 'https://img.example.com', indexNowKey: undefined, legalTermsVersion: '2026-10-01' });
+    expect(parseEnv({ ...prod, REVALIDATE_URL: 'https://web.example.com/api/revalidate' }).revalidateUrl).toBe('https://web.example.com/api/revalidate');
+    const d = parseEnv({ NODE_ENV: 'development' });
+    expect(d).toMatchObject({ siteUrl: 'http://localhost:3000', revalidateUrl: 'http://localhost:3000/api/revalidate', legalTermsVersion: 'dev', s3PublicBucket: 'blog' });
+    const p = problems({ ...prod, SITE_URL: undefined, BLOG_PREVIEW_SECRET: 'short', S3_PUBLIC_BUCKET: undefined, R2_PUBLIC_BASE_URL: 'ftp://x',
+      REVALIDATE_SECRET: undefined, INDEXNOW_KEY: 'a b', LEGAL_TERMS_VERSION: 'v 1', LEGAL_PRIVACY_VERSION: undefined });
+    expect(p).toEqual(expect.arrayContaining([
+      'SITE_URL is required in production', 'BLOG_PREVIEW_SECRET must have at least 32 characters', 'S3_PUBLIC_BUCKET is required in production',
+      'R2_PUBLIC_BASE_URL must be an http(s) URL', 'REVALIDATE_SECRET is required in production', 'INDEXNOW_KEY must be 8-128 letters, digits or hyphens',
+      'LEGAL_TERMS_VERSION must be 1-32 letters, digits, ".", "_" or "-"', 'LEGAL_PRIVACY_VERSION is required in production',
+    ]));
+  });
 });
