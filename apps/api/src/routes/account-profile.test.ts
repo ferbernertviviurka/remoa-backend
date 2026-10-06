@@ -3,7 +3,7 @@ import { config } from 'dotenv';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { accountSnapshotSchema, type Notify } from '@remoa/contracts';
+import { MEDICAL_SCHOOLS, accountSnapshotSchema, type Notify } from '@remoa/contracts';
 
 config({ path: '../../.env' });
 process.env.UNSUBSCRIBE_SECRET ||= 'test-secret-test-secret';
@@ -114,6 +114,22 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     expect((await call(id, 'PATCH', '/account/profile', {})).status).toBe(422);
     const ok = await call(id, 'PATCH', '/account/profile', { name: "Maria D'Ávila-Souza", avatarColor: 3 });
     expect(ok.json.data).toMatchObject({ name: "Maria D'Ávila-Souza", avatarColor: 3 });
+  });
+
+  it('G20: phone cannot be cleared; institution maps to school/school_id; snapshot returns them', async () => {
+    const { id } = await newUser();
+    const patch = (b: unknown) => call(id, 'PATCH', '/account/profile', b);
+    const nullPhone = await patch({ phone: null });
+    expect(nullPhone.status).toBe(422);
+    expect(nullPhone.json.error?.code).toBe('validation');
+    expect((await patch({ name: null })).status).toBe(422);
+    const s = MEDICAL_SCHOOLS[0]!;
+    expect((await patch({ institution: { schoolId: s.id, name: 'qualquer' } })).json.data).toMatchObject({ school: s.name, schoolId: s.id });
+    expect((await patch({ institution: { schoolId: 'nao-existe', name: 'Xyz' } })).status).toBe(422);
+    expect((await patch({ institution: { schoolId: null, name: 'Faculdade Livre' } })).json.data).toMatchObject({ school: 'Faculdade Livre', schoolId: null });
+    const me = await call(id, 'GET', '/account/me');
+    expect(accountSnapshotSchema.parse(me.json.data).profile).toMatchObject({ school: 'Faculdade Livre', schoolId: null });
+    expect((await patch({ institution: null })).json.data).toMatchObject({ school: null, schoolId: null });
   });
 
   it('email change: wrong password, pending, resend limit, cancel, taken address stays generic', async () => {

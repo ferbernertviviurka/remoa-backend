@@ -117,7 +117,7 @@ describe.skipIf(!sql)('G18 RLS', () => {
   });
 
   it('CCR-037 (P-323): profiles.timezone is server-only (the API replans reminders); other profile columns stay writable', async () => {
-    const [p] = await db`select has_column_privilege('authenticated', 'public.profiles', 'timezone', 'UPDATE') as tz, has_column_privilege('authenticated', 'public.profiles', 'name', 'UPDATE') as name`;
-    expect(p).toEqual({ tz: false, name: true });
+    const [p] = await db`select has_column_privilege('authenticated', 'public.profiles', 'timezone', 'UPDATE') as tz, has_column_privilege('authenticated', 'public.profiles', 'avatar_color', 'UPDATE') as color`;
+    expect(p).toEqual({ tz: false, color: true }); // name became server-only in 0031 (G20)
   });
 });

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
 import { entitlementsSchema, planDefinition, planFeatureKeys, quotaKeySchema, type Entitlements, type PlanFeatureKey } from './billing';
 import { goalSchema, goalsSchema, segmentSchema, type Goal } from './onboarding';
+import { institutionInputSchema } from './institutions';
 
 /** FR-1: /conta/[secao]. */
 export const accountSections = ['perfil', 'seguranca', 'plano', 'preferencias', 'dados'] as const;
@@ -107,11 +108,23 @@ export const profileSchema = z.object({
   /** CCR-017 personal data (PII, owner-only). null = not given; users from before G14 have userType null (D-571). */
   userType: userTypeSchema.nullable(),
   sex: sexSchema.nullable(),
-  /** E.164 (+55…). */
+  /** E.164 (+55…). null only on accounts that have not finished "Conte quem você é" yet (missingRequiredProfile). */
   phone: z.string().regex(BR_PHONE_E164).nullable(),
   address: addressSchema.nullable(),
+  /** G20 (D-843): institution name as shown (list name or free text); null = not given. */
+  school: z.string().nullable(),
+  /** G20: MEDICAL_SCHOOLS id; null for free text ("Outra instituição") or not given. */
+  schoolId: z.string().nullable(),
 });
 export type Profile = z.infer<typeof profileSchema>;
+
+/** G20 (D-844): fields every account must have before using /app. Used by the web guard and the API. */
+export type RequiredProfileField = 'name' | 'phone' | 'userType';
+export const missingRequiredProfile = (p: Pick<Profile, 'name' | 'phone' | 'userType'>): RequiredProfileField[] => [
+  ...(p.name !== null && isValidName(p.name) ? [] : (['name'] as const)),
+  ...(p.phone !== null && BR_PHONE_E164.test(p.phone) ? [] : (['phone'] as const)),
+  ...(p.userType !== null ? [] : (['userType'] as const)),
+];
 
 /** Signed URLs (ACCOUNT_LIMITS.avatarUrlSeconds) of the 512 and 96 px WebP variants. */
 export const avatarVariantsSchema = z.object({ large: z.string().url(), small: z.string().url() });
@@ -135,11 +148,14 @@ export const updateProfileInputSchema = z
     goals: goalsSchema,
     stage: stageSchema,
     avatarColor: avatarColorSchema,
-    // CCR-017 (D-571): userType can be changed, not cleared; null clears sex, phone or address.
+    // CCR-017 (D-571): userType can be changed, not cleared; null clears sex or address.
     userType: userTypeSchema,
     sex: sexSchema.nullable(),
-    phone: brPhoneSchema.nullable(),
+    /** G20 (D-842): required; can be replaced, never cleared. */
+    phone: brPhoneSchema,
     address: addressSchema.nullable(),
+    /** G20 (D-843): the only writer of profiles.school/school_id (onboarding step and Minha conta); null clears both. */
+    institution: institutionInputSchema.nullable(),
     /** CCR-037 (P-323): editable profile timezone; the server replans pending calendar reminders in the same transaction. */
     timezone: ianaTimezoneSchema,
   })
@@ -153,12 +169,12 @@ export const syncGoals = (i: { goal?: Goal; goals?: Goal[] }): { goal?: Goal | n
   i.goals !== undefined ? { goals: i.goals, goal: i.goals[0] ?? null } : i.goal !== undefined ? { goals: [i.goal], goal: i.goal } : {};
 
 /**
- * CCR-017 (D-570/D-571): the sign-up's "Sobre você" step. Only `userType` is required; sex, phone and address are optional.
+ * CCR-017 (D-570/D-571): the sign-up's "Sobre você" step. `userType` and (G20, D-842) `phone` are required; sex and address optional.
  * The web validates the form with this and sends it (without nulls) to PATCH /v1/account/profile right after sign-up.
  * Goals, stage and area are no longer asked here: the onboarding (F12) asks them.
  */
 export const signUpProfileInputSchema = z
-  .object({ userType: userTypeSchema, sex: sexSchema.optional(), phone: brPhoneSchema.optional(), address: addressSchema.optional() })
+  .object({ userType: userTypeSchema, sex: sexSchema.optional(), phone: brPhoneSchema, address: addressSchema.optional() })
   .strict();
 export type SignUpProfileInput = z.input<typeof signUpProfileInputSchema>;
 

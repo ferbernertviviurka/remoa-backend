@@ -9,7 +9,7 @@ import { accountSecurityRoutes } from './routes/account-security';
 import { accountProfileRoutes } from './routes/account-profile';
 import { publicRoutes } from './routes/public';
 import { publicBlogRoutes } from './blog/public';
-import { accountLegalRoutes } from './account/legal';
+import { accountLegalRoutes, publicLegalRoutes } from './account/legal';
 import { notificationsRoutes } from './notifications/routes';
 import { calendarRoutes, publicCalendarRoutes } from './calendar/routes';
 import { accountAvatarRoutes } from './routes/account-avatar';
@@ -119,6 +119,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.route('/v1/auth', authHookRoutes); // G18 F24: Supabase Auth Send Email hook (Standard Webhooks signature)
   app.route('/v1/dev/emails', devEmailsRoutes); // G18 F24 FR-19: preview for the web's /dev/emails; 404 in production
   app.route('/v1/public/calendar', publicCalendarRoutes); // G18 F25: .ics from the e-mail, HMAC token
+  app.route('/v1/public/legal', publicLegalRoutes); // G19 P-416: current legal versions, single source for the web sign-up
   app.route('/v1/public/blog', publicBlogRoutes); // G19 F27: no auth, published posts only
   app.route('/v1/public', publicRoutes({ stripe, viewer })); // F13 unsubscribe: no auth, signed token; F17 shared links: optional session
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);

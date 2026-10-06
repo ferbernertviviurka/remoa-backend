@@ -59,7 +59,7 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
 
   it('student cannot soft-delete or undelete their own account directly (F08: deleted_at is server-owned)', async () => {
     await expect(m.withUser(b, (tx) => tx.update(s.profiles).set({ deletedAt: new Date(0) }).where(eq(s.profiles.userId, b)))).rejects.toThrow();
-    await m.withUser(b, (tx) => tx.update(s.profiles).set({ name: 'ok' }).where(eq(s.profiles.userId, b)));
+    await m.withUser(b, (tx) => tx.update(s.profiles).set({ avatarColor: 1 }).where(eq(s.profiles.userId, b)));
   });
 
   it('edge cannot point at a card from another board (P-004)', async () => {

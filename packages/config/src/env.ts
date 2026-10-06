@@ -88,12 +88,15 @@ export class EnvError extends Error {
 
 type Source = Record<string, string | undefined>;
 
+/** Production check without validating the rest of the env (fail-closed gates such as dev-only routes). */
+export const isProduction = (source: Source = process.env): boolean => source.NODE_ENV !== 'development' && source.NODE_ENV !== 'test';
+
 export function parseEnv(source: Source = process.env): Env {
   const get = (k: string) => {
     const v = source[k]?.trim();
     return v ? v : undefined;
   };
-  const production = source.NODE_ENV !== 'development' && source.NODE_ENV !== 'test';
+  const production = isProduction(source);
   const problems: string[] = [];
   const need = (name: string, v: string | undefined, devDefault?: string) => {
     if (v !== undefined) return v;

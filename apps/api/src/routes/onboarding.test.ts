@@ -63,6 +63,13 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/onboarding', () => {
     expect(c2.doneAt).toBe(c1.doneAt);
   });
 
+  it('G20: segment not_med is accepted and becomes stage', async () => {
+    const u = await newUser();
+    expect((await call(u, '/answers', { segment: 'not_med' })).status).toBe(200);
+    const [p] = await dbm.db.select().from(dbm.profiles).where(eq(dbm.profiles.userId, u));
+    expect(p!.stage).toBe('not_med');
+  });
+
   it('checklist counts live non-note cards, edges and ended sessions on non-archived boards, per user', async () => {
     const u = await newUser();
     const other = await newUser();

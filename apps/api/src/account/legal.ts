@@ -46,3 +46,9 @@ export const accountLegalRoutes = new Hono<Env>()
     });
     return send(ok(await legalStatus(userId)));
   });
+
+/** P-416: the one source of the current versions for the web's sign-up (no auth; the values are public, they are on the legal pages). */
+export const publicLegalRoutes = new Hono<Env>().get('/versions', () => {
+  const cur = env();
+  return Response.json({ ok: true, data: { termsVersion: cur.legalTermsVersion, privacyVersion: cur.legalPrivacyVersion } }, { headers: { 'Cache-Control': 'public, max-age=60' } });
+});

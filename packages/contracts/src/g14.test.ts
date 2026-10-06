@@ -20,22 +20,24 @@ describe('CCR-017 cadastro', () => {
     for (const bad of ['11 81234-5678', '(01) 91234-5678', '1191234567', '11 1234-5678', '', '+1 415 555 0100']) expect(normalizeBrPhone(bad)).toBeNull();
   });
 
-  it('sign-up profile: userType required; sex, phone and address optional; CEP normalized', () => {
+  it('sign-up profile: userType and phone (G20) required; sex and address optional; CEP normalized', () => {
     expect(signUpProfileInputSchema.safeParse({}).success).toBe(false);
-    expect(signUpProfileInputSchema.parse({ userType: 'medico_formado' })).toEqual({ userType: 'medico_formado' });
+    expect(signUpProfileInputSchema.safeParse({ userType: 'medico_formado' }).success).toBe(false);
+    expect(signUpProfileInputSchema.parse({ userType: 'medico_formado', phone: '2134567890' })).toEqual({ userType: 'medico_formado', phone: '+552134567890' });
     const full = signUpProfileInputSchema.parse({ userType: 'aluno', sex: 'prefiro_nao_dizer', phone: '11912345678', address });
     expect(full.phone).toBe('+5511912345678');
     expect(full.address).toMatchObject({ cep: '01310100', complement: null, uf: 'SP' });
-    expect(signUpProfileInputSchema.safeParse({ userType: 'aluno', address: { ...address, uf: 'XX' } }).success).toBe(false);
-    expect(signUpProfileInputSchema.safeParse({ userType: 'aluno', address: { ...address, cep: '123' } }).success).toBe(false);
-    expect(signUpProfileInputSchema.safeParse({ userType: 'estudante' }).success).toBe(false);
+    expect(signUpProfileInputSchema.safeParse({ userType: 'aluno', phone: '11912345678', address: { ...address, uf: 'XX' } }).success).toBe(false);
+    expect(signUpProfileInputSchema.safeParse({ userType: 'aluno', phone: '11912345678', address: { ...address, cep: '123' } }).success).toBe(false);
+    expect(signUpProfileInputSchema.safeParse({ userType: 'estudante', phone: '11912345678' }).success).toBe(false);
   });
 
-  it('profile update: goals multi-select (deduped, max 5), null clears PII, goal and goals are exclusive', () => {
+  it('profile update: goals multi-select (deduped, max 5), null clears sex/address (not phone, G20), goal and goals are exclusive', () => {
     expect(updateProfileInputSchema.parse({ goals: ['undecided', 'undecided', 'residencia_usp'] }).goals).toEqual(['undecided', 'residencia_usp']);
     expect(updateProfileInputSchema.safeParse({ goals: ['undecided', 'residencia_usp', 'enamed_2027_1', 'enamed_2027_2', 'enamed_2028_1', 'enamed_2028_2'] }).success).toBe(false);
     expect(updateProfileInputSchema.safeParse({ goal: 'undecided', goals: ['undecided'] }).success).toBe(false);
-    expect(updateProfileInputSchema.parse({ phone: null, address: null, sex: null })).toEqual({ phone: null, address: null, sex: null });
+    expect(updateProfileInputSchema.parse({ address: null, sex: null })).toEqual({ address: null, sex: null });
+    expect(updateProfileInputSchema.safeParse({ phone: null }).success).toBe(false);
     expect(updateProfileInputSchema.safeParse({ userType: null }).success).toBe(false);
     expect(syncGoals({ goals: ['residencia_usp', 'undecided'] })).toEqual({ goals: ['residencia_usp', 'undecided'], goal: 'residencia_usp' });
     expect(syncGoals({ goals: [] })).toEqual({ goals: [], goal: null });

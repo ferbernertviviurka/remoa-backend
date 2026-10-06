@@ -2,8 +2,8 @@ import { z } from 'zod';
 import { areas, isAreaAvailable } from './enums';
 import { timestampSchema } from './common';
 
-/** Year / situation. Append-only (rows stored); UI order lives in the frontend. */
-export const segments = ['y3_4', 'y5_6', 'graduated', 'y1_2', 'cursinho', 'resident', 'working'] as const;
+/** Year / situation. Append-only (rows stored); UI order lives in the frontend. G20 (D-841): `not_med` = "Não estudo medicina". */
+export const segments = ['y3_4', 'y5_6', 'graduated', 'y1_2', 'cursinho', 'resident', 'working', 'not_med'] as const;
 export const segmentSchema = z.enum(segments);
 export type Segment = z.infer<typeof segmentSchema>;
 
