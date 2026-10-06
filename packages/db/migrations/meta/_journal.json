@@ -253,6 +253,13 @@
       "when": 1791283025185,
       "tag": "0035_g21_cards_rls_plan",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791298778831,
+      "tag": "0037_g22_ai",
+      "breakpoints": true
     }
   ]
 }
