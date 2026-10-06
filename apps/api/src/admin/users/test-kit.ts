@@ -1,6 +1,7 @@
 // Test-only (F19 T5): a real app (createApp + fakeVerifier), real Supabase Auth users, real DB. Lazy imports: loads without DATABASE_URL.
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
+import { dropTrial } from '../../test-trial';
 import { fakeToken, fakeVerifier } from '../core/test-helpers';
 
 export type Json = { data?: any; error?: { code: string; message: string } }; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -15,6 +16,7 @@ export async function kit() {
     const { data, error } = await supa.auth.admin.createUser({ email: `t5-${uuid()}@test.local`, password: 'senha1234', email_confirm: true });
     if (error) throw error;
     ids.push(data.user.id);
+    await dropTrial(data.user.id);
     await dbm.db.update(dbm.profiles).set({ role, name }).where(eq(dbm.profiles.userId, data.user.id));
     return { id: data.user.id, email: data.user.email!, name };
   };

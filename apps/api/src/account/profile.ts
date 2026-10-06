@@ -5,10 +5,10 @@ import {
   type AccountSnapshot, type CancelDeletion, type LinkedIdentity, type Profile, type UpdateProfile,
 } from '@remoa/contracts';
 import { dbm, run } from '../db';
-import { dayWindow } from '../review/queue';
+import { dayWindow, withWindow } from '../review/queue';
 import { getEntitlements } from '../billing/entitlements';
 import { signAvatarUrls } from './avatar';
-import { getPreferences } from './preferences';
+import { loadPreferences } from './preferences';
 import { recordEvent } from './events';
 import { replanUserReminders } from '../calendar/reminders/schedule';
 import { invalidate } from '../cache';
@@ -41,10 +41,9 @@ const profileOf = (userId: string, r: ProfileRow | undefined): Profile => ({
 /** Consecutive study days (04:00 rollover, profile tz) with attempts, ending today or yesterday. null = never answered. */
 async function streakOf(userId: string, now: Date): Promise<number | null> {
   return run(userId, async (tx) => {
-    const win = await dayWindow(tx, userId, now);
-    const rows = await tx.execute<{ d: string }>(sql`
-      select distinct ((created_at at time zone ${win.tz}::text) - interval '4 hours')::date::text as d
-      from attempts where user_id = ${userId} order by d desc limit 400`);
+    const [win, rows] = await Promise.all([dayWindow(tx, userId, now), tx.execute<{ d: string }>(withWindow(userId, now, sql`
+      select distinct ((created_at at time zone (select tz from w)) - interval '4 hours')::date::text as d
+      from attempts where user_id = ${userId} order by d desc limit 400`))]); // D-1094: one flight
     if (!rows.length) return null;
     const have = new Set(rows.map((r) => r.d));
     const prev = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - DAY).toISOString().slice(0, 10);
@@ -69,13 +68,21 @@ async function passwordChangedAt(userId: string): Promise<Date | null> {
 }
 
 /** FR-3 snapshot. Auth data (e-mail, pending e-mail, identities) comes from Supabase Admin, see `loadAuthUser`. */
-export async function getAccount(userId: string, auth: AuthData, now = new Date()): Promise<AccountSnapshot> {
+/** `auth` may still be in flight (GET /me reads Auth in parallel); null = no Auth user → null. */
+export async function getAccount(userId: string, auth: AuthData, now?: Date): Promise<AccountSnapshot>;
+export async function getAccount(userId: string, auth: PromiseLike<AuthData | null>, now?: Date): Promise<AccountSnapshot | null>;
+export async function getAccount(userId: string, authIn: AuthData | PromiseLike<AuthData | null>, now = new Date()): Promise<AccountSnapshot | null> {
   const { db, profiles } = await dbm();
-  const [row] = await db.select(pick(profiles, ...PROFILE_COLS)).from(profiles).where(eq(profiles.userId, userId));
-  const ent = await getEntitlements(userId, now);
+  // G21 D-1094: every read in parallel (was 6 in sequence, ~8 round trips)
+  const [[row], ent, prefsFor, streakDays, pwdAt] = await Promise.all([
+    db.select(pick(profiles, ...PROFILE_COLS)).from(profiles).where(eq(profiles.userId, userId)),
+    getEntitlements(userId, now), loadPreferences(userId), streakOf(userId, now), passwordChangedAt(userId),
+  ]);
   if (!ent.ok) throw new Error(ent.error.message);
+  const auth = await authIn;
+  if (!auth) return null;
   const profile = profileOf(userId, row);
-  const preferences = await getPreferences(userId, ent.data.newCardsPerDay);
+  const preferences = prefsFor(ent.data.newCardsPerDay);
   return {
     profile,
     email: auth.email,
@@ -85,10 +92,10 @@ export async function getAccount(userId: string, auth: AuthData, now = new Date(
     preferences,
     entitlements: ent.data,
     completeness: computeCompleteness(profile, preferences, { emailConfirmed: auth.emailConfirmed, emailPending: !!auth.pendingEmail }),
-    streakDays: await streakOf(userId, now),
+    streakDays,
     joinedAt: auth.joinedAt,
     deletionScheduledFor: row?.deletedAt ? new Date(row.deletedAt.getTime() + RETENTION.deletionGraceDays * DAY) : null,
-    passwordChangedAt: await passwordChangedAt(userId),
+    passwordChangedAt: pwdAt,
     avatarUrls: profile.avatarKey ? await signAvatarUrls(profile.avatarKey) : null,
     isAdmin: row?.role === 'admin' && !row.deletedAt && !row.suspendedAt, // same gate as requireAdmin (minus e-mail)
   };

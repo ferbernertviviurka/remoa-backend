@@ -6,6 +6,7 @@ import { serve } from '@hono/node-server';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
 import { createApp, type VerifyToken } from '../app';
 import { liveSession } from '../auth-session';
+import { warmPool } from '../db';
 
 const dbName = new URL(process.env.DATABASE_URL ?? 'postgres://x/none').pathname.slice(1);
 if (process.env.NODE_ENV !== 'development' || !/^remoa_perf[a-z0-9_]*$/.test(dbName)) throw new Error('perf server: needs NODE_ENV=development and DATABASE_URL on a remoa_perf* database');
@@ -26,5 +27,6 @@ const verifyToken: VerifyToken = async (token, opts) => {
 };
 
 const port = Number(process.env.PORT ?? 4300);
+await warmPool(); // D-1096, as index.ts
 serve({ fetch: createApp({ verifyToken, webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:3000', grade: mockGrader }).fetch, port });
 process.stdout.write(`perf api on http://localhost:${port}\n`);

@@ -1,11 +1,11 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   PLAN_LIMITS, PREVIEW_MAX_NODES, cacheTags, REVIEW_HUB_AHEAD_DAYS, type Area, type QueueFilter, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
-  type BoardSummary, type GetDailyQueue, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
+  type BoardSummary, type GetDailyQueue, type Result, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
 } from '@remoa/contracts';
 import { aggregate, CURVE, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
-import { run } from '../db';
+import { run, uuids } from '../db';
 import { cached, type UserCacheDef } from '../cache';
 import { planOf } from '../billing/plan';
 
@@ -27,7 +27,7 @@ const subIds = (key: 'steps' | 'masks') => sql`case when jsonb_typeof(c.payload-
   select jsonb_agg(x->>'id' order by ord) from jsonb_array_elements(c.payload->${key}::text) with ordinality t(x, ord) where jsonb_typeof(x) = 'object' and x->>'id' is not null
 ), '[]'::jsonb) else '[]'::jsonb end`;
 
-export const uuids = (ids: readonly string[]) => sql`${`{${ids.join(',')}}`}::uuid[]`;
+export { uuids }; // D-1105: moved to db.ts (one helper for every list parameter)
 
 /**
  * RLS (withUser) decides what is readable. `boardId` null = daily scope: live cards of non-archived boards the user owns or has study
@@ -154,7 +154,13 @@ export function aheadItems(items: Item[], states: Map<string, StateRow>, endMs: 
 // --- the served queue: indexed SQL with limits, no card scan, no ts-fsrs per item (G21 FR-22, D-1027/D-1028) -----------------------
 
 const DAY_MS = 86_400_000;
-const at = (ms: number) => sql`${new Date(ms).toISOString()}::timestamptz`;
+/** An instant in epoch ms: a number (bound), or SQL over the `w` CTE of `withWindow` (D-1094: the study day in the same statement). */
+export type Ms = number | SQL;
+const at = (ms: Ms) => (typeof ms === 'number' ? sql`${new Date(ms).toISOString()}::timestamptz` : sql`to_timestamp((${ms})::float8 / 1000)`);
+const plus = (ms: Ms, d: number): Ms => (typeof ms === 'number' ? ms + d : sql`(${ms} + ${d})`);
+/** D-1094: the study day of `windowSql` as a CTE `w` in front of `q`; `W` reads it. One statement instead of dayWindow + q. */
+export const withWindow = (userId: string, now: Date, q: SQL) => sql`with w as (${windowSql(userId, now)}) ${q}`;
+export const W = { startMs: sql`(select round(start_ms) from w)`, endMs: sql`(select round(end_ms) from w)` };
 
 /**
  * Recall of the state row `f` at `nowMs`, with the same expression and roundings as @remoa/fsrs `retrievability` (ts-fsrs:
@@ -206,7 +212,7 @@ const freshSql = (s: Scope) => sql`
     and not exists (select 1 from fsrs_state f where f.user_id = ${s.userId} and f.card_id = c.id and f.sub_id = sx.sub_id)`;
 
 type Row = { g: 'due' | 'new' | 'weak' | 'ahead'; card_id: string; board_id: string; type: CardType; sub_id: string; r: number; due_ms: number; ord: number; ord_card: number; board_ms: number };
-const lim = (n: number | null) => (n === null ? sql`` : sql`limit ${n}`);
+const lim = (n: number | null | SQL) => (n === null ? sql`` : sql`limit ${n}`);
 const cmpR = (a: Row, b: Row) => a.r - b.r || cmp(a.card_id, b.card_id) || cmp(a.sub_id, b.sub_id); // the reference comparator (byR)
 const cmpFresh = (a: Row, b: Row) => b.board_ms - a.board_ms || cmp(a.board_id, b.board_id) || a.ord_card - b.ord_card || cmp(a.card_id, b.card_id) || a.ord - b.ord;
 const toItem = (reason: QueueItem['reason']) => (r: Row): QueueItem => ({ cardId: r.card_id, boardId: r.board_id, subId: r.sub_id || null, reason, mode: MODE[r.type] });
@@ -215,12 +221,8 @@ const toItem = (reason: QueueItem['reason']) => (r: Row): QueueItem => ({ cardId
  * One statement: each group is an index range with its own `limit` (null = all, false = skip). SQL picks the rows; JS orders them with
  * the reference comparators (same tie-breaks as `buildQueue`). `fresh.perBoard` caps new items per board (the hub).
  */
-export async function queueRows(tx: Tx, s: Scope, o: QueueOpts) {
-  const q = queueRowsSql(s, o);
-  return sortQueueRows(q ? await tx.execute<QueueSqlRow>(q) : []);
-}
 type QueueOpts = {
-  now: Date; endMs: number; due: number | null | false; weak: number | null | false; fresh: { limit: number | null; perBoard: number | null } | false; ahead?: number | null;
+  now: Date; endMs: Ms; due: number | null | false; weak: number | null | false; fresh: { limit: number | null | SQL; perBoard: number | null | SQL } | false; ahead?: number | null;
 };
 export type QueueSqlRow = Row;
 /** The statement of queueRows (null = no group asked); rows go through `sortQueueRows`. */
@@ -229,11 +231,11 @@ export function queueRowsSql(s: Scope, o: QueueOpts): SQL | null {
   const r = recallSql(nowMs);
   const cols = sql`f.card_id, c.board_id, c.type, f.sub_id, ${r} as r, round(extract(epoch from f.due) * 1000)::float8 as due_ms, 0::bigint as ord, 0 as ord_card, 0::float8 as board_ms`;
   const parts: SQL[] = [];
-  if (o.ahead !== undefined) parts.push(sql`(select 'ahead' as g, ${cols} ${stateItemsSql(s, sql`f.due >= ${at(o.endMs)} and f.due < ${at(o.endMs + REVIEW_HUB_AHEAD_DAYS * DAY_MS)}`)} order by f.due, f.card_id, f.sub_id collate "C" ${lim(o.ahead)})`);
+  if (o.ahead !== undefined) parts.push(sql`(select 'ahead' as g, ${cols} ${stateItemsSql(s, sql`f.due >= ${at(o.endMs)} and f.due < ${at(plus(o.endMs, REVIEW_HUB_AHEAD_DAYS * DAY_MS))}`)} order by f.due, f.card_id, f.sub_id collate "C" ${lim(o.ahead)})`);
   if (o.due !== false) parts.push(sql`(select 'due' as g, ${cols} ${stateItemsSql(s, sql`f.due < ${at(o.endMs)}`)} order by r, f.card_id, f.sub_id collate "C" ${lim(o.due)})`);
   if (o.weak !== false) parts.push(sql`(select 'weak' as g, ${cols} ${stateItemsSql(s, sql`f.due >= ${at(o.endMs)} and ${r} < ${STEADY_FROM}`)} order by r, f.card_id, f.sub_id collate "C" ${lim(o.weak)})`);
   if (o.fresh !== false) parts.push(sql`(select 'new' as g, card_id, board_id, type, sub_id, 0::float8 as r, 0::float8 as due_ms, ord, ord_card, board_ms from (${freshSql(s)}) n
-    ${o.fresh.perBoard === null ? sql`` : sql`where board_rank <= ${o.fresh.perBoard}`} order by board_ms desc, board_id, ord_card, card_id, ord ${lim(o.fresh.limit)})`);
+    ${o.fresh.perBoard === null ? sql`` : sql`where board_rank <= coalesce(${o.fresh.perBoard}, board_rank)` /* SQL cap may be null = none */} order by board_ms desc, board_id, ord_card, card_id, ord ${lim(o.fresh.limit)})`);
   return parts.length ? sql.join(parts, sql` union all `) : null;
 }
 export function sortQueueRows(rows: readonly Row[]) {
@@ -246,36 +248,46 @@ export function sortQueueRows(rows: readonly Row[]) {
   };
 }
 
-/** New-card cap of the day (null = unlimited, D-647) and how many states were first created today, across all boards. */
-export async function newCardBudget(tx: Tx, userId: string, plan: Promise<{ plan: keyof typeof PLAN_LIMITS }>, startMs: number) {
-  const [[row], p] = await Promise.all([
-    tx.execute<{ pref: number | null; introduced: number }>(sql`select (select new_cards_per_day from user_preferences where user_id = ${userId}) as pref,
-      (select count(*)::int from fsrs_state where user_id = ${userId} and created_at >= ${at(startMs)}) as introduced`), // F13 D-122: the user's choice, capped by the plan
-    plan,
-  ]);
-  return budgetOf(row, p.plan);
-}
+/** New-card cap inputs (F13 D-122: the user's choice, capped by the plan): personal cap and states first created today, across all boards. */
+export const budgetSql = (userId: string, startMs: Ms) => sql`select (select new_cards_per_day from user_preferences where user_id = ${userId}) as pref,
+      (select count(*)::int from fsrs_state where user_id = ${userId} and created_at >= ${at(startMs)}) as introduced`;
+/**
+ * D-1094: an upper bound of today's remaining new-card budget, in SQL, without the plan (read in the same flight; planOf/budgetOf
+ * give the exact number after). Personal cap set → it bounds every plan. No personal cap → unlimited only if the user may be on Pro
+ * (a Pro/Founder subscription row or a grant running now, even a lapsed one: the exact check is in JS); otherwise the Free cap.
+ */
+export const newBoundSql = (userId: string, b: SQL, now: Date) => {
+  const free = PLAN_LIMITS.free.newCardsPerDay;
+  return sql`(select case when b.pref is not null then greatest(0, b.pref - b.introduced)
+    when ${free === null}::boolean or exists (select 1 from subscriptions where user_id = ${userId} and plan::text in ('pro', 'founder'))
+      or exists (select 1 from entitlement_grants where user_id = ${userId} and revoked_at is null and starts_at <= ${now.toISOString()}::timestamptz and ends_at > ${now.toISOString()}::timestamptz) then null
+    else greatest(0, ${free ?? 0}::int - b.introduced) end from (${b}) b)`;
+};
 export function budgetOf(row: { pref: number | null; introduced: number } | undefined, plan: keyof typeof PLAN_LIMITS) {
   const limit = effectiveNewCardsPerDay(row?.pref ?? null, PLAN_LIMITS[plan].newCardsPerDay);
   return { limit, introduced: row?.introduced ?? 0, remaining: limit === null ? Infinity : Math.max(0, limit - (row?.introduced ?? 0)) };
 }
 
+/**
+ * G21 D-1094: one flight. The study day is a CTE of each statement (no dayWindow first); the budget inputs, the queue rows and the plan
+ * (same transaction, D-1095) go out together. New items are fetched up to `limit` and `newBoundSql`, then cut to the plan's budget here.
+ */
 const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number; filter?: QueueFilter }) => {
-  const win = await dayWindow(tx, userId, opts.now);
   const f = opts.filter;
   const scope: Scope = { userId, boardId, filter: f };
   const n = opts.limit ?? null;
-  if (f?.ahead) return (await queueRows(tx, scope, { now: opts.now, endMs: win.endMs, due: false, weak: false, fresh: false, ahead: n })).ahead;
-  const plan = planOf(userId, opts.now); // F08: newCardsPerDay by plan (P-027); other connection, in parallel with the budget query
+  const rowsOf = async (q: SQL | null) => sortQueueRows(q ? await tx.execute<QueueSqlRow>(withWindow(userId, opts.now, q)) : []);
+  if (f?.ahead) return (await rowsOf(queueRowsSql(scope, { now: opts.now, endMs: W.endMs, due: false, weak: false, fresh: false, ahead: n }))).ahead;
   const reasons = f ? (f.reasons ?? ['due', 'new']) : null; // G15: scope first (boardIds/area in SQL), so the new-card budget goes to the chosen boards
   const want = (r: QueueItem['reason']) => !reasons || reasons.includes(r);
-  const budget = (await newCardBudget(tx, userId, plan, win.startMs)).remaining;
-  const newLimit = Math.min(budget, n ?? Infinity);
-  const q = await queueRows(tx, scope, {
-    now: opts.now, endMs: win.endMs, due: want('due') ? n : false, weak: want('weak') ? n : false,
-    fresh: want('new') && newLimit > 0 ? { limit: Number.isFinite(newLimit) ? newLimit : null, perBoard: null } : false,
-  });
-  const all = [...q.due, ...q.new, ...q.weak];
+  const b = budgetSql(userId, W.startMs);
+  const freshLimit = sql`least(${n}::int, ${newBoundSql(userId, b, opts.now)})`;
+  const [[row], q, p] = await Promise.all([
+    tx.execute<{ pref: number | null; introduced: number }>(withWindow(userId, opts.now, b)),
+    rowsOf(queueRowsSql(scope, { now: opts.now, endMs: W.endMs, due: want('due') ? n : false, weak: want('weak') ? n : false, fresh: want('new') ? { limit: freshLimit, perBoard: null } : false })),
+    planOf(userId, opts.now, tx), // F08: newCardsPerDay by plan (P-027); same flight (D-1095)
+  ]);
+  const all = [...q.due, ...q.new.slice(0, Math.min(budgetOf(row, p.plan).remaining, n ?? Infinity)), ...q.weak];
   return n === null ? all : all.slice(0, n);
 };
 
@@ -284,13 +296,18 @@ export const getDailyQueue: GetDailyQueue = async (userId, opts) => ok(await run
 /** G15 (D-641): the daily queue narrowed by the Revisar chips/boards. Same rule and order as `getDailyQueue`. */
 export const getFilteredQueue = async (userId: string, filter: QueueFilter, opts: { now: Date; limit?: number }) => ok(await run(userId, (tx) => queueFor(tx, userId, null, { ...opts, filter })));
 
-export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) => {
+/** The queue of one board inside the caller's transaction. Same flight: an unreadable board has no items either, the check picks the answer. */
+export async function boardQueueIn(tx: Tx, userId: string, boardId: string, opts: { now: Date; limit?: number }): Promise<Result<QueueItem[]>> {
   if (!idSchema.safeParse(boardId).success) return err('not_found', 'board not found');
-  return run(userId, async (tx) => {
-    const [b] = await tx.execute<{ id: string }>(sql`select id from boards where id = ${boardId}`);
-    return b ? ok(await queueFor(tx, userId, boardId, opts)) : err<QueueItem[]>('not_found', 'board not found');
-  });
-};
+  const [[b], items] = await Promise.all([tx.execute<{ id: string }>(sql`select id from boards where id = ${boardId}`), queueFor(tx, userId, boardId, opts)]);
+  return b ? ok(items) : err<QueueItem[]>('not_found', 'board not found');
+}
+/** Daily, filtered (G15) or board queue inside the caller's transaction (D-1094: `POST /v1/challenge/start` builds in one transaction). */
+export const queueIn = (tx: Tx, userId: string, q: { boardId?: string; filter?: QueueFilter }, opts: { now: Date; limit?: number }): Promise<Result<QueueItem[]>> =>
+  q.boardId !== undefined ? boardQueueIn(tx, userId, q.boardId, opts) : queueFor(tx, userId, null, { ...opts, filter: q.filter }).then((items) => ok(items));
+
+export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) =>
+  idSchema.safeParse(boardId).success ? run(userId, (tx) => boardQueueIn(tx, userId, boardId, opts)) : err('not_found', 'board not found');
 
 /**
  * FR-8 + G01, one pass over the user's cards/states (D-058: computed on read, no job). Per board: due items today (same rule as the
@@ -302,7 +319,7 @@ export async function boardListExtras(tx: Tx, userId: string, now: Date, boardId
   const cards = withNotes.filter((c) => c.type !== 'note');
   const edgeRows = boardIds.length
     ? await tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
-        sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${`{${boardIds.join(',')}}`}::uuid[])`,
+        sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${uuids(boardIds)})`,
       )
     : [];
   const out = new Map<string, { dueCount: number; stateCounts: Record<MapState, number>; preview: BoardSummary['preview'] }>();
@@ -357,9 +374,9 @@ export function dueFrom(rows: Iterable<{ k: number; n: number }>, days: number) 
   return out;
 }
 /** The statement of dueByOffset (days >= 1): rows (k, n). */
-export const dueByOffsetSql = (userId: string, win: { endMs: number }, days: number) => sql`
-    select (case when f.due < ${at(win.endMs)} then 0 else floor((round(extract(epoch from f.due) * 1000) - ${win.endMs}::float8) / ${DAY_MS})::int + 1 end) as k, count(*)::int as n
-    ${stateItemsSql({ userId, boardId: null }, sql`f.due < ${at(win.endMs + (days - 1) * DAY_MS)}`)}
+export const dueByOffsetSql = (userId: string, win: { endMs: Ms }, days: number) => sql`
+    select (case when f.due < ${at(win.endMs)} then 0 else floor((round(extract(epoch from f.due) * 1000) - (${win.endMs})::float8) / ${DAY_MS})::int + 1 end) as k, count(*)::int as n
+    ${stateItemsSql({ userId, boardId: null }, sql`f.due < ${at(plus(win.endMs, (days - 1) * DAY_MS))}`)}
     group by 1`;
 
 // --- retrievability map (FR-7) ----------------------------------------------------------------------------------
@@ -386,10 +403,13 @@ export function cardState(c: CardRow, states: Map<string, StateRow>, now: Date) 
 export async function computeRetrievability(userId: string, boardId: string, now: Date) {
   if (!idSchema.safeParse(boardId).success) return err<RetrievabilityMap>('not_found', 'board not found');
   return run(userId, async (tx) => {
-    const [b] = await tx.execute<{ id: string }>(sql`select id from boards where id = ${boardId}`);
+    // G21 D-1094: one flight; the states are scoped by the board's live cards in SQL (array(...) keeps PK probes, see loadStates)
+    const [[b], cards, states] = await Promise.all([
+      tx.execute<{ id: string }>(sql`select id from boards where id = ${boardId}`),
+      loadCards(tx, userId, boardId),
+      tx.execute<StateSqlRow>(statesSql(userId, sql`and card_id = any(array(select c.id from cards c where c.board_id = ${boardId} and c.deleted_at is null and c.type <> 'note'))`)).then(toStates),
+    ]);
     if (!b) return err<RetrievabilityMap>('not_found', 'board not found');
-    const cards = await loadCards(tx, userId, boardId);
-    const states = await loadStates(tx, userId, cards.map((c) => c.id));
     const map: RetrievabilityMap = {};
     for (const c of cards) map[c.id] = cardState(c, states, now);
     return ok(map);

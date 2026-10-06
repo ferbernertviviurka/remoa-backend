@@ -1,5 +1,6 @@
 // Integration: needs local Supabase (Auth, Mailpit on :54324); skipped otherwise.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -28,6 +29,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F13 /v1/account profile, e-mail, ide
     if (error) throw error;
     const id = data.user.id;
     users.push(id);
+    await dropTrial(id);
     if (opts.tz) await dbm.db.update(dbm.profiles).set({ timezone: opts.tz }).where(eq(dbm.profiles.userId, id)); // a trigger creates the profile row
     if (opts.pro) await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan: 'pro', status: 'active', stripeSubscriptionId: 'sub_x', renewsAt: new Date(Date.now() + 30 * 86_400_000) });
     return { id, email };

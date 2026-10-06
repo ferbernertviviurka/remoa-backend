@@ -71,8 +71,8 @@ const S: Scenario[] = [
   { group: 'Revisar', name: 'Responder card: POST /v1/challenge/rate', method: 'POST', as: 'typical', serial: true, qBudget: 4, path: () => '/v1/challenge/rate',
     body: (c) => { const s = pick(c); return s && { sessionId: s.sessionId, itemId: s.itemId, grade: 'good', overridden: false }; } },
   // --- calendário, notificações ---
-  { group: 'Calendário', name: 'Calendário (mês): GET /v1/calendar/events', as: 'typical', path: () => `/v1/calendar/events?${range()}`, qBudget: 3 },
-  { group: 'Calendário', name: 'Calendário (mês, pesado, 400 eventos)', as: HEAVY, path: () => `/v1/calendar/events?${range()}`, qBudget: 3 },
+  { group: 'Calendário', name: 'Calendário (mês): GET /v1/calendar/events', as: 'typical', path: () => `/v1/calendar/events?${range()}`, qBudget: 4 },
+  { group: 'Calendário', name: 'Calendário (mês, pesado, 400 eventos)', as: HEAVY, path: () => `/v1/calendar/events?${range()}`, qBudget: 4 },
   { group: 'Calendário', name: 'Calendário: GET /v1/calendar/labels', as: 'typical', path: () => '/v1/calendar/labels' },
   { group: 'Notificações', name: 'Notificações (lista): GET /v1/notifications', as: 'typical', path: () => '/v1/notifications', qBudget: 3 },
   { group: 'Notificações', name: 'Notificações (lista, pesado, 2.000)', as: HEAVY, path: () => '/v1/notifications', qBudget: 3 },

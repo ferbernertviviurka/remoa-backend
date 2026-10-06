@@ -5,6 +5,11 @@
 import type { Entitlements } from './billing';
 import type { Plan } from './enums';
 
+/** D-1213: free Pro days every account gets once (per normalized e-mail), from sign-up. The SQL trigger repeats the number (0039). */
+export const TRIAL_DAYS = 15;
+/** D-1213: days before the trial ends when the "teste acabando" notice goes out (and again on the last day). */
+export const TRIAL_NOTICE_DAYS = 3;
+
 export const errorCodes = [
   'unauthorized',
   'forbidden',
@@ -53,6 +58,8 @@ export const notificationTypes = [
   'payment_receipt',
   'admin_alert',
   'dispute_resolved',
+  // D-1213: the free Pro trial ends in TRIAL_NOTICE_DAYS days / today.
+  'trial_ending',
 ] as const;
 
 /** Chips on /notificacoes, in this order (Todas is "no category"). */

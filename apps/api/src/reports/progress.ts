@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { ok, type FsrsCardState, type FsrsMemory, type GetProgress } from '@remoa/contracts';
 import { REVIEW_BELOW } from '@remoa/fsrs';
-import { dayWindow, recallSql } from '../review/queue';
+import { dayWindow, recallSql, withWindow } from '../review/queue';
 import { run } from '../db';
 import { summarizeBuckets, weakFromMemory, type AttemptBucket } from './aggregate';
 
@@ -10,24 +10,23 @@ const WEAK_MAX = 20; // = summarize's weakCards cap
 export const getProgress: GetProgress = async (userId, now) =>
   ok(
     await run(userId, async (tx) => {
-      const win = await dayWindow(tx, userId, now);
-      const attempts = await tx.execute<{ day: string; attempts: number; hits: number; area: 'CM'; matrix_item_id: string | null; matrix_title: string | null }>(sql`
+      // G21 D-1094: one flight; the study day is a CTE of each statement (W/withWindow), and read on its own for the summary
+      const [win, attempts, weak, studied] = await Promise.all([dayWindow(tx, userId, now), tx.execute<{ day: string; attempts: number; hits: number; area: 'CM'; matrix_item_id: string | null; matrix_title: string | null }>(withWindow(userId, now, sql`
         -- G21: attempts are first grouped per (day, card) on attempts_user_created_idx, then one PK probe per card (no join per attempt,
         -- no seq scan of cards under RLS)
         select a.day, sum(a.n)::int as attempts, sum(a.hits)::int as hits, b.area, b.matrix_item_id, max(mi.title) as matrix_title
         from (
-          select ((created_at at time zone ${win.tz}::text) - interval '4 hours')::date::text as day, card_id, count(*) as n, count(*) filter (where grade >= 3) as hits
+          select ((created_at at time zone (select tz from w)) - interval '4 hours')::date::text as day, card_id, count(*) as n, count(*) filter (where grade >= 3) as hits
           from attempts
-          where user_id = ${userId} and created_at >= (${win.day}::date - 29) at time zone ${win.tz}::text + interval '4 hours'
+          where user_id = ${userId} and created_at >= ((select day from w)::date - 29) at time zone (select tz from w) + interval '4 hours'
           group by 1, 2
         ) a
         cross join lateral (select c.board_id from cards c where c.id = a.card_id offset 0) c
         cross join lateral (select b.area, b.matrix_item_id from boards b where b.id = c.board_id offset 0) b
         left join matrix_items mi on mi.id = b.matrix_item_id
         group by a.day, b.area, b.matrix_item_id
-      `);
-      // G21 FR-22/FR-23: the 20 weakest by the recall expression in SQL (was every state of the user); studied days from user_daily_stats
-      const [weak, studied] = await Promise.all([
+      `)),
+        // G21 FR-22/FR-23: the 20 weakest by the recall expression in SQL (was every state of the user); studied days from user_daily_stats
         tx.execute<{
           card_id: string; board_id: string; title: string; stability: number; difficulty: number;
           due: Date | string; reps: number; lapses: number; last_review: Date | string | null;
@@ -41,7 +40,7 @@ export const getProgress: GetProgress = async (userId, now) =>
           where f.user_id = ${userId} and f.sub_id = '' and f.reps > 0 and f.last_review is not null and ${recallSql(now.getTime())} < ${REVIEW_BELOW}
           order by ${recallSql(now.getTime())}, f.card_id limit ${WEAK_MAX}
         `),
-        tx.execute<{ day: string }>(sql`select day::text as day from user_daily_stats where user_id = ${userId} and day >= ${win.day}::date - 399 and reviews > 0`),
+        tx.execute<{ day: string }>(withWindow(userId, now, sql`select day::text as day from user_daily_stats where user_id = ${userId} and day >= (select day from w)::date - 399 and reviews > 0`)),
       ]);
       const buckets: AttemptBucket[] = attempts.map((a) => ({
         day: a.day, attempts: Number(a.attempts), hits: Number(a.hits), area: 'CM', matrixItemId: a.matrix_item_id, matrixTitle: a.matrix_title,

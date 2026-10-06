@@ -297,6 +297,20 @@ function referralReward(d: D<'referral-reward'>): Parts {
   });
 }
 
+function trialEnding(d: D<'trial-ending'>): Parts {
+  const r = s.trialEnding;
+  const last = d.version === 'd0';
+  return simple({
+    subject: last ? r.subjectD0 : r.subjectD3,
+    preheader: last ? r.preheaderD0 : r.preheaderD3,
+    title: last ? r.titleD0 : r.titleD3,
+    name: d.name,
+    body: fmt(r.body, { date: dateTime(d.endsAt, d.timezone) }),
+    cta: [r.cta, d.plansUrl],
+    footer: { reason: r.reason },
+  });
+}
+
 function referralInvite(d: D<'referral-invite'>): Parts {
   const r = s.referralInvite;
   return simple({
@@ -387,6 +401,7 @@ function parts<T extends EmailTemplate>(template: T, data: EmailData<T>, links: 
     case 'support-reply': return supportReply(d);
     case 'referral-reward': return referralReward(d);
     case 'referral-invite': return referralInvite(d);
+    case 'trial-ending': return trialEnding(d);
     case 'password-changed': return passwordChanged(d);
     case 'welcome': return welcome(d);
     case 'onboarding-nudge': return onboardingNudge(d);

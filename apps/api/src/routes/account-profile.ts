@@ -18,8 +18,12 @@ const body = (c: { req: { json: () => Promise<unknown> } }) => c.req.json().catc
 export const accountProfileRoutes = () =>
   new Hono<Env>()
     .get('/me', async (c) => {
-      const user = await loadAuthUser(c.get('userId'));
-      return send(user ? { ok: true, data: await getAccount(c.get('userId'), authInfoOf(user)) } : err('not_found', 'user not found'));
+      // D-1094: the Auth read and the database reads in parallel (getAccount waits for `auth` only at the end)
+      const user = loadAuthUser(c.get('userId'));
+      user.catch(() => undefined);
+      const data = getAccount(c.get('userId'), user.then((u) => (u ? authInfoOf(u) : null)));
+      data.catch(() => undefined);
+      return (await user) ? send({ ok: true, data: (await data)! }) : send(err('not_found', 'user not found'));
     })
     .patch('/profile', async (c) => {
       const i = parseWith(updateProfileInputSchema, await body(c));

@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import { env } from '@remoa/config';
 import { createLogger } from '@remoa/log';
 import type { CalendarColor, CalendarReminderKind, Notify } from '@remoa/contracts';
-import { dbm, run } from '../../db';
+import { dbm, run, uuids } from '../../db';
 import { dayWindow, dueByOffset } from '../../review/queue';
 import { coverUrlFor, icsUrlFor } from '../ics';
 import { validTz } from './plan';
@@ -74,7 +74,7 @@ async function sendGroup(g: Group, now: Date, notify: Notify): Promise<number> {
           });
     await tx.execute(sql`
       update calendar_reminders set status = 'sent', notification_id = ${res.notificationId}, email_delivery_id = ${res.emailDeliveryId}
-      where id in (${sql.join(rows.map((r) => sql`${r.id}::uuid`), sql`, `)})`);
+      where id = any(${uuids(rows.map((r) => r.id))})`);
     return rows.length;
   });
 }

@@ -1,5 +1,6 @@
 // Integration: needs local Supabase (`pnpm db:up && pnpm db:migrate`, DATABASE_URL from the repo-root .env); skipped otherwise.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -35,6 +36,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/boards', () => {
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => tokens[t] ?? null });
     for (const id of [a, b, c]) {
       await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+      await dropTrial(id);
       if (id === c) continue;
       await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan: 'pro', status: 'active' }); // F08: these tests are not about plan limits
     }

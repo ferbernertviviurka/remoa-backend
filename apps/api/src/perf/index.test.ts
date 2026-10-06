@@ -168,7 +168,7 @@ describe.skipIf(!process.env.DATABASE_URL)('perf with the database', () => {
   it('warns in dev when a route passes its FR-19 query budget', async () => {
     const dbm = await import('@remoa/db');
     const app = new Hono().use(perfMiddleware).get('/v1/calendar/events', async (c) => {
-      for (let i = 0; i < 4; i++) await dbm.db.execute(sql`select 1`);
+      for (let i = 0; i < 5; i++) await dbm.db.execute(sql`select 1`); // budget 4 (D-1094)
       return c.json({});
     });
     const cap = capture();
@@ -177,6 +177,6 @@ describe.skipIf(!process.env.DATABASE_URL)('perf with the database', () => {
     } finally {
       cap.restore();
     }
-    expect(cap.lines.find((l) => l.includes('query budget exceeded'))).toMatch(/"queries":4,"budget":3/);
+    expect(cap.lines.find((l) => l.includes('query budget exceeded'))).toMatch(/"queries":5,"budget":4/);
   });
 });

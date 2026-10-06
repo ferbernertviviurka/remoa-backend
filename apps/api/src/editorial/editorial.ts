@@ -1,8 +1,8 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { err, ok, parseWith, reviewDecisionSchema, resolveDisputeInputSchema, publishVersionInputSchema } from '@remoa/contracts';
 import { pick } from '../pick';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
-import { dbm } from '../db';
+import { dbm, uuids } from '../db';
 import { firstNameOf } from '../notifications/names';
 import { notify } from '../notifications/notify';
 import { maybeQualifyReferral } from '../referral/qualify';
@@ -303,7 +303,7 @@ export async function listSeeds() {
   const signed = ids.length
     ? await db.execute<{ board_id: string; reviewer_name: string | null; reviewer_crm: string | null; approved_at: string | null }>(sql`
         select distinct on (board_id) board_id, snapshot->>'reviewerName' as reviewer_name, snapshot->>'reviewerCrm' as reviewer_crm, approved_at
-        from board_versions where board_id in (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)}) order by board_id, version desc`)
+        from board_versions where board_id = any(${uuids(ids)}) order by board_id, version desc`)
     : [];
   const by = new Map([...signed].map((r) => [r.board_id, r]));
   return ok(rows.map((b) => {
@@ -344,7 +344,7 @@ export async function copySeed(userId: string, boardId: string) {
   }))];
   const allowed = new Set<string>();
   if (assetIds.length) {
-    const rows = await db.select({ id: assets.id, license: assets.license }).from(assets).where(inArray(assets.id, assetIds));
+    const rows = await db.select({ id: assets.id, license: assets.license }).from(assets).where(sql`${assets.id} = any(${uuids(assetIds)})`);
     for (const row of rows) if (shareable(row.license)) allowed.add(row.id);
   }
   const keep = (id: string | null) => (id && allowed.has(id) ? id : null);

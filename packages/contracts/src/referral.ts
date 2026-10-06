@@ -8,7 +8,8 @@ export const referralStatuses = ['invited', 'signed_up', 'qualified', 'rejected'
 export const referralChannels = ['link', 'email'] as const;
 /** FR-20. Never shown to the referrer; carried by `referral_rejected`. */
 export const referralRejectReasons = ['self_referral', 'disposable_email', 'existing_account', 'velocity_limit', 'fraud_signals', 'manual'] as const;
-export const grantSources = ['referral', 'promo', 'support'] as const;
+/** `trial` (D-1213): the TRIAL_DAYS of Pro every account gets once, granted by the sign-up trigger. */
+export const grantSources = ['referral', 'promo', 'support', 'trial'] as const;
 export const grantRevokeReasons = ['account_deleted', 'fraud', 'manual', 'converted'] as const;
 /** What /app/indicar shows: rejected looks like signed_up, expired is hidden (D-385). */
 export const friendStatuses = ['invited', 'signed_up', 'qualified'] as const;

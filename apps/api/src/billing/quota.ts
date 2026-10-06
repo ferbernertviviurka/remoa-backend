@@ -1,12 +1,12 @@
 import { sql } from 'drizzle-orm';
 import { err, ok, PLAN_LIMITS, planDefinition, type AiQuota, type AppError, type AssertQuota, type QuotaKey } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { dbm } from '../db';
+import { asServer, dbm } from '../db';
 import { planOf } from './plan';
 
 const DEFAULT_TZ = 'America/Sao_Paulo';
 /** G22 (D-1411): AI quotas turn over at midnight of the profile timezone (the calendar day), not at the 04:00 study-day rollover. */
-const daySql = (userId: string, now: Date) =>
+export const daySql = (userId: string, now: Date) =>
   sql`(${now.toISOString()}::timestamptz at time zone coalesce((select timezone from profiles where user_id = ${userId}), ${DEFAULT_TZ}::text))::date`;
 
 /** Local calendar day (profile timezone, midnight rollover) used as `usage_counters.period` of the AI counters. */
@@ -40,31 +40,34 @@ export async function overTotal(exec: Pick<Tx, 'execute'>, userId: string, key: 
 }
 
 /** Plan limit of one key (null = unlimited), from PlanDefinition. ai_rubrics = the plan's ai_grades number on its own counter (D-1412). */
-export const limitFor = async (userId: string, key: QuotaKey | 'ai_rubrics', now = new Date()) =>
-  planDefinition((await planOf(userId, now)).plan)[key === 'ai_rubrics' ? 'ai_grades' : key];
+export const limitFor = async (userId: string, key: QuotaKey | 'ai_rubrics', now = new Date(), tx?: Tx) =>
+  planDefinition((await planOf(userId, now, tx)).plan)[key === 'ai_rubrics' ? 'ai_grades' : key];
 
 export const quotaView = (key: AiKey, used: number, limit: number | null, period: string): AiQuota => ({
   key, used, limit, period, remaining: limit === null ? null : Math.max(0, limit - used), nearLimit: limit !== null && limit > 0 && used >= Math.ceil(limit * 0.8),
 });
 
-export type Reservation = { ok: true; readonly quota: AiQuota; refund: () => Promise<AiQuota> };
+export type Reservation = { ok: true; readonly quota: AiQuota; refund: (tx?: Tx) => Promise<AiQuota> };
 
 /**
  * G22 (D-1411): takes one unit BEFORE the AI call, atomically (`on conflict do update ... where used < limit`: N concurrent calls on
  * the last unit, exactly one row comes back). The caller gives it back with `refund()` on any failure or offline fallback, so only
  * a successful AI answer stays counted. `refund()` hits the same period (a call that crosses midnight refunds the day it was taken)
- * and runs at most once. Unlimited plans still count. Server connection: `authenticated` cannot write usage_counters.
+ * and runs at most once. Unlimited plans still count. Server role: `authenticated` cannot write usage_counters.
+ * D-1104 (P-532): with `tx` (the caller's run()), the unit is taken inside that transaction (asServer), never on a second pool
+ * connection while `tx` holds one; a rollback then gives it back by itself, so such a caller must not refund after a rollback.
+ * `refund(tx)` the same, inside a transaction that also took the unit; `refund()` on the server connection, after its commit.
  */
-export async function reserveAi(userId: string, key: AiKey, now = new Date()): Promise<Reservation | { ok: false; error: AppError }> {
-  const limit = await limitFor(userId, key, now);
-  const { db } = await dbm();
+export async function reserveAi(userId: string, key: AiKey, now = new Date(), tx?: Tx): Promise<Reservation | { ok: false; error: AppError }> {
+  const limit = await limitFor(userId, key, now, tx);
   const { col, period } = COUNTER[key];
   if (limit === 0) return { ok: false, error: { code: 'quota_exceeded', message: key } }; // D-647: Free has no PDF maps
   const cap = limit === null ? sql`` : sql`where usage_counters.${col} < ${limit}`;
-  const [row] = await db.execute<{ period: string; used: number }>(sql`
+  const q = sql`
     insert into usage_counters (user_id, period, ${col}) values (${userId}, ${period(daySql(userId, now))}, 1)
     on conflict (user_id, period) do update set ${col} = usage_counters.${col} + 1, updated_at = now() ${cap}
-    returning period::text as period, ${col} as used`);
+    returning period::text as period, ${col} as used`;
+  const [row] = tx ? await asServer<{ period: string; used: number }>(tx, q) : await (await dbm()).db.execute<{ period: string; used: number }>(q);
   if (!row) return { ok: false, error: { code: 'quota_exceeded', message: key } };
   let quota = quotaView(key, row.used, limit, row.period);
   let done = false;
@@ -73,10 +76,10 @@ export async function reserveAi(userId: string, key: AiKey, now = new Date()): P
     get quota() {
       return quota;
     },
-    refund: async () => {
+    refund: async (inTx?: Tx) => {
       if (done) return quota;
       done = true;
-      await refundAt(userId, key, row.period);
+      await refundAt(userId, key, row.period, inTx);
       quota = quotaView(key, Math.max(0, quota.used - 1), limit, row.period);
       return quota;
     },
@@ -84,10 +87,11 @@ export async function reserveAi(userId: string, key: AiKey, now = new Date()): P
 }
 
 /** Gives one unit back on the exact period it was taken from (never below zero). */
-export async function refundAt(userId: string, key: AiKey, period: string) {
-  const { db } = await dbm();
+export async function refundAt(userId: string, key: AiKey, period: string, tx?: Tx) {
   const { col } = COUNTER[key];
-  await db.execute(sql`update usage_counters set ${col} = ${col} - 1, updated_at = now() where user_id = ${userId} and period = ${period}::date and ${col} > 0`);
+  const q = sql`update usage_counters set ${col} = ${col} - 1, updated_at = now() where user_id = ${userId} and period = ${period}::date and ${col} > 0`;
+  if (tx) await asServer(tx, q);
+  else await (await dbm()).db.execute(q);
 }
 
 /**

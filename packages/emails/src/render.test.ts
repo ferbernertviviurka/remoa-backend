@@ -20,6 +20,8 @@ const SUBJECTS: Record<string, string> = {
   'support-reply/answered': 'Resposta ao chamado #128',
   'referral-reward/referrer': '1 mês de Pro grátis para você!',
   'referral-reward/referee': '1 mês de Pro grátis para você!',
+  'trial-ending/d3': 'Seu teste do Pro termina em 3 dias',
+  'trial-ending/d0': 'Seu teste do Pro termina hoje',
   'referral-invite/default': 'Ana convidou você para o Remoa',
   'password-changed/default': 'Sua senha do Remoa foi alterada',
   'welcome/default': 'Boas-vindas ao Remoa',

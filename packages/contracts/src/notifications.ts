@@ -63,6 +63,7 @@ export const NOTIFICATION_TYPES = {
   payment_receipt: { category: 'account_billing', prefKey: 'account_billing', inApp: false, email: 'payment-receipt', capRank: null },
   admin_alert: { category: 'account_billing', prefKey: 'account_billing', inApp: false, email: 'admin-alert', capRank: null },
   dispute_resolved: { category: 'support', prefKey: 'support', inApp: false, email: 'dispute-resolved', capRank: null },
+  trial_ending: { category: 'account_billing', prefKey: 'account_billing', inApp: true, email: 'trial-ending', capRank: null },
 } as const satisfies Record<
   NotificationType,
   { category: NotificationCategory; prefKey: NotificationPrefKey | null; inApp: boolean; email: EmailTemplate | null; capRank: 1 | 2 | 3 | null }
@@ -91,6 +92,8 @@ export const notificationDataSchemas = {
   support_reply: z.object({ ticketId: idSchema, ticketNumber: z.number().int().positive() }),
   purchase: z.object({ planName: z.string(), orderId: z.string() }),
   waitlist_joined: z.object({ interest: z.array(z.enum(storeInterests)).min(1) }),
+  /** `last` = the notice on the final day; otherwise TRIAL_NOTICE_DAYS before `endsAt`. */
+  trial_ending: z.object({ endsAt: iso, last: z.boolean() }),
 } as const satisfies Record<InAppNotificationType, z.ZodTypeAny>;
 export type NotificationDataMap = { [T in InAppNotificationType]: z.infer<(typeof notificationDataSchemas)[T]> };
 

@@ -1,12 +1,12 @@
 // G19 F27 FR-26 (D-908): blog image pipeline. Signature check (not Content-Type), EXIF stripped by re-encoding after `.rotate()`,
 // WebP + AVIF variants (no upscale), a 1200x630 JPEG crop for social cards, public bucket, row in blog_assets.
-import { eq, inArray } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { pick } from '../pick';
 import sharp from 'sharp';
 import { env } from '@remoa/config';
 import { BLOG_LIMITS, blogErrors, err, ok, slugify, type BlogAsset, type BlogAssetVariant, type Result } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { dbm } from '../db';
+import { dbm, uuids } from '../db';
 import { putPublicBytes } from '../storage/storage';
 import type { ImageRef, ResolvedImage } from '@remoa/blog';
 
@@ -48,7 +48,7 @@ export function blogImageResolver(assets: AssetRow[], externals: Map<string, { w
 export async function loadAssets(ids: string[]): Promise<AssetRow[]> {
   if (!ids.length) return [];
   const { db, blogAssets } = await dbm();
-  return db.select(pick(blogAssets, ...ASSET_COLS)).from(blogAssets).where(inArray(blogAssets.id, ids));
+  return db.select(pick(blogAssets, ...ASSET_COLS)).from(blogAssets).where(sql`${blogAssets.id} = any(${uuids(ids)})`);
 }
 
 export async function uploadBlogImage(userId: string, input: { bytes: Buffer; slug: string; id?: string }, tx?: Tx): Promise<Result<{ asset: BlogAsset }>> {

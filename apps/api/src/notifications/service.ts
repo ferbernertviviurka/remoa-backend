@@ -1,11 +1,11 @@
-import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { pick } from '../pick';
 import {
   NOTIFICATION_PREFS, NOTIFICATIONS_PAGE_SIZE, effectivePref, err, idSchema, notificationCategories, notificationPrefKeys, ok, reviewReminderHour, reviewReminderTimeOf,
   type MarkReadInput, type Notification, type NotificationCategory, type NotificationPrefs, type NotificationPrefsPatch, type Result,
   type NotificationPage, type UnreadCount, type NotificationListQuery,
 } from '@remoa/contracts';
-import { dbm, run } from '../db';
+import { dbm, run, uuids } from '../db';
 import { invalidate } from '../cache';
 
 // G18 F26. Rows are written only by notify(); here the owner reads them, marks them read and dismisses (RLS: select + update(read_at, dismissed_at)).
@@ -59,7 +59,7 @@ export async function unreadCount(userId: string): Promise<Result<UnreadCount>> 
 export async function markRead(userId: string, input: MarkReadInput): Promise<Result<{ updated: number; unread: number }>> {
   const out = await run(userId, async (tx, s) => {
     const t = s.notifications;
-    const done = await tx.update(t).set({ readAt: new Date() }).where(and(unreadWhere(t, userId), 'ids' in input ? inArray(t.id, input.ids) : undefined)).returning({ id: t.id });
+    const done = await tx.update(t).set({ readAt: new Date() }).where(and(unreadWhere(t, userId), 'ids' in input ? sql`${t.id} = any(${uuids(input.ids)})` : undefined)).returning({ id: t.id });
     const [{ n = 0 } = {}] = await tx.select({ n: sql<number>`count(*)::int` }).from(t).where(unreadWhere(t, userId));
     return { updated: done.length, unread: n };
   });

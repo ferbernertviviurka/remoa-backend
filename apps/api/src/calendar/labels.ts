@@ -21,24 +21,33 @@ const hiddenOf = async (userId: string) => {
 };
 
 const list = async (tx: Tx, s: typeof import('@remoa/db'), userId: string, hidden: string[]): Promise<CalendarLabel[]> => {
-  await seed(tx, s, userId);
   const l = s.calendarLabels;
   const e = s.calendarEvents;
-  const rows = await tx
+  const read = () => tx
     .select({ l, n: sql<number>`count(${e.id})::int` })
     .from(l)
     .leftJoin(e, and(eq(e.labelId, l.id), isNull(e.deletedAt)))
     .where(eq(l.userId, userId))
     .groupBy(l.id)
     .orderBy(asc(l.position), asc(l.createdAt));
+  // G21 D-1094: the list is the seed check (no label at all → seed, read again; first visit only); one flight otherwise
+  let rows = await read();
+  if (!rows.length) {
+    await seed(tx, s, userId);
+    rows = await read();
+  }
   return rows.map(({ l: r, n }) => ({
     id: r.id, name: r.name, color: r.color, systemKey: r.systemKey as CalendarLabel['systemKey'], position: r.position, hidden: hidden.includes(r.id), eventCount: n,
   }));
 };
 
 export async function listLabels(userId: string): Promise<Result<CalendarLabelList>> {
-  const hidden = await hiddenOf(userId);
-  return ok({ labels: await run(userId, (tx, s) => list(tx, s, userId, hidden)) });
+  // the preference (server connection) and the list, in parallel
+  const hiddenP = hiddenOf(userId);
+  hiddenP.catch(() => undefined); // awaited below; not unhandled if the list throws first
+  const rows = await run(userId, (tx, s) => list(tx, s, userId, []));
+  const hidden = await hiddenP;
+  return ok({ labels: rows.map((l) => ({ ...l, hidden: hidden.includes(l.id) })) });
 }
 
 const one = async (userId: string, id: string) => {

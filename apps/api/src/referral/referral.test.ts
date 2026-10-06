@@ -1,6 +1,7 @@
 // Integration (F18 T2): attribution, public lookup, qualification + double grant, antifraud, sweep, RLS, deletion.
 // Needs local Supabase (DATABASE_URL in the repo-root .env); skipped otherwise.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -69,6 +70,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     const created = new Date(Date.now() - (o.ageHours ?? 0) * 3_600_000).toISOString();
     await dbm.db.execute(sql`insert into auth.users (id, email, instance_id, aud, role, created_at, email_confirmed_at, raw_user_meta_data)
       values (${id}, ${email}, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', ${created}, ${o.confirmed === false ? null : created}, ${JSON.stringify({ name: o.name ?? 'Daniel Souza Lima' })}::jsonb)`);
+    await dropTrial(id);
     return id;
   }
   async function codeOf(userId: string) {
@@ -200,6 +202,16 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 referral: attribution, qualifica
     // the referrer's Pro is in force through getEntitlements (T4)
     const ent = await req('GET', '/v1/billing/entitlements', { u: row.referrer_id });
     expect([ent.status, ent.json.data.plan]).toEqual([200, 'pro']);
+  });
+
+  it('D-1102: referee on Pro (active grant: cardLimit null, like the F30 trial) qualifies when a batch creates a card', async () => {
+    const { referee } = await pair();
+    await dbm.db.execute(sql`insert into entitlement_grants (user_id, source, starts_at, ends_at) values (${referee}, 'trial', now() - interval '1 day', now() + interval '14 days')`);
+    expect((await req('GET', '/v1/billing/entitlements', { u: referee })).json.data.plan).toBe('pro');
+    const id = await board(referee, 2);
+    const ops: MapOp[] = [{ op: 'createCard', opId: uuid(), boardId: id, card: { id: uuid(), type: 'concept', title: 'IECA', position: { x: 0, y: 0 } } }];
+    expect((await req('POST', '/v1/boards/ops', { u: referee, body: { ops } })).status).toBe(200);
+    expect((await referral(referee))!.status).toBe('qualified');
   });
 
   it('concurrent first calls grant exactly one pair', async () => {

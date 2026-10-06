@@ -1,5 +1,6 @@
 // Integration: needs local Supabase + Storage (see cards.test.ts). The parser is an injected mock; the real one is covered by packages/anki.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import sharp from 'sharp';
@@ -36,6 +37,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    await dropTrial(id);
     return id;
   };
   /** D-648: Free gets one completed Anki import; tests that import twice run on Pro. */

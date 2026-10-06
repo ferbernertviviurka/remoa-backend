@@ -1,6 +1,7 @@
 // Integration (F17 T3 + T4): sharing, the public page, unlock limit and copy. Needs local Supabase (DATABASE_URL + S3 from
 // the repo-root .env); skipped otherwise.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -83,6 +84,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('F17 shar
     app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => tokens[t] ?? null });
     for (const id of [a, b, f, g]) {
       await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+      await dropTrial(id);
       if (id !== f) await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan: 'pro', status: 'active' });
     }
   });

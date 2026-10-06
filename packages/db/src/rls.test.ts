@@ -197,8 +197,9 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
       // own rows readable, others' not; no client writes
       expect(await m.withUser(a, (tx) => tx.select().from(s.referralCodes))).toHaveLength(1);
       expect(await m.withUser(b, (tx) => tx.select().from(s.referralCodes))).toHaveLength(0);
-      expect(await m.withUser(a, (tx) => tx.select().from(s.entitlementGrants))).toHaveLength(1);
-      expect(await m.withUser(b, (tx) => tx.select().from(s.entitlementGrants))).toEqual([expect.objectContaining({ userId: b })]);
+      expect((await m.withUser(a, (tx) => tx.select().from(s.entitlementGrants))).filter((x) => x.source !== 'trial')).toHaveLength(1); // + the sign-up trial (D-1213)
+      expect((await m.withUser(b, (tx) => tx.select().from(s.entitlementGrants))).filter((x) => x.source !== 'trial')).toEqual([expect.objectContaining({ userId: b })]);
+      expect((await m.withUser(b, (tx) => tx.select().from(s.entitlementGrants))).every((x) => x.userId === b)).toBe(true);
       expect(await m.withUser(b, (tx) => tx.select().from(s.billingCredits))).toHaveLength(0);
       await expect(m.withUser(b, (tx) => tx.insert(s.referralCodes).values({ userId: b, code: 'WXYZ2345' }))).rejects.toThrow();
       await expect(m.withUser(b, (tx) => tx.insert(s.entitlementGrants).values({ userId: b, source: 'promo', startsAt: t0, endsAt: end }))).rejects.toThrow();

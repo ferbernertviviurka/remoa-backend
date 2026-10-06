@@ -53,8 +53,10 @@ export async function getReferralSummary(userId: string, now = new Date()) {
       ) x order by granted_at desc limit 3`),
     db.execute<{ n: number }>(sql`select ((select count(*) from entitlement_grants where user_id = ${userId} and source = 'referral' and revoked_at is null)
       + (select count(*) from billing_credits where user_id = ${userId}))::int as n`),
-    db.execute<{ until: string | null; since: string | null }>(sql`
-      select max(ends_at) as until, min(starts_at) filter (where starts_at <= ${now.toISOString()}::timestamptz) as since from entitlement_grants
+    // D-1214: the chain may include the free trial (referral months queue after it), but only a live referral month shows "Pro grátis até" here
+    db.execute<{ until: string | null; since: string | null; referral: boolean | null }>(sql`
+      select max(ends_at) as until, min(starts_at) filter (where starts_at <= ${now.toISOString()}::timestamptz) as since,
+        bool_or(source = 'referral') as referral from entitlement_grants
       where user_id = ${userId} and revoked_at is null and ends_at > ${now.toISOString()}::timestamptz`),
     db.execute<{ n: number }>(sql`select coalesce(sum(amount_cents), 0)::int as n from billing_credits where user_id = ${userId}`),
     // a paying subscriber has no "Pro grátis até" (D-384: they get credit instead)
@@ -62,7 +64,7 @@ export async function getReferralSummary(userId: string, now = new Date()) {
     invitesLeftToday(userId),
   ]);
   // chain active only if some grant already started; `since` = start of the active chain (earliest running grant still unexpired)
-  const until = chain?.since && !sub?.pro ? chain.until : null;
+  const until = chain?.since && chain.referral && !sub?.pro ? chain.until : null;
   const summary: ReferralSummary = {
     code,
     link: referralLink(origin, code),

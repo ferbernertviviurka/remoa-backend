@@ -1,6 +1,6 @@
 import { notifyMapReady } from '../notifications/map-ready';
 import { pick } from '../pick';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   AI_DRAFT_SOURCE, OFFLINE_DRAFT_SOURCE, generatePdfBoardInputSchema, graderInputSchema, planDefinition, rubricSchema, err, ok, parseWith,
@@ -14,7 +14,7 @@ import type { Tx } from '@remoa/db';
 import { dispatchBoardJob, inngest, inngestConfigured } from '../inngest/client';
 import { assertQuota, liveCardsSql, reserveAi, type Reservation } from '../billing/quota';
 import { planOf } from '../billing/plan';
-import { dbm, run } from '../db';
+import { dbm, run, uuids } from '../db';
 import { maybeQualifyReferral } from '../referral/qualify';
 import { initialShareColumns } from '../share/crypto';
 import type { z } from 'zod';
@@ -486,7 +486,7 @@ export async function startPdfGeneration(userId: string, board: z.output<typeof 
   // D-532: items must be leaves of the board's area (same rule as createBoard/import), checked before anything is charged.
   if (board.matrixItemIds.length) {
     const { db, matrixItems } = await dbm();
-    const valid = await db.select({ id: matrixItems.id }).from(matrixItems).where(and(inArray(matrixItems.id, board.matrixItemIds), eq(matrixItems.area, board.area),
+    const valid = await db.select({ id: matrixItems.id }).from(matrixItems).where(and(sql`${matrixItems.id} = any(${uuids(board.matrixItemIds)})`, eq(matrixItems.area, board.area),
       sql`not exists (select 1 from matrix_items c where c.parent_id = ${matrixItems.id})`));
     if (valid.length !== board.matrixItemIds.length) return { ok: false, error: { code: 'validation', message: 'matrixItemId is unknown, a group, or does not belong to the board area' } };
   }
