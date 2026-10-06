@@ -54,6 +54,8 @@ warmPool().catch((e) => createLogger({ requestId: 'boot' }).error('db pool warm-
 
 const port = Number(process.env.PORT ?? 4000);
 const server = serve({ fetch: app.fetch, port });
+// D-1443: a 250 MB .apkg now streams through the API; Node's default 5 min for a whole request cuts slow connections. 15 min = Railway's cap.
+(server as import('node:http').Server).requestTimeout = 15 * 60_000;
 // D-992: deploys send SIGTERM; stop taking requests and give deferred e-mails up to 8 s to leave.
 process.once('SIGTERM', () => {
   server.close();

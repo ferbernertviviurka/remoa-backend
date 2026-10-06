@@ -100,6 +100,22 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     expect(r.json.data.url).toMatch(/^http/);
   });
 
+  it('direct (D-1443): needs auth, streams a multipart-sized zip to the bucket, and inspect accepts the key', async () => {
+    const u = await newUser();
+    const zip = Buffer.alloc(12 * 1024 * 1024, 7); // > one 8 MB part: exercises the S3 multipart path
+    zip.set([0x50, 0x4b, 0x03, 0x04]);
+    const post = (auth: string | null, body: Buffer) =>
+      app.request('/v1/imports/anki/direct', { method: 'POST', body, headers: { ...(auth ? { authorization: `Bearer ${auth}` } : {}), 'content-type': 'application/octet-stream' } });
+    expect((await post(null, zip)).status).toBe(401);
+    expect((await post(u, Buffer.from('not a zip'))).status).toBe(422);
+    const r = await post(u, zip);
+    expect(r.status).toBe(200);
+    const { key } = ((await r.json()) as { data: { key: string } }).data;
+    expect(key).toMatch(new RegExp(`^imports/${u}/[0-9a-f-]{36}\\.apkg$`));
+    expect((await st.getBytes(key)).equals(zip)).toBe(true);
+    expect((await call(u, 'POST', '/anki/inspect', { key })).status).toBe(200);
+  });
+
   it('inspect: foreign prefix and missing object 404, parser error 422, happy path returns the summary', async () => {
     const [a, b] = [await newUser(), await newUser()];
     const theirs = await putPkg(b);
