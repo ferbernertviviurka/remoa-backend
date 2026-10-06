@@ -1,0 +1,7 @@
+{
+  "note": "Hand-written placeholder (G22 Phase 1), not a recorded reply. The first reply is invalid on purpose so the repair path runs. Re-record with AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:eval.",
+  "replies": [
+    { "model": "fixture/model", "choices": [{ "message": { "content": "Nota máxima!" } }], "usage": { "prompt_tokens": 300, "completion_tokens": 5 } },
+    { "model": "fixture/model", "choices": [{ "message": { "tool_calls": [{ "function": { "name": "grade", "arguments": "{\"verdict\":\"incorrect\",\"matched\":[],\"missing\":[\"O céu de Zorbo é verde\",\"Por causa do gás fictício X\"],\"criticalError\":false,\"feedback\":\"A resposta não trata da pergunta.\"}" } }] } }], "usage": { "prompt_tokens": 320, "completion_tokens": 60 } }
+  ]
+}

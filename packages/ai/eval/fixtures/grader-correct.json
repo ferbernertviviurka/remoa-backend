@@ -1,0 +1,6 @@
+{
+  "note": "Hand-written placeholder (G22 Phase 1), not a recorded reply. Re-record with AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:eval.",
+  "replies": [
+    { "model": "fixture/model", "choices": [{ "message": { "tool_calls": [{ "function": { "name": "grade", "arguments": "{\"verdict\":\"correct\",\"matched\":[\"O céu de Zorbo é verde\",\"Por causa do gás fictício X\"],\"missing\":[],\"criticalError\":false,\"feedback\":\"Cobre a rubrica.\"}" } }] } }], "usage": { "prompt_tokens": 300, "completion_tokens": 60 } }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "note": "Hand-written placeholder (G22 Phase 1), not a recorded reply. Re-record with AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:eval.",
+  "replies": [
+    { "model": "fixture/model", "choices": [{ "message": { "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Céu de Zorbo\",\"front\":null,\"back\":\"Verde por causa do gás fictício X.\",\"source\":\"Manual fictício de Zorbo\",\"payload\":{}}],\"edges\":[]}" } }], "usage": { "prompt_tokens": 400, "completion_tokens": 80 } }
+  ]
+}
