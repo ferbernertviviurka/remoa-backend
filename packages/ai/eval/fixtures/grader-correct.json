@@ -1,117 +1,141 @@
 {
-  "recorded": false,
-  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "recorded": true,
+  "note": "Gravado ao vivo com entrada sintética (G22). Rodada de 2026-10-06: 2 de 3 repetições gravadas; a 3ª repetição falhou no provedor com erro HTTP (sem fallback) e o gravador antigo só guardava respostas OK (D-1440).",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
+  "recordedAt": "2026-10-06T17:10:39.157Z",
+  "reps": 2,
   "replies": [
     {
-      "id": "gen-1759700000-synthetic001",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "id": "gen-1791306619-gCGjOR1ikKRs6dq29kK6",
       "object": "chat.completion",
-      "created": 1759700000,
+      "created": 1791306619,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "Nvidia",
+      "system_fingerprint": null,
+      "service_tier": null,
       "choices": [
         {
+          "index": 0,
           "logprobs": null,
           "finish_reason": "tool_calls",
           "native_finish_reason": "tool_calls",
-          "index": 0,
           "message": {
             "role": "assistant",
-            "content": "",
+            "content": null,
             "refusal": null,
-            "reasoning": null,
+            "reasoning": "We need to compare the student's answer with rubric.\n\nRubric points:\nEssential:\n1. \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\"\n2. \"Medir a glicemia de novo em 15 minutos\"\n\nComplementary:\n3. \"Investigar a causa do episódio\"\n\nStudent answer: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral, como suco, e medir a glicemia de novo em 15 minutos. Depois, investigar a causa do episódio.\"\n\nSo they covered both essentials and also the complementary. No error. So verdict: correct. matched: list the rubric points they matched (the exact text of each point). Missing: none. criticalError: false. sourceQuote: one essential point that justifies verdict; could pick the first essential point. feedback: short Portuguese, up to 3 sentences: what they got right, what missing (none), and source (Fonte). They covered all points.\n\nThus call grade with appropriate fields.",
             "tool_calls": [
               {
-                "id": "call_1",
-                "index": 0,
                 "type": "function",
+                "index": 0,
+                "id": "call-99382843-2edf-45fb-8442-884aa1590cc7",
                 "function": {
                   "name": "grade",
-                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Você cobriu os dois pontos essenciais: carboidrato por via oral e nova glicemia em 15 minutos. Também lembrou de investigar a causa. Fonte: Hipoglicemia no adulto.\"}"
+                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"O estudante acertou ao oferecer 15 g de carboidrato de absorção rápida e repetir a glicemia em 15 minutos, além de investigar a causa. Não faltou nenhum ponto essencial ou complementar. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto.\"}"
                 }
+              }
+            ],
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "We need to compare the student's answer with rubric.\n\nRubric points:\nEssential:\n1. \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\"\n2. \"Medir a glicemia de novo em 15 minutos\"\n\nComplementary:\n3. \"Investigar a causa do episódio\"\n\nStudent answer: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral, como suco, e medir a glicemia de novo em 15 minutos. Depois, investigar a causa do episódio.\"\n\nSo they covered both essentials and also the complementary. No error. So verdict: correct. matched: list the rubric points they matched (the exact text of each point). Missing: none. criticalError: false. sourceQuote: one essential point that justifies verdict; could pick the first essential point. feedback: short Portuguese, up to 3 sentences: what they got right, what missing (none), and source (Fonte). They covered all points.\n\nThus call grade with appropriate fields.",
+                "format": "unknown",
+                "index": 0
               }
             ]
           }
         }
       ],
       "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
-      }
+        "prompt_tokens": 1199,
+        "completion_tokens": 432,
+        "total_tokens": 1631,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0,
+          "upstream_inference_prompt_cost": 0,
+          "upstream_inference_completions_cost": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 230,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "_latencyMs": 384
     },
     {
-      "id": "gen-1759700000-synthetic002",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "id": "gen-1791306623-pcIKepWG1ATWoXNL4w4a",
       "object": "chat.completion",
-      "created": 1759700000,
+      "created": 1791306623,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "Nvidia",
+      "system_fingerprint": null,
+      "service_tier": null,
       "choices": [
         {
+          "index": 0,
           "logprobs": null,
           "finish_reason": "tool_calls",
           "native_finish_reason": "tool_calls",
-          "index": 0,
           "message": {
             "role": "assistant",
-            "content": "",
+            "content": null,
             "refusal": null,
-            "reasoning": null,
+            "reasoning": "We need to evaluate the student's answer against rubric. Rubric points: essential: Offer 15g fast-acting carbohydrate orally; essential: Measure glucose again in 15 min; complementary: Investigate cause.\n\nStudent answer: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral, como suco, e medir a glicemia de novo em 15 minutos. Depois, investigar a causa do episódio.\"\n\nThis includes both essential points and complementary point. So covers all essential points, no errors. So verdict = correct. matched: list both essential points (maybe also complementary? matched includes points from rubric that were covered; it says matched and missing: copy exact text of rubric points. Usually matched includes the points that are present. Could include both essential and complementary? The instruction: matched and missing: copy the exact text of the rubric points, without the marker [essential]/[complementar]. It doesn't restrict to essential only. So we can list all three points as matched. missing: none => empty array.\n\ncriticalError: false.\n\nsourceQuote: we need to copy literally from rubric the point that fundamentals the verdict (the essential point principal). Could pick first essential point: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\". Or could choose whichever. We'll choose that.\n\nfeedback: up to 3 sentences in Brazilian Portuguese: what they got right, what missing, and source. Since no missing, we can say they covered all essential and complementary points, according to Fonte.\n\nLet's craft: \"A resposta ofereceu 15g de carboidrato de absorção rápida por via oral e repetiu a glicemia em 15 minutos, além de investigar a causa, conforme a rubrica. Não faltou nenhum item essencial ou complementar. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto.\"\n\nThat's 3 sentences. Good.\n\nNow call grade.",
             "tool_calls": [
               {
-                "id": "call_2",
-                "index": 0,
                 "type": "function",
+                "index": 0,
+                "id": "call-745851f8-1fae-46d2-91d4-2bb876abf408",
                 "function": {
                   "name": "grade",
-                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Resposta completa: 15 gramas de carboidrato por via oral e nova medida em 15 minutos, além de investigar a causa. Fonte: texto sintético de avaliação.\"}"
+                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"A resposta ofereceu 15g de carboidrato de absorção rápida por via oral e repetiu a glicemia em 15 minutos, além de investigar a causa, conforme a rubrica. Não faltou nenhum item essencial ou complementar. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto.\"}"
                 }
+              }
+            ],
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "We need to evaluate the student's answer against rubric. Rubric points: essential: Offer 15g fast-acting carbohydrate orally; essential: Measure glucose again in 15 min; complementary: Investigate cause.\n\nStudent answer: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral, como suco, e medir a glicemia de novo em 15 minutos. Depois, investigar a causa do episódio.\"\n\nThis includes both essential points and complementary point. So covers all essential points, no errors. So verdict = correct. matched: list both essential points (maybe also complementary? matched includes points from rubric that were covered; it says matched and missing: copy exact text of rubric points. Usually matched includes the points that are present. Could include both essential and complementary? The instruction: matched and missing: copy the exact text of the rubric points, without the marker [essential]/[complementar]. It doesn't restrict to essential only. So we can list all three points as matched. missing: none => empty array.\n\ncriticalError: false.\n\nsourceQuote: we need to copy literally from rubric the point that fundamentals the verdict (the essential point principal). Could pick first essential point: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\". Or could choose whichever. We'll choose that.\n\nfeedback: up to 3 sentences in Brazilian Portuguese: what they got right, what missing, and source. Since no missing, we can say they covered all essential and complementary points, according to Fonte.\n\nLet's craft: \"A resposta ofereceu 15g de carboidrato de absorção rápida por via oral e repetiu a glicemia em 15 minutos, além de investigar a causa, conforme a rubrica. Não faltou nenhum item essencial ou complementar. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto.\"\n\nThat's 3 sentences. Good.\n\nNow call grade.",
+                "format": "unknown",
+                "index": 0
               }
             ]
           }
         }
       ],
       "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
-      }
-    },
-    {
-      "id": "gen-1759700000-synthetic003",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
-      "object": "chat.completion",
-      "created": 1759700000,
-      "choices": [
-        {
-          "logprobs": null,
-          "finish_reason": "tool_calls",
-          "native_finish_reason": "tool_calls",
-          "index": 0,
-          "message": {
-            "role": "assistant",
-            "content": "",
-            "refusal": null,
-            "reasoning": null,
-            "tool_calls": [
-              {
-                "id": "call_3",
-                "index": 0,
-                "type": "function",
-                "function": {
-                  "name": "grade",
-                  "arguments": "{\"verdict\":\"correct\",\"matched\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Acertou a conduta inicial e a reavaliação em 15 minutos, como pede a rubrica. Fonte: Hipoglicemia no adulto.\"}"
-                }
-              }
-            ]
-          }
+        "prompt_tokens": 1199,
+        "completion_tokens": 628,
+        "total_tokens": 1827,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0,
+          "upstream_inference_prompt_cost": 0,
+          "upstream_inference_completions_cost": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 422,
+          "image_tokens": 0,
+          "audio_tokens": 0
         }
-      ],
-      "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
-      }
+      },
+      "_latencyMs": 324
     }
   ]
 }

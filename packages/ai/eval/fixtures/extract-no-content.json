@@ -1,32 +1,63 @@
 {
-  "recorded": false,
-  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "recorded": true,
+  "note": "Gravado ao vivo com entrada sintética (G22).",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
+  "recordedAt": "2026-10-06T17:18:05.239Z",
   "replies": [
     {
-      "id": "gen-1759700000-synthetic023",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "id": "gen-1791307083-lLy78qgm7oq2OqAFMeAV",
       "object": "chat.completion",
-      "created": 1759700000,
+      "created": 1791307083,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "Nvidia",
+      "system_fingerprint": null,
+      "service_tier": null,
       "choices": [
         {
+          "index": 0,
           "logprobs": null,
           "finish_reason": "stop",
           "native_finish_reason": "stop",
-          "index": 0,
           "message": {
             "role": "assistant",
-            "content": "{\"cards\":[],\"edges\":[]}",
+            "content": "{\"cards\": [], \"edges\": []}",
             "refusal": null,
-            "reasoning": null
+            "reasoning": "We need to follow the instructions. The user provided a text block containing a shopping list, a reminder, and a thank you. According to the instruction, if the text has no study content (i.e., not medical content), we should respond with {\"cards\":[],\"edges\":[]}. Indeed, the text is not medical. So output JSON with empty arrays.\n\nWe must ensure we only output JSON, no extra text.\n\nThus answer: {\"cards\":[],\"edges\":[]}",
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "We need to follow the instructions. The user provided a text block containing a shopping list, a reminder, and a thank you. According to the instruction, if the text has no study content (i.e., not medical content), we should respond with {\"cards\":[],\"edges\":[]}. Indeed, the text is not medical. So output JSON with empty arrays.\n\nWe must ensure we only output JSON, no extra text.\n\nThus answer: {\"cards\":[],\"edges\":[]}",
+                "format": "unknown",
+                "index": 0
+              }
+            ]
           }
         }
       ],
       "usage": {
-        "prompt_tokens": 650,
-        "completion_tokens": 12,
-        "total_tokens": 662
-      }
+        "prompt_tokens": 562,
+        "completion_tokens": 109,
+        "total_tokens": 671,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0,
+          "upstream_inference_prompt_cost": 0,
+          "upstream_inference_completions_cost": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 98,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "_latencyMs": 350
     }
   ]
 }

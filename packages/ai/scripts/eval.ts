@@ -25,7 +25,7 @@ if (process.argv.includes('--report')) {
   writeFileSync(out, reportMarkdown(model, report));
   console.log(`relatório: ${join(out)}`);
 }
-if (model.passed < model.n) {
+if (model.rows.some((r) => !r.pass && !r.known)) {
   console.error('ai model eval failed');
   process.exit(1);
 }

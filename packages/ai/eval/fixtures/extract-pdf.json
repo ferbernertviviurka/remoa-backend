@@ -1,32 +1,63 @@
 {
-  "recorded": false,
-  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "recorded": true,
+  "note": "Gravado ao vivo com entrada sintética (G22).",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
+  "recordedAt": "2026-10-06T17:18:18.351Z",
   "replies": [
     {
-      "id": "gen-1759700000-synthetic024",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "id": "gen-1791307085-qUZqj5vi2hukeFZM4I4O",
       "object": "chat.completion",
-      "created": 1759700000,
+      "created": 1791307085,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "Nvidia",
+      "system_fingerprint": null,
+      "service_tier": null,
       "choices": [
         {
+          "index": 0,
           "logprobs": null,
           "finish_reason": "stop",
           "native_finish_reason": "stop",
-          "index": 0,
           "message": {
             "role": "assistant",
-            "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Estado hiperglicêmico hiperosmolar\",\"question\":\"Em quem o estado hiperglicêmico hiperosmolar é mais comum?\",\"answer\":\"Em idosos com diabetes tipo 2.\",\"sourceExcerpt\":\"O estado hiperglicemico hiperosmolar e mais comum em idosos com diabetes tipo 2.\",\"payload\":{}},{\"ref\":\"c2\",\"type\":\"concept\",\"title\":\"Tratamento do estado hiperosmolar\",\"question\":\"Qual é a medida mais importante do tratamento?\",\"answer\":\"A hidratação venosa; a insulina vem depois da hidratação inicial.\",\"sourceExcerpt\":\"A hidratacao venosa e a medida mais importante do tratamento.\",\"payload\":{}}],\"edges\":[{\"fromRef\":\"c1\",\"toRef\":\"c2\",\"label\":\"é tratado com\"}]}",
+            "content": "{\"cards\": [{\"ref\": \"c1\", \"type\": \"concept\", \"title\": \"Estado hiperglicemico hiperosmolar\", \"question\": \"Qual é a população mais afetada pelo estado hiperglicemico hiperosmolar?\", \"answer\": \"Idosos com diabetes tipo 2.\", \"sourceExcerpt\": \"O estado hiperglicemico hiperosmolar e mais comum em idosos com diabetes tipo 2.\", \"payload\": {}}, {\"ref\": \"c2\", \"type\": \"concept\", \"title\": \"Características do estado hiperglicemico hiperosmolar\", \"question\": \"Quais são as principais características do estado hiperglicemico hiperosmolar?\", \"answer\": \"Hiperglicemia muito alta, osmolaridade elevada e desidratação grave.\", \"sourceExcerpt\": \"Ele se caracteriza por hiperglicemia muito alta, osmolaridade elevada e desidratacao grave.\", \"payload\": {}}, {\"ref\": \"c3\", \"type\": \"concept\", \"title\": \"Hidratação venosa no tratamento\", \"question\": \"Qual é a medida mais importante do tratamento do estado hiperglicemico hiperosmolar?\", \"answer\": \"Hidratação venosa.\", \"sourceExcerpt\": \"A hidratacao venosa e a medida mais importante do tratamento.\", \"payload\": {}}, {\"ref\": \"c4\", \"type\": \"concept\", \"title\": \"Uso de insulina no tratamento\", \"question\": \"Quando a insulina deve ser usada no tratamento do estado hiperglicemico hiperosmolar?\", \"answer\": \"Depois da hidratação inicial.\", \"sourceExcerpt\": \"A insulina e usada depois da hidratacao inicial, e a queda da glicemia deve ser gradual.\", \"payload\": {}}, {\"ref\": \"c5\", \"type\": \"concept\", \"title\": \"Queda da glicemia no tratamento\", \"question\": \"Como deve ocorrer a queda da glicemia durante o tratamento do estado hiperglicemico hiperosmolar?\", \"answer\": \"De forma gradual.\", \"sourceExcerpt\": \"A insulina e usada depois da hidratacao inicial, e a queda da glicemia deve ser gradual.\", \"payload\": {}}], \"edges\": [{\"fromRef\": \"c1\", \"toRef\": \"c2\", \"label\": \"tem como característica\"}, {\"fromRef\": \"c2\", \"toRef\": \"c3\", \"label\": \"necessita\"}, {\"fromRef\": \"c3\", \"toRef\": \"c4\", \"label\": \"precede\"}, {\"fromRef\": \"c4\", \"toRef\": \"c5\", \"label\": \"resulta em\"}]}",
             "refusal": null,
-            "reasoning": null
+            "reasoning": "We need to produce JSON with cards (max 10) based on the text. We'll extract concepts: maybe \"Estado hiperglicemico hiperosmolar\", \"Características\", \"Tratamento - hidratação venosa\", \"Uso de insulina\", \"Queda gradual de glicemia\". Also maybe \"Mais comum em idosos com diabetes tipo 2\". We'll limit to perhaps 5 cards.\n\nEach card needs ref, type, title, question, answer, sourceExcerpt, payload.\n\nWe need sourceExcerpt literal from text, 1-3 sentences. Must copy exactly as in text.\n\nWe'll produce cards:\n\nc1: concept about definition/population. Title: \"Estado hiperglicemico hiperosmolar\". Question: \"Qual é a população mais afetada pelo estado hiperglicemico hiperosmolar?\" Answer: \"Idosos com diabetes tipo 2.\" SourceExcerpt: \"O estado hiperglicemico hiperosmolar e mais comum em idosos com diabetes tipo 2.\" Ensure it's literal (including accents). Note original text: \"O estado hiperglicemico hiperosmolar e mais comum em idosos com diabetes tipo 2.\" (note missing accent on \"é\" and \"é\"? It says \"e mais\". We'll copy exactly.\n\nc2: concept about characteristics. Title: \"Características do estado hiperglicemico hiperosmolar\". Question: \"Quais são as principais características do estado hiperglicemico hiperosmolar?\" Answer: \"Hiperglicemia muito alta, osmolaridade elevada e desidratação grave.\" SourceExcerpt: \"Ele se caracteriza por hiperglicemia muito alta, osmolaridade elevada e desidratacao grave.\" Note spelling \"desidratacao\". We'll copy exactly.\n\nc3: concept about treatment first step. Title: \"Hidratação venosa no tratamento\". Question: \"Qual é a medida mais importante do tratamento do estado hiperglicemico hiperosmolar?\" Answer: \"Hidratação venosa.\" SourceExcerpt: \"A hidratacao venosa e a medida mais importante do tratamento.\"\n\nc4: concept about insulin use. Title: \"Uso de insulina no tratamento\". Question: \"Quando a insulina deve ser usada no tratamento do estado hiperglicemico hiperosmolar?\" Answer: \"Depois da hidratação inicial.\" SourceExcerpt: \"A insulina e usada depois da hidratacao inicial, e a queda da glicemia deve ser gradual.\"\n\nc5: concept about glycemia reduction. Title: \"Queda da glicemia no tratamento\". Question: \"Como deve ocorrer a queda da glicemia durante o tratamento do estado hiperglicemico hiperosmolar?\" Answer: \"De forma gradual.\" SourceExcerpt: same as above: \"A insulina e usada depois da hidratacao inicial, e a queda da glicemia deve ser gradual.\"\n\nPotential edges: connections: c1 -> c2 (descreve características) label \"tem como característica\". c2 -> c3 (características levam à necessidade de hidratação) maybe label \"necessita\". c3 -> c4 (hidratação precede insulina) label \"precede\". c4 -> c5 (insulina leva a queda gradual) label \"resulta em\". Also maybe c1 -> c3 (população orienta tratamento) but we can keep few.\n\nWe need to output JSON only.\n\nCheck for any policy violations: none.\n\nMake sure JSON is valid: arrays of objects with correct fields.\n\nWe'll produce.",
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "We need to produce JSON with cards (max 10) based on the text. We'll extract concepts: maybe \"Estado hiperglicemico hiperosmolar\", \"Características\", \"Tratamento - hidratação venosa\", \"Uso de insulina\", \"Queda gradual de glicemia\". Also maybe \"Mais comum em idosos com diabetes tipo 2\". We'll limit to perhaps 5 cards.\n\nEach card needs ref, type, title, question, answer, sourceExcerpt, payload.\n\nWe need sourceExcerpt literal from text, 1-3 sentences. Must copy exactly as in text.\n\nWe'll produce cards:\n\nc1: concept about definition/population. Title: \"Estado hiperglicemico hiperosmolar\". Question: \"Qual é a população mais afetada pelo estado hiperglicemico hiperosmolar?\" Answer: \"Idosos com diabetes tipo 2.\" SourceExcerpt: \"O estado hiperglicemico hiperosmolar e mais comum em idosos com diabetes tipo 2.\" Ensure it's literal (including accents). Note original text: \"O estado hiperglicemico hiperosmolar e mais comum em idosos com diabetes tipo 2.\" (note missing accent on \"é\" and \"é\"? It says \"e mais\". We'll copy exactly.\n\nc2: concept about characteristics. Title: \"Características do estado hiperglicemico hiperosmolar\". Question: \"Quais são as principais características do estado hiperglicemico hiperosmolar?\" Answer: \"Hiperglicemia muito alta, osmolaridade elevada e desidratação grave.\" SourceExcerpt: \"Ele se caracteriza por hiperglicemia muito alta, osmolaridade elevada e desidratacao grave.\" Note spelling \"desidratacao\". We'll copy exactly.\n\nc3: concept about treatment first step. Title: \"Hidratação venosa no tratamento\". Question: \"Qual é a medida mais importante do tratamento do estado hiperglicemico hiperosmolar?\" Answer: \"Hidratação venosa.\" SourceExcerpt: \"A hidratacao venosa e a medida mais importante do tratamento.\"\n\nc4: concept about insulin use. Title: \"Uso de insulina no tratamento\". Question: \"Quando a insulina deve ser usada no tratamento do estado hiperglicemico hiperosmolar?\" Answer: \"Depois da hidratação inicial.\" SourceExcerpt: \"A insulina e usada depois da hidratacao inicial, e a queda da glicemia deve ser gradual.\"\n\nc5: concept about glycemia reduction. Title: \"Queda da glicemia no tratamento\". Question: \"Como deve ocorrer a queda da glicemia durante o tratamento do estado hiperglicemico hiperosmolar?\" Answer: \"De forma gradual.\" SourceExcerpt: same as above: \"A insulina e usada depois da hidratacao inicial, e a queda da glicemia deve ser gradual.\"\n\nPotential edges: connections: c1 -> c2 (descreve características) label \"tem como característica\". c2 -> c3 (características levam à necessidade de hidratação) maybe label \"necessita\". c3 -> c4 (hidratação precede insulina) label \"precede\". c4 -> c5 (insulina leva a queda gradual) label \"resulta em\". Also maybe c1 -> c3 (população orienta tratamento) but we can keep few.\n\nWe need to output JSON only.\n\nCheck for any policy violations: none.\n\nMake sure JSON is valid: arrays of objects with correct fields.\n\nWe'll produce.",
+                "format": "unknown",
+                "index": 0
+              }
+            ]
           }
         }
       ],
       "usage": {
-        "prompt_tokens": 700,
-        "completion_tokens": 400,
-        "total_tokens": 1100
-      }
+        "prompt_tokens": 613,
+        "completion_tokens": 1374,
+        "total_tokens": 1987,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0,
+          "upstream_inference_prompt_cost": 0,
+          "upstream_inference_completions_cost": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 774,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "_latencyMs": 339
     }
   ]
 }

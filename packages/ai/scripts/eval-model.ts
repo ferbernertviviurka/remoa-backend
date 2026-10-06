@@ -40,6 +40,8 @@ export type Row = {
   injectionObeyed: boolean | null;
   sourceOk: boolean | null;
   skipped?: string;
+  /** Replay only: the fixture's `knownIssue` (a recorded model finding, not a code regression). */
+  known?: string;
 };
 
 export type EvalResult = {
@@ -80,6 +82,9 @@ export const looksPortuguese = (text: string) => {
 
 const score = { incorrect: 0, partial: 1, correct: 2 } as const;
 
+/** Why a call fell back to the local path: the AiError code and HTTP status. */
+const errorText = (e?: AiError) => (e ? `${e.code}${e.status ? ` ${e.status}` : ''}${e.local ? ', limite local' : ''}` : 'sem erro registrado');
+
 const jaccard = (a: Set<string>, b: Set<string>) => {
   const inter = [...a].filter((x) => b.has(x)).length;
   return a.size + b.size === inter ? 1 : inter / (a.size + b.size - inter);
@@ -88,7 +93,13 @@ const jaccard = (a: Set<string>, b: Set<string>) => {
 // --------------------------------------------------------------------------------------------------------------------------
 // Fixtures
 
-type Fixture = { recorded: boolean; note: string; model?: string; recordedAt?: string; replies: (Record<string, unknown> & { _latencyMs?: number })[] };
+/**
+ * `_status`: an HTTP error the provider returned (recorded since the 2026-10-06 live round; before it only OK bodies were kept,
+ * so a case whose calls all failed kept its hand-written fixture). `reps`: repetitions recorded, when fewer than the case asks.
+ * `knownIssue`: a model-quality finding of that recording, written by hand. The row still fails in the report; replay (CI) does
+ * not break on it, so CI catches regressions in our code, not the free model's quality (D-1440). Re-recording drops it.
+ */
+type Fixture = { recorded: boolean; note: string; model?: string; recordedAt?: string; reps?: number; knownIssue?: string; replies: (Record<string, unknown> & { _latencyMs?: number; _status?: number })[] };
 
 const fixturePath = (id: string) => join(fixtures, `${id}.json`);
 const readFixture = (id: string): Fixture => JSON.parse(readFileSync(fixturePath(id), 'utf8')) as Fixture;
@@ -104,9 +115,18 @@ function session(id: string, live: boolean): Session {
       const t = Date.now();
       const res = await fetch(url, init);
       calls += 1;
+      // Time until the whole body is in: OpenRouter sends the headers before the model finishes (D-1440).
+      const text = await res.text();
       latencies.push(Date.now() - t);
-      if (res.ok) recorded.push({ ...((await res.clone().json()) as Record<string, unknown>), _latencyMs: latencies.at(-1) });
-      return res;
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        body = { error: { code: res.status, message: 'resposta sem JSON' } };
+      }
+      // Body only (never the request or headers, so never the key); errors too, so a failure replays as it happened.
+      recorded.push({ ...body, _latencyMs: latencies.at(-1), ...(res.ok ? {} : { _status: res.status }) });
+      return new Response(text, { status: res.status, headers: res.headers });
     }) as typeof fetch;
     return { fetchImpl, calls: () => calls, latencies, recorded };
   }
@@ -115,9 +135,9 @@ function session(id: string, live: boolean): Session {
     calls += 1;
     const next = replies.shift();
     if (!next) return Response.json({ error: { code: 599, message: 'fixture exhausted' } }, { status: 599 });
-    const { _latencyMs, ...body } = next;
+    const { _latencyMs, _status, ...body } = next;
     if (typeof _latencyMs === 'number') latencies.push(_latencyMs);
-    return Response.json(body);
+    return Response.json(body, { status: _status ?? 200 });
   }) as typeof fetch;
   return { fetchImpl, calls: () => calls, latencies, recorded };
 }
@@ -134,16 +154,16 @@ const jsonCols = (before: typeof jsonStats) => {
 };
 
 async function runGrader(c: GraderCase, s: Session, reps: number): Promise<Omit<Row, 'id' | 'title' | 'fn' | 'calls' | 'jsonFirst' | 'jsonAfterRepair' | 'latencies'>> {
-  const system = prompts('grader/v3');
+  const system = prompts('grader/v4');
   const problems: string[] = [];
   const verdicts: string[] = [];
   let sourceOk = true;
   let injectionObeyed = false;
   for (let rep = 0; rep < reps; rep++) {
-    const { verdict } = await gradeWithMeta(c.input, s.fetchImpl);
+    const { verdict, meta } = await gradeWithMeta(c.input, s.fetchImpl);
     verdicts.push(verdict.verdict);
     const offline = verdict.model.startsWith('offline');
-    if (offline !== Boolean(c.local)) problems.push(offline ? 'caiu no corretor local (erro ou JSON inválido após reparo)' : 'chamou o modelo numa resposta vazia');
+    if (offline !== Boolean(c.local)) problems.push(offline ? `caiu no corretor local (${errorText(meta.error)})` : 'chamou o modelo numa resposta vazia');
     if (!c.allowed.includes(verdict.verdict)) problems.push(`veredito ${verdict.verdict}, esperado ${c.allowed.join(' ou ')}`);
     if (!c.local && !verdict.sourceQuote) sourceOk = false;
     if (!c.local && !looksPortuguese(verdict.feedback)) problems.push('feedback não parece pt-BR');
@@ -174,6 +194,7 @@ async function runExtract(c: ExtractCase, s: Session, reps: number): Promise<Omi
   const text = await c.text();
   const problems: string[] = [];
   const titleSets: Set<string>[] = [];
+  const notes: string[] = [];
   let sourceOk = true;
   let injectionObeyed = false;
   if (text.trim().length < 100) problems.push(`texto de entrada curto demais (${text.trim().length} caracteres)`);
@@ -183,7 +204,7 @@ async function runExtract(c: ExtractCase, s: Session, reps: number): Promise<Omi
     let dropped = 0;
     try {
       const { extracted, meta } = await extractWithMeta(text, EVAL_SOURCE, s.fetchImpl, undefined, c.maxCards);
-      if (meta.model.startsWith('offline')) problems.push('caiu na extração local');
+      if (meta.model.startsWith('offline')) problems.push(`caiu na extração local (${errorText(meta.error)})`);
       ({ cards, edges } = extracted);
       dropped = meta.dropped ?? 0;
       if (c.minCards === 0) problems.push(`devia não gerar cards, gerou ${cards.length}`);
@@ -194,10 +215,12 @@ async function runExtract(c: ExtractCase, s: Session, reps: number): Promise<Omi
     if (c.minCards > 0 && cards.length < c.minCards) problems.push(`${cards.length} cards, mínimo ${c.minCards}`);
     if (cards.length > c.maxCards) problems.push(`passou do limite: ${cards.length} > ${c.maxCards}`);
     if (cards.some((card) => !card.sourceExcerpt || !card.front || !card.back)) sourceOk = false;
-    if (dropped) {
-      injectionObeyed ||= Boolean(c.forbidden);
+    // The guard dropped a card whose excerpt is not in the text. In an injection case that is the attack working its way in
+    // (fail); elsewhere the model invented and the guard did its job: reported, not a failure (D-1439).
+    if (dropped && c.forbidden) {
+      injectionObeyed = true;
       problems.push(`${dropped} card(s) com trecho fora do texto descartado(s)`);
-    }
+    } else if (dropped) notes.push(`${dropped} card(s) com trecho inventado descartado(s) pela guarda`);
     if (edges.some((e) => !e.label?.trim())) problems.push('conexão sem nome');
     const all = cards.map((card) => `${card.title} ${card.front ?? ''} ${card.back ?? ''}`).join('\n');
     if (c.forbidden?.test(all)) {
@@ -215,7 +238,7 @@ async function runExtract(c: ExtractCase, s: Session, reps: number): Promise<Omi
   if (consistent === false) problems.push('cards muito diferentes entre repetições');
   return {
     pass: problems.length === 0,
-    detail: problems.join('; ') || `${titleSets.map((t) => t.size).join('/')} cards`,
+    detail: problems.join('; ') || [`${titleSets.map((t) => t.size).join('/')} cards`, ...notes].join('; '),
     consistent,
     injectionObeyed: c.forbidden ? injectionObeyed : null,
     sourceOk: c.minCards === 0 ? null : sourceOk,
@@ -292,7 +315,14 @@ async function pace(room: number) {
 
 const pct = (xs: number[], p: number) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))]! : null);
 
-export async function runModelEval(cases: ModelCase[] = modelCases): Promise<EvalResult> {
+/** `AI_EVAL_CASES=id1,id2`: run only these cases (a live check on a small budget). */
+const selected = (cases: ModelCase[]) => {
+  const ids = (process.env.AI_EVAL_CASES ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  return ids.length ? cases.filter((c) => ids.includes(c.id)) : cases;
+};
+
+export async function runModelEval(all: ModelCase[] = modelCases): Promise<EvalResult> {
+  const cases = selected(all);
   const live = process.env.AI_EVAL_LIVE === '1';
   const record = live && process.env.AI_EVAL_RECORD === '1';
   if (live && aiMode() !== 'live') throw new Error('AI_EVAL_LIVE=1 needs OPENROUTER_API_KEY, AI_BASE_URL and AI_MODEL');
@@ -303,8 +333,11 @@ export async function runModelEval(cases: ModelCase[] = modelCases): Promise<Eva
   Object.assign(jsonStats, { calls: 0, validFirst: 0, validAfterRepair: 0, invalid: 0 }); // the rates below are about the model only
   if (!live) {
     // Replay: a fake configuration that only the fixture fetch ever sees.
-    Object.assign(process.env, { OPENROUTER_API_KEY: 'replay', AI_BASE_URL: 'http://replay.invalid/api/v1', AI_MODEL: 'fixture/model', AI_MAX_RETRIES: '0', AI_REQUIRE_FREE: '0', AI_RPD_LIMIT: '1000', AI_RPM_LIMIT: '1000', AI: '' });
-    delete process.env.AI_MODEL_FALLBACKS;
+    // Two reserves, like the live chain: a recorded 429 followed by the reserve's reply replays the same way (D-1440).
+    Object.assign(process.env, {
+      OPENROUTER_API_KEY: 'replay', AI_BASE_URL: 'http://replay.invalid/api/v1', AI_MODEL: 'fixture/model', AI_MODEL_FALLBACKS: 'fixture/reserva-1,fixture/reserva-2',
+      AI_MAX_RETRIES: '0', AI_REQUIRE_FREE: '0', AI_RPD_LIMIT: '1000', AI_RPM_LIMIT: '1000', AI: '',
+    });
   } else {
     process.env.AI_MAX_RETRIES = '0'; // retries would eat the day budget; a failure is a finding here
     loadBudget();
@@ -314,7 +347,9 @@ export async function runModelEval(cases: ModelCase[] = modelCases): Promise<Eva
   let fixtureHand = 0;
   for (const c of cases) {
     if (c.fn === 'error') continue;
-    const reps = c.reps ?? 1;
+    // Live: AI_EVAL_REPS caps the repetitions (budget); replay: the repetitions the fixture holds.
+    const liveReps = Math.min(c.reps ?? 1, Number(process.env.AI_EVAL_REPS) || Infinity);
+    const reps = live ? liveReps : (readFixture(c.id).reps ?? c.reps ?? 1);
     const base = { id: c.id, title: c.title, fn: c.fn };
     if (live && (aiUsage().day - startDay + reps > LIVE_CALL_CAP || budgetLeft() <= 2)) {
       rows.push({ ...base, pass: false, detail: '', calls: 0, jsonFirst: '—', jsonAfterRepair: '—', latencies: [], consistent: null, injectionObeyed: null, sourceOk: null, skipped: 'não rodado: orçamento de chamadas' });
@@ -328,9 +363,14 @@ export async function runModelEval(cases: ModelCase[] = modelCases): Promise<Eva
     const s = session(c.id, live);
     const before = statsNow();
     const result = c.fn === 'grader' ? await runGrader(c, s, reps) : await runExtract(c, s, reps);
-    rows.push({ ...base, ...result, calls: s.calls(), ...jsonCols(before), latencies: s.latencies });
+    const known = live ? undefined : readFixture(c.id).knownIssue;
+    rows.push({ ...base, ...result, calls: s.calls(), ...jsonCols(before), latencies: s.latencies, ...(known && !result.pass ? { known } : {}) });
     if (record && s.recorded.length) {
-      const fixture: Fixture = { recorded: true, note: 'Gravado ao vivo com entrada sintética (G22).', model: String(s.recorded[0]?.model ?? ''), recordedAt: new Date().toISOString(), replies: s.recorded };
+      const model = s.recorded.find((r) => typeof r.model === 'string')?.model;
+      const fixture: Fixture = {
+        recorded: true, note: 'Gravado ao vivo com entrada sintética (G22).', model: String(model ?? ''), recordedAt: new Date().toISOString(),
+        ...(reps < (c.reps ?? 1) ? { reps } : {}), replies: s.recorded,
+      };
       writeFileSync(fixturePath(c.id), `${JSON.stringify(fixture, null, 2)}\n`);
     }
     if (live) saveBudget();
@@ -366,7 +406,7 @@ export function reportMarkdown(r: EvalResult, offline: { concordance: number; n:
     ? `> **Números de fixtures, não de modelo.** Esta tabela foi gerada no modo padrão (respostas gravadas). ${r.handWrittenFixtures} das ${r.handWrittenFixtures + r.recordedFixtures} fixtures de modelo foram **escritas à mão** (\`recorded: false\`) porque ainda não há chave local; elas provam que a bateria, os verificadores e as guardas funcionam, **não** a qualidade do modelo. Tempo só aparece quando a fixture foi gravada ao vivo. A decisão abaixo fica pendente até a rodada ao vivo.`
     : '> Rodada **ao vivo** contra o modelo configurado (texto sintético). Fixtures regravadas se `AI_EVAL_RECORD=1`.';
   const table = r.rows.map((row) => {
-    const result = row.skipped ?? (row.pass ? 'passou' : `**falhou**: ${row.detail}`);
+    const result = row.skipped ?? (row.pass ? 'passou' : `**falhou**: ${row.detail}${row.known ? ` (achado conhecido do modelo: ${row.known})` : ''}`);
     const detail = row.pass ? row.detail : '';
     return `| ${row.id} | ${row.title} | ${result}${detail ? ` (${detail})` : ''} | ${row.jsonFirst} · ${row.jsonAfterRepair} | ${yesNo(row.consistent)} | ${yesNo(row.injectionObeyed)} | ${yesNo(row.sourceOk)} | ${row.fn === 'error' ? '0 (simulado)' : row.calls} | ${ms(row.latencies)} |`;
   });
@@ -376,7 +416,7 @@ Gerado por \`pnpm ai:report\` (modo fixtures) ou \`AI_EVAL_LIVE=1 pnpm ai:report
 
 ${banner}
 
-- Modo: **${r.mode}** · prompts \`grader/v3\`, \`extract/v2\`, \`rubric/v2\`
+- Modo: **${r.mode}** · prompts \`grader/v4\`, \`extract/v2\`, \`rubric/v2\`
 - Casos: ${r.n} (${r.passed} passaram) · chamadas de modelo nesta rodada: ${r.calls}${fixtures ? ' (respostas de fixture)' : ''}
 - JSON válido de primeira: ${pc(r.jsonValidFirst)} · após o reparo: ${pc(r.jsonValidAfterRepair)}
 - Latência p50 / p95: ${r.p50Ms === null ? '— (sem tempo gravado)' : `${(r.p50Ms / 1000).toFixed(1)} s / ${((r.p95Ms ?? 0) / 1000).toFixed(1)} s`}

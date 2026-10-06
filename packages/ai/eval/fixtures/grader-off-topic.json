@@ -1,43 +1,74 @@
 {
-  "recorded": false,
-  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "recorded": true,
+  "note": "Gravado ao vivo com entrada sintética (G22).",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
+  "recordedAt": "2026-10-06T17:11:15.405Z",
   "replies": [
     {
-      "id": "gen-1759700000-synthetic008",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "id": "gen-1791306669-W3GT0eaoSBUlS1FNDLyP",
       "object": "chat.completion",
-      "created": 1759700000,
+      "created": 1791306669,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "Nvidia",
+      "system_fingerprint": null,
+      "service_tier": null,
       "choices": [
         {
+          "index": 0,
           "logprobs": null,
           "finish_reason": "tool_calls",
           "native_finish_reason": "tool_calls",
-          "index": 0,
           "message": {
             "role": "assistant",
-            "content": "",
+            "content": null,
             "refusal": null,
-            "reasoning": null,
+            "reasoning": "We need to evaluate the student answer against the rubric. The student answer: \"A capital da França é Paris.\" Completely unrelated to the question (hypoglycemia). It does not contain any essential points. So verdict = incorrect. Matched = [] (none). Missing = list of essential points: both essential points: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\" and \"Medir a glicemia de novo em 15 minutos\". Also maybe we list missing essential points only? The instruction: matched and missing: copy exact text of points from rubric, without marker. Likely we should list missing essential points? It didn't specify only essential; but typical: matched are points that are present; missing are points not present. Since none matched, missing includes both essential points (and maybe complementar? But we can just list essential). We'll include both essential points. criticalError: Is there a critical error? The answer is not a drug/dose/conduct contrary to rubric, it's just unrelated. Not a critical error as defined (drug, dose, via or conduta contrary to rubrica). So criticalError = false.\n\nsourceQuote: we need to copy literally a point from rubrica that fundamentals the veredicto. Since veredicto is incorrect because no essential points covered, we can pick one essential point as sourceQuote. Eg: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\". feedback: up to 3 sentences in Portuguese, stating what they got right (nothing), what they missed, and citing source. So: \"O estudante não mencionou nenhuma conduta para hipoglicemia. Faltou oferecer 15 g de carboidrato de absorção rápida e reavaliar a glicemia em 15 minutos. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto.\"\n\nNow we need to call the grade tool with these parameters.\n\nLet's construct.",
             "tool_calls": [
               {
-                "id": "call_8",
-                "index": 0,
                 "type": "function",
+                "index": 0,
+                "id": "call-3062a44f-f617-422c-886c-e0715f415a00",
                 "function": {
                   "name": "grade",
-                  "arguments": "{\"verdict\":\"incorrect\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"A resposta não trata da conduta na hipoglicemia. A rubrica pede carboidrato por via oral e nova glicemia em 15 minutos.\"}"
+                  "arguments": "{\"verdict\":\"incorrect\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"O estudante não mencionou nenhuma conduta para hipoglicemia. Faltou oferecer 15 g de carboidrato de absorção rápida e reavaliar a glicemia em 15 minutos. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto.\"}"
                 }
+              }
+            ],
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "We need to evaluate the student answer against the rubric. The student answer: \"A capital da França é Paris.\" Completely unrelated to the question (hypoglycemia). It does not contain any essential points. So verdict = incorrect. Matched = [] (none). Missing = list of essential points: both essential points: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\" and \"Medir a glicemia de novo em 15 minutos\". Also maybe we list missing essential points only? The instruction: matched and missing: copy exact text of points from rubric, without marker. Likely we should list missing essential points? It didn't specify only essential; but typical: matched are points that are present; missing are points not present. Since none matched, missing includes both essential points (and maybe complementar? But we can just list essential). We'll include both essential points. criticalError: Is there a critical error? The answer is not a drug/dose/conduct contrary to rubric, it's just unrelated. Not a critical error as defined (drug, dose, via or conduta contrary to rubrica). So criticalError = false.\n\nsourceQuote: we need to copy literally a point from rubrica that fundamentals the veredicto. Since veredicto is incorrect because no essential points covered, we can pick one essential point as sourceQuote. Eg: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\". feedback: up to 3 sentences in Portuguese, stating what they got right (nothing), what they missed, and citing source. So: \"O estudante não mencionou nenhuma conduta para hipoglicemia. Faltou oferecer 15 g de carboidrato de absorção rápida e reavaliar a glicemia em 15 minutos. Fonte: Texto sintético de avaliação: Hipoglicemia no adulto.\"\n\nNow we need to call the grade tool with these parameters.\n\nLet's construct.",
+                "format": "unknown",
+                "index": 0
               }
             ]
           }
         }
       ],
       "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
-      }
+        "prompt_tokens": 1157,
+        "completion_tokens": 619,
+        "total_tokens": 1776,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0,
+          "upstream_inference_prompt_cost": 0,
+          "upstream_inference_completions_cost": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 427,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "_latencyMs": 366
     }
   ]
 }
