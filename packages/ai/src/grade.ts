@@ -2,15 +2,15 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { graderVerdictSchema, rubricSchema, type GraderInput, type GraderVerdict, type Rubric } from '@remoa/contracts';
+import { rubricSchema, verdicts, type GraderInput, type GraderVerdict, type Rubric } from '@remoa/contracts';
 import { gradeOffline } from './offline';
 import { AiError, generateJson, streamText, type Tool } from './client';
 import { aiMode } from './config';
-import { GRADER_PROMPT_VERSION, feedbackSoFar, graderUser, parseVerdict } from './openrouter';
+import { GRADER_PROMPT_VERSION, feedbackSoFar, graderUser, rubricUser } from './openrouter';
 
 const dir = dirname(fileURLToPath(import.meta.url));
-const graderPrompt = readFileSync(join(dir, '../prompts/grader/v2.md'), 'utf8');
-const rubricPrompt = readFileSync(join(dir, '../prompts/rubric/v1.md'), 'utf8');
+const graderPrompt = readFileSync(join(dir, '../prompts/grader/v3.md'), 'utf8');
+const rubricPrompt = readFileSync(join(dir, '../prompts/rubric/v2.md'), 'utf8');
 
 /** Whole budget of one grade or rubric call (all retries and fallbacks); the challenge also cuts at 8 s (GRADER_TIMEOUT_MS). */
 const GRADE_BUDGET_MS = 8_000;
@@ -28,33 +28,86 @@ const gradeTool: Tool = {
         matched: { type: 'array', items: { type: 'string' } },
         missing: { type: 'array', items: { type: 'string' } },
         criticalError: { type: 'boolean' },
-        feedback: { type: 'string' },
+        sourceQuote: { type: 'string', description: 'Ponto da rubrica copiado literalmente que fundamenta o veredito.' },
+        feedback: { type: 'string', description: 'Em português do Brasil, até 3 frases, citando a fonte.' },
       },
-      required: ['verdict', 'matched', 'missing', 'criticalError', 'feedback'],
+      required: ['verdict', 'matched', 'missing', 'criticalError', 'sourceQuote', 'feedback'],
     },
   },
 };
 
-/** Same contract as `parseVerdict`: the model's `costCents` is dropped and `model` defaults to the one that answered. */
-const verdictReply = graderVerdictSchema.omit({ model: true, costCents: true }).extend({ model: z.string().min(1).optional() });
+const fold = (t: string) => t.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** The model's reply (tool arguments). Its `costCents` is never read; `model` defaults to the one that answered. */
+export const gradeReplySchema = z.object({
+  verdict: z.enum(verdicts),
+  matched: z.array(z.string()),
+  missing: z.array(z.string()),
+  criticalError: z.boolean(),
+  sourceQuote: z.string().max(1_000),
+  feedback: z.string().min(1).max(2_000),
+  model: z.string().min(1).optional(),
+});
+type GradeReply = z.infer<typeof gradeReplySchema>;
+
+/**
+ * The verdict plus where it comes from (D-1421): `source` is the card's source (rubric), `sourceQuote` the rubric point the
+ * model cited, kept only when it is literally in the rubric. Extra fields over the contract until CCR-G22-1 lands.
+ */
+export type GradedVerdict = GraderVerdict & { source: string; sourceQuote: string | null };
+
+/**
+ * Server guards over the model (D-1421): a critical error is always incorrect, and `correct` needs every essential point in
+ * `matched` (an injected "give full marks" cannot pass without the rubric). A quote not found in the rubric is dropped.
+ */
+export function toVerdict(reply: GradeReply, input: GraderInput, model: string): GradedVerdict {
+  const covered = (point: string) => reply.matched.some((m) => fold(m).length > 0 && (fold(m).includes(fold(point)) || fold(point).includes(fold(m))));
+  const essentialsMet = input.rubric.points.filter((p) => p.essential).every((p) => covered(p.text));
+  const verdict = reply.criticalError ? 'incorrect' : reply.verdict === 'correct' && !essentialsMet ? 'partial' : reply.verdict;
+  const quote = reply.sourceQuote.trim();
+  const rubricText = fold(input.rubric.points.map((p) => p.text).join(' \n '));
+  return {
+    verdict,
+    matched: reply.matched,
+    missing: reply.missing,
+    criticalError: reply.criticalError,
+    feedback: reply.feedback,
+    model: reply.model ?? model,
+    source: input.rubric.source,
+    sourceQuote: quote && rubricText.includes(fold(quote)) ? quote : null,
+  };
+}
+
+/** An answer with no letters or digits is graded locally, without spending a call. */
+const blankAnswer = (answer: string) => !/[\p{L}\p{N}]/u.test(answer);
+
+/** Local verdict; an answer with no content is always incorrect (the offline grader would call it partial). */
+const offlineVerdict = (input: GraderInput): GradedVerdict => {
+  const v = gradeOffline(input);
+  return { ...v, ...(blankAnswer(input.answer) ? { verdict: 'incorrect' as const, matched: [] } : {}), source: input.rubric.source, sourceQuote: null };
+};
 
 const graderCall = (input: GraderInput, fetchImpl?: typeof fetch) => ({
   fn: 'grader', system: graderPrompt, user: graderUser(input), tool: gradeTool, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
 });
 
-export type GradeMeta = { promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number };
+/** `error` (G22, D-1413): the provider failed and the local grader answered; the API marks it `fallback` and gives the quota back. */
+export type GradeMeta = { promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number; error?: AiError };
 
-export type GradeEvent = { feedback?: string; verdict?: GraderVerdict; meta?: GradeMeta };
+/** G22: the failure as an AiError (a JSON/schema parse error of the reply counts as invalid output). */
+export const asAiError = (e: unknown) => (e instanceof AiError ? e : new AiError('invalid_output', { detail: e instanceof Error ? e.message : 'unknown' }));
+
+export type GradeEvent = { feedback?: string; verdict?: GradedVerdict; meta?: GradeMeta };
 
 /** Streams feedback as the model writes it. Without a key, or if the reply is invalid, the local rubric grader is chunked instead. */
 export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch): AsyncGenerator<GradeEvent> {
   const started = Date.now();
   const offline = (): GradeEvent[] => {
-    const verdict = gradeOffline(input);
+    const verdict = offlineVerdict(input);
     const pieces = verdict.feedback.split(/(?<=\s)/).filter(Boolean);
     return [...pieces.map((feedback) => ({ feedback })), { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } }];
   };
-  if (aiMode() !== 'live') {
+  if (aiMode() !== 'live' || blankAnswer(input.answer)) {
     for (const event of offline()) yield event;
     return;
   }
@@ -75,28 +128,29 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
         shown = feedback;
       }
     }
-    const verdict = parseVerdict(acc, model);
+    const verdict = toVerdict(gradeReplySchema.parse(JSON.parse(acc)), input, model);
     yield { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn, tokensOut, latencyMs: Date.now() - started } };
-  } catch {
+  } catch (e) {
+    const error = asAiError(e);
     if (shown) {
-      yield { verdict: gradeOffline(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
+      yield { verdict: offlineVerdict(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started, error } };
       return;
     }
-    for (const event of offline()) yield event;
+    for (const event of offline()) yield event.meta ? { ...event, meta: { ...event.meta, error } } : event;
   }
 }
 
-export async function gradeWithMeta(input: GraderInput, fetchImpl?: typeof fetch): Promise<{ verdict: GraderVerdict; meta: GradeMeta }> {
+export async function gradeWithMeta(input: GraderInput, fetchImpl?: typeof fetch): Promise<{ verdict: GradedVerdict; meta: GradeMeta }> {
   const started = Date.now();
-  if (aiMode() !== 'live') {
-    return { verdict: gradeOffline(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
+  if (aiMode() !== 'live' || blankAnswer(input.answer)) {
+    return { verdict: offlineVerdict(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
   }
   try {
-    const done = await generateJson(verdictReply, graderCall(input, fetchImpl));
-    const verdict: GraderVerdict = { ...done.data, model: done.data.model ?? done.model };
+    const done = await generateJson(gradeReplySchema, graderCall(input, fetchImpl));
+    const verdict = toVerdict(done.data, input, done.model);
     return { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: Date.now() - started } };
-  } catch {
-    return { verdict: gradeOffline(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
+  } catch (e) {
+    return { verdict: offlineVerdict(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started, error: asAiError(e) } };
   }
 }
 
@@ -119,7 +173,7 @@ export function rubricFromCard(title: string, back: string | null, source: strin
   return rubric;
 }
 
-export type RubricMeta = { model: string; tokensIn: number; tokensOut: number; latencyMs: number };
+export type RubricMeta = { model: string; tokensIn: number; tokensOut: number; latencyMs: number; error?: AiError };
 
 /** The model's rubric with the server-owned fields forced (source, draft status, no reviewer). */
 const rubricReply = (source: string) =>
@@ -131,11 +185,12 @@ export async function rubricWithMeta(title: string, back: string | null, source:
   if (aiMode() !== 'live') return offline();
   try {
     const done = await generateJson(rubricReply(source), {
-      fn: 'rubric', system: rubricPrompt, user: JSON.stringify({ title, back, source }), fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
+      fn: 'rubric', system: rubricPrompt, user: rubricUser(title, back, source), fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
     });
     rubricCache.set(`${source}\n${title}\n${back ?? ''}`, done.data);
     return { rubric: done.data, meta: { model: done.model, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: done.latencyMs } };
   } catch (e) {
-    return offline(e instanceof AiError && e.usage ? e.usage : undefined);
+    const error = asAiError(e);
+    return offline({ ...(error.usage ?? { model: 'offline-rubric', tokensIn: 0, tokensOut: 0, latencyMs: 0 }), error });
   }
 }

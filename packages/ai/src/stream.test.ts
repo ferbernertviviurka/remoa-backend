@@ -44,7 +44,7 @@ describe('feedback stream', () => {
   it('asks the model to call the grade tool and reads that payload', async () => {
     process.env.OPENROUTER_API_KEY = 'test-key';
     let sent: { messages?: { role: string; content: string }[]; tools?: { function: { name: string } }[]; tool_choice?: { function: { name: string } } } | undefined;
-    const argumentsJson = JSON.stringify({ verdict: 'partial', matched: ['cultura'], missing: ['reavaliar'], criticalError: false, feedback: 'Faltou reavaliar.' });
+    const argumentsJson = JSON.stringify({ verdict: 'partial', matched: ['cultura'], missing: ['reavaliar'], criticalError: false, sourceQuote: 'cultura', feedback: 'Faltou reavaliar.' });
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
       sent = JSON.parse(String(init?.body));
       return Response.json({

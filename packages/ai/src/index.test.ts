@@ -5,7 +5,7 @@ import { graderCases } from './eval-cases';
 import { chunkText, extractOffline, extractWithMeta, layout, mergeDrafts } from './extract';
 import { cachedRubric, rubricFromCard } from './grade';
 import { costCents, rememberPrice } from './client';
-import { graderUser, parseVerdict } from './openrouter';
+import { graderUser } from './openrouter';
 import { pdfPageCount, pdfText } from './pdf';
 
 describe('offline grader', () => {
@@ -165,17 +165,12 @@ describe('openrouter parse', () => {
     expect(costCents(1_000_000, 1_000_000, 'never/seen')).toBe(0);
   });
 
-  it('accepts a model verdict', () => {
-    const v = parseVerdict(JSON.stringify({ verdict: 'partial', matched: [], missing: ['x'], criticalError: false, feedback: 'faltou' }), 'test/model');
-    expect(v.model).toBe('test/model');
-  });
-
   it('extracts with OpenRouter when the key is set and falls back when the call fails', async () => {
     const prev = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'test-key';
     const text = 'Sepse exige noradrenalina na primeira hora do choque.';
     const reply = JSON.stringify({
-      cards: [{ ref: 'c1', type: 'concept', title: 'Noradrenalina', front: null, back: 'Droga do choque', source: null, payload: {} }],
+      cards: [{ ref: 'c1', type: 'concept', title: 'Noradrenalina', question: 'Qual droga?', answer: 'Noradrenalina', sourceExcerpt: 'Sepse exige noradrenalina na primeira hora', payload: {} }],
       edges: [],
     });
     const okFetch = (async () => Response.json({ choices: [{ message: { content: reply } }], usage: { prompt_tokens: 10, completion_tokens: 4 } })) as typeof fetch;
