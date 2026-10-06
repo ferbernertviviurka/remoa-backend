@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { pick } from '../pick';
 import { couponCodeSchema, err, ok, type CheckoutInput, type PortalInput, type RedirectUrl, type Result } from '@remoa/contracts';
 import { dbm } from '../db';
 import { plansPort, type PlansPort, type PriceList, type Promo, type StripePort } from './stripe';
@@ -74,7 +75,7 @@ export const createCheckout = (stripe: StripePort) => async (userId: string, inp
   const key = `checkout:${userId}:${input.period}:${input.method}:${code?.data ?? ''}`;
   return once(key, async () => {
     const { db, subscriptions } = await dbm();
-    const [row] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId));
+    const [row] = await db.select(pick(subscriptions, 'plan', 'status', 'stripeCustomerId', 'stripeSubscriptionId', 'cancelAtPeriodEnd')).from(subscriptions).where(eq(subscriptions.userId, userId));
     // A second checkout over a live card subscription would orphan it (still charging, invisible to portal and deleteAccount).
     // Also when cancellation is scheduled (F15 review B2): reactivating the old one in the portal would charge it again unseen; the UI offers "Reativar".
     if (row?.plan === 'founder') return err('conflict', 'already founder');
@@ -100,7 +101,7 @@ export const createCheckout = (stripe: StripePort) => async (userId: string, inp
 
 export const openPortal = (stripe: StripePort) => async (userId: string, input: PortalInput): Promise<Result<RedirectUrl>> => {
   const { db, subscriptions } = await dbm();
-  const [row] = await db.select().from(subscriptions).where(eq(subscriptions.userId, userId));
+  const [row] = await db.select(pick(subscriptions, 'stripeCustomerId', 'stripeSubscriptionId')).from(subscriptions).where(eq(subscriptions.userId, userId));
   if (!row?.stripeCustomerId) return err('not_found', 'no billing account');
   return ok({ url: await stripe.portal({ userId, customerId: row.stripeCustomerId, subscriptionId: row.stripeSubscriptionId, cancel: !!input.cancel }) });
 };

@@ -1,4 +1,5 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import { ok, type CoverageRow, type GetCoverage, type LinkBoardMatrix, type ListMatrixItems, type SuggestMatrixItems, type UnlinkBoardMatrix } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { mapStatsFor } from '../review/stats';
@@ -8,7 +9,7 @@ import { invalidate } from '../cache';
 export const listMatrixItems: ListMatrixItems = async (area) =>
   ok(
     await dbm().then(async (s) => {
-      const rows = await s.db.select().from(s.matrixItems).where(eq(s.matrixItems.area, area)).orderBy(asc(s.matrixItems.code));
+      const rows = await s.db.select(pick(s.matrixItems, 'id', 'area', 'code', 'title', 'parentId', 'targetCards')).from(s.matrixItems).where(eq(s.matrixItems.area, area)).orderBy(asc(s.matrixItems.code));
       return rows.map((r) => ({ id: r.id, area: r.area, code: r.code, title: r.title, parentId: r.parentId, targetCards: r.targetCards }));
     }),
   );
@@ -22,7 +23,7 @@ export const getCoverage: GetCoverage = async (userId) =>
       );
       if (!links.length) return [];
       // G21 FR-23: per-board totals from map_stats (was every card and state of the user); avg recall = sum of r / reviewed cards
-      const [items, stats] = await Promise.all([tx.select().from(s.matrixItems), mapStatsFor(tx, userId, links.map((l) => l.board_id), new Date())]);
+      const [items, stats] = await Promise.all([tx.select(pick(s.matrixItems, 'id', 'area', 'code', 'title', 'targetCards')).from(s.matrixItems), mapStatsFor(tx, userId, links.map((l) => l.board_id), new Date())]);
       const byItem = new Map<string, { board_id: string; item_id: string }[]>();
       for (const l of links) byItem.set(l.item_id, [...(byItem.get(l.item_id) ?? []), l]);
       return items
@@ -56,7 +57,7 @@ export const suggestMatrixItems: SuggestMatrixItems = async (title) =>
 
 /** Own boards only: RLS also exposes seed_approved boards to SELECT, and writing links on those would fail the RLS check with a 500. */
 const boardOrNotFound = async (tx: Parameters<Parameters<typeof run>[1]>[0], s: Parameters<Parameters<typeof run>[1]>[1], userId: string, boardId: string) => {
-  const [b] = await tx.select().from(s.boards).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId)));
+  const [b] = await tx.select({ id: s.boards.id, matrixItemId: s.boards.matrixItemId }).from(s.boards).where(and(eq(s.boards.id, boardId), eq(s.boards.userId, userId)));
   if (!b) throw new Abort({ code: 'not_found', message: 'board not found' });
   return b;
 };

@@ -1,4 +1,5 @@
 import { notifyMapReady } from '../notifications/map-ready';
+import { pick } from '../pick';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { AI_DRAFT_SOURCE, generatePdfBoardInputSchema, graderInputSchema, rubricSchema, err, ok, parseWith, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput } from '@remoa/contracts';
@@ -169,9 +170,9 @@ async function* recordGradeStream(userId: string, input: Parameters<typeof strea
 export async function attachRubric(userId: string, cardId: string) {
   if (!allow('rubric', userId, RUBRIC_PER_MINUTE)) return err('rate_limited', 'rate_limited');
   const { db, cards, boards, aiCalls } = await dbm();
-  const [card] = await db.select().from(cards).where(eq(cards.id, cardId));
+  const [card] = await db.select(pick(cards, 'id', 'boardId', 'deletedAt', 'rubric', 'source', 'title', 'back')).from(cards).where(eq(cards.id, cardId));
   if (!card || card.deletedAt) return err('not_found', 'not found');
-  const [board] = await db.select().from(boards).where(eq(boards.id, card.boardId));
+  const [board] = await db.select({ userId: boards.userId }).from(boards).where(eq(boards.id, card.boardId));
   if (!board || board.userId !== userId) return err('not_found', 'not found');
   const existing = card.rubric && typeof card.rubric === 'object' ? card.rubric as { status?: string; inputHash?: string } : null;
   if (existing?.status === 'approved') return err('conflict', 'approved rubric');
@@ -245,7 +246,7 @@ async function readableText(bytes: Uint8Array): Promise<string> {
 
 async function pdfSource(userId: string, assetId: string): Promise<string> {
   const { db, assets } = await dbm();
-  const [asset] = await db.select().from(assets).where(eq(assets.id, assetId));
+  const [asset] = await db.select({ userId: assets.userId, key: assets.key }).from(assets).where(eq(assets.id, assetId));
   if (!asset || asset.userId !== userId) throw new Error('pdf_not_found');
   const text = await readableText(await getBytes(asset.key));
   if (text.length < 40) throw new Error('pdf_unreadable');

@@ -2,6 +2,7 @@
 // (only the webhook does). Stripe is called inside withAdmin's transaction, under the row lock, with an idempotency key: a
 // Stripe failure rolls back and leaves a denied `error` row; a lost commit after a successful call is retried with the same key.
 import { Hono, type Context } from 'hono';
+import { pick } from '../../pick';
 import { eq, sql } from 'drizzle-orm';
 import { adminErrors, adminPaymentListQuerySchema, err, markPaidInputSchema, ok, parseWith, type AdminAction, type PaymentEventType, type Result } from '@remoa/contracts';
 import type { ZodTypeAny } from 'zod';
@@ -18,7 +19,7 @@ import { invalidate } from '../../cache';
 
 const EXPORT_MAX_ROWS = 10_000;
 const conflict = () => err<never>('conflict', adminErrors.invalidState);
-type Payment = typeof import('@remoa/db').payments.$inferSelect;
+type Payment = Pick<typeof import('@remoa/db').payments.$inferSelect, 'id' | 'userId' | 'amountCents' | 'method' | 'item' | 'status' | 'events' | 'stripeCustomerId' | 'stripePaymentIntent' | 'stripeInvoiceId'>;
 type C = Context<AdminEnv>;
 
 const stamp = (p: Payment, ...types: PaymentEventType[]) => [...p.events, ...types.map((type) => ({ type, at: new Date().toISOString() }))];
@@ -33,7 +34,7 @@ const action = (name: AdminAction, fn: (tx: Tx, audit: AuditCapture, p: Payment,
   const [known] = await db.select({ id: t.id, userId: t.userId }).from(t).where(eq(t.id, id));
   if (!known) return send(err('not_found', 'payment not found'));
   const r = await withAdmin(c, name, { reason: reasonOf(json), target: { type: 'payment', id } }, async (tx, audit) => {
-    const [p] = await tx.select().from(t).where(eq(t.id, id)).for('update');
+    const [p] = await tx.select(pick(t, 'id', 'userId', 'amountCents', 'method', 'item', 'status', 'events', 'stripeCustomerId', 'stripePaymentIntent', 'stripeInvoiceId')).from(t).where(eq(t.id, id)).for('update');
     return fn(tx, audit, p!, c);
   });
   if (r.ok && known.userId && name !== 'payment.resend_receipt') await invalidate('plan.changed', { userId: known.userId }); // refund / mark-paid can change the plan
@@ -65,7 +66,7 @@ const markPaid = action('payment.mark_paid', async (tx, audit, p) => {
   if (p.status !== 'pending' || !p.userId || !p.stripeCustomerId) return conflict();
   const { subscriptions: s, payments: t } = await dbm();
   // F08's Pix path overwrites the subscriptions row: never over a live card subscription (it would keep charging, orphaned).
-  const [sub] = await tx.select().from(s).where(eq(s.userId, p.userId));
+  const [sub] = await tx.select({ status: s.status, stripeSubscriptionId: s.stripeSubscriptionId }).from(s).where(eq(s.userId, p.userId));
   if (p.item !== 'founder_lifetime' && sub?.stripeSubscriptionId && sub.status !== 'canceled') return conflict();
   audit.before({ status: p.status });
   // The exact paid path of F08: the synthetic Pix confirmation goes through applyStripeEvent. Its id makes it idempotent

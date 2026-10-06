@@ -13,6 +13,9 @@ async function main() {
   config({ path: fileURLToPath(new URL('../../../.env', import.meta.url)), quiet: true });
   const sql = postgres(process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres', { max: 1, onnotice: () => {} });
   try {
+    // D-1204: every API container runs this on boot (Dockerfile CMD); replicas starting together wait here instead of applying a file twice.
+    // Session lock: DATABASE_URL must be a direct or session-mode connection (Supabase pooler :5432), not transaction mode (:6543).
+    await sql`select pg_advisory_lock(hashtext('remoa:migrate'))`;
     await sql`create schema if not exists drizzle`;
     await sql`create table if not exists drizzle.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)`;
     const [last] = await sql<{ created_at: string }[]>`select created_at from drizzle.__drizzle_migrations order by created_at desc limit 1`;
@@ -32,6 +35,8 @@ async function main() {
       }
       process.stdout.write(`applied ${m.folderMillis} ${isNoTransaction(stmts) ? '(no transaction)' : ''}\n`);
     }
+    const [n] = await sql<{ n: number }[]>`select count(*)::int n from drizzle.__drizzle_migrations`;
+    process.stdout.write(`migrations: ${n!.n} applied, database up to date\n`);
   } finally {
     await sql.end();
   }

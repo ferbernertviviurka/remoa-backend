@@ -2,7 +2,7 @@
 import { config } from 'dotenv';
 import { and, eq } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { adminMeSchema, auditPageSchema, formatAuditId } from '@remoa/contracts';
 import { fakeToken, fakeVerifier } from '../admin/core/test-helpers';
 
@@ -180,8 +180,8 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin core', () => {
     try {
       const r = await call('/v1/admin/export', { method: 'POST', token: fakeToken(a.id), body: { reason: 'Conciliação do mês', resource: 'payments' } });
       expect(r.status).toBe(200);
-      const mail = sent.filter((m) => m.to === a.email);
-      expect(mail).toHaveLength(1);
+      // D-992: /v1/admin defers e-mails past the response; with many admins in the shared test DB the send lands a tick later
+      const mail = await vi.waitFor(() => { const m = sent.filter((x) => x.to === a.email); expect(m).toHaveLength(1); return m; });
       expect(mail[0]!.subject).toBe('Alerta: exportação de dados');
       expect(mail[0]!.text).toContain('2 transações');
     } finally {

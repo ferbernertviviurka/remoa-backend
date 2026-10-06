@@ -18,4 +18,6 @@ RUN pnpm install --offline --frozen-lockfile
 # Unset NODE_ENV counts as production too, but say it: STRIPE/AI/GRADER=mock refuse to boot outside development/test.
 ENV NODE_ENV=production
 EXPOSE 4000
-CMD ["pnpm", "--filter", "@remoa/api", "exec", "tsx", "src/index.ts"]
+# D-1204: migrations run on every deploy, before the API listens. A failed migration exits non-zero, the healthcheck never passes
+# and Railway keeps the previous deploy serving. Does not depend on the dashboard reading railway.json (preDeployCommand never ran).
+CMD ["sh", "-c", "pnpm db:migrate && exec pnpm --filter @remoa/api exec tsx src/index.ts"]

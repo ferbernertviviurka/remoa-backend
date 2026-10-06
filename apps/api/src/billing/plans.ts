@@ -1,5 +1,6 @@
 // F15 planos e checkout: price book, coupon, return check, subscription summary, switch to annual (D-188–D-192).
 import { eq } from 'drizzle-orm';
+import { pick } from '../pick';
 import { createLogger } from '@remoa/log';
 import { err, nextChargeDate, ok, type CheckoutSessionStatus, type CouponValidation, type PriceBook, type Result, type SubscriptionSummary, type SwitchToAnnualResult } from '@remoa/contracts';
 import { dbm, run } from '../db';
@@ -11,7 +12,7 @@ import { discounted, plansPort, type SessionInfo, type StripePort } from './stri
 const off = () => err('internal', 'billing unavailable');
 const rowOf = async (userId: string) => {
   const { db, subscriptions } = await dbm();
-  return (await db.select().from(subscriptions).where(eq(subscriptions.userId, userId)))[0];
+  return (await db.select(pick(subscriptions, 'plan', 'status', 'stripeCustomerId', 'stripeSubscriptionId', 'renewsAt', 'cancelAtPeriodEnd')).from(subscriptions).where(eq(subscriptions.userId, userId)))[0];
 };
 
 /** FR-5/FR-6: Stripe prices (cached) + "Próxima cobrança" in the profile timezone. */

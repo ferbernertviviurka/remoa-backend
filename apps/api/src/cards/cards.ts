@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import {
   type CardDetail, type CardPreview, type GetCard, type SaveCard,
   caseStages, err, idSchema, ok,
@@ -34,7 +35,7 @@ export function cardPreview(type: string, payload: unknown): CardPreview | undef
   }
 }
 
-type CardRow = typeof import('@remoa/db').cards.$inferSelect;
+type CardRow = Omit<typeof import('@remoa/db').cards.$inferSelect, 'sourceCardId' | 'createdAt' | 'deletedAt'>;
 // payload is returned as stored: an unedited card may still hold `{}` for its type.
 const toDetail = (r: CardRow) => ({
   id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, backAssetId: r.backAssetId, size: sizeOf(r), tags: r.tags, source: r.source,
@@ -45,7 +46,7 @@ const toDetail = (r: CardRow) => ({
 export const getCard: GetCard = async (userId, cardId) => {
   if (!isUuid(cardId)) return notFound();
   return run(userId, async (tx, s) => {
-    const [r] = await tx.select().from(s.cards).where(and(eq(s.cards.id, cardId), isNull(s.cards.deletedAt)));
+    const [r] = await tx.select(pick(s.cards, 'id', 'boardId', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'source', 'x', 'y', 'status', 'order', 'reviewerId', 'updatedAt', 'rubric', 'payload', 'suspendedAt')).from(s.cards).where(and(eq(s.cards.id, cardId), isNull(s.cards.deletedAt)));
     if (!r) return notFound();
     return ok(toDetail(r));
   });

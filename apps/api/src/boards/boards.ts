@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pick } from '../pick';
 import { z } from 'zod';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
@@ -269,12 +270,12 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
   if (!q.ok) return q;
   const limit = await cardLimitOf(userId);
   const r = await run(userId, async (tx, s) => {
-    const [src] = await tx.select().from(s.boards).where(eq(s.boards.id, boardId));
+    const [src] = await tx.select(pick(s.boards, 'id', 'area', 'status')).from(s.boards).where(eq(s.boards.id, boardId));
     if (!src) return notFound();
-    const cards = await tx.select().from(s.cards).where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)));
+    const cards = await tx.select(pick(s.cards, ...CLONE_CARD_COLS)).from(s.cards).where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)));
     if (await overTotal(tx, userId, 'cards', limit, cards.length)) return err<never>('quota_exceeded', 'cards'); // before any insert
     const [copy] = await tx.insert(s.boards).values({ userId, title, area: src.area, sourceBoardId: src.id }).returning();
-    const edges = await tx.select().from(s.edges).where(eq(s.edges.boardId, boardId));
+    const edges = await tx.select(pick(s.edges, 'fromCardId', 'toCardId', 'label', 'question')).from(s.edges).where(eq(s.edges.boardId, boardId));
     // copies of seed content restart as draft: approval belongs to the reviewed original (rule 6)
     await cloneBoardContent(tx, s, copy!.id, cards, edges, { status: (c) => (src.status === 'private' ? c.status : 'draft'), tags: (c) => c.tags });
     return ok(toBoard(copy!));
@@ -286,7 +287,9 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
   return r;
 };
 
-type CardRow = typeof import('@remoa/db').cards.$inferSelect;
+/** FR-17 (D-1066): what a copy of a card reads (no deleted/suspended/reviewer/source ids). */
+export const CLONE_CARD_COLS = ['id', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order', 'createdAt'] as const;
+type CardRow = Pick<typeof import('@remoa/db').cards.$inferSelect, (typeof CLONE_CARD_COLS)[number]>;
 /** Inserts copies of `cards` (fresh ids, image masks included) and the edges between them into `boardId`. Never FSRS state. */
 export async function cloneBoardContent(
   tx: Tx, s: typeof import('@remoa/db'), boardId: string, cards: CardRow[],
@@ -332,6 +335,10 @@ const coord = Math.round;
 /** Postgres array literal for `unnest(...)`: ids are uuids and numbers (validated by zod), `null` becomes NULL. */
 export const arr = (xs: (string | number | null)[]) => `{${xs.map((x) => (x === null ? 'NULL' : String(x))).join(',')}}`;
 const cleanLabel = (l: string | null) => l?.trim() || null;
+/** Same condition as the edges_write WITH CHECK: both ends are live cards of the edge's board. */
+const liveEnds = (e: typeof import('@remoa/db').edges) =>
+  sql`exists (select 1 from cards c where c.id = ${e.fromCardId} and c.board_id = ${e.boardId} and c.deleted_at is null)
+    and exists (select 1 from cards c where c.id = ${e.toCardId} and c.board_id = ${e.boardId} and c.deleted_at is null)`;
 
 export async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp, q: { userId: string; cardLimit: number | null }) {
   const { cards, edges } = s;
@@ -386,7 +393,11 @@ export async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp, q
       return;
     }
     case 'updateEdgeLabel':
-      await tx.update(edges).set({ label: cleanLabel(o.label), updatedAt: new Date() }).where(and(eq(edges.id, o.edgeId), eq(edges.boardId, o.boardId)));
+      // An edge with a soft-deleted end is hidden; updating it would fail edges_write WITH CHECK (live ends), so it matches 0 rows instead.
+      await tx
+        .update(edges)
+        .set({ label: cleanLabel(o.label), updatedAt: new Date() })
+        .where(and(eq(edges.id, o.edgeId), eq(edges.boardId, o.boardId), liveEnds(edges)));
       return;
     case 'deleteCards': // soft delete; edges stay and are hidden because an end is dead (undo = createCard again)
       await tx.update(cards).set({ deletedAt: new Date() }).where(and(inArray(cards.id, o.cardIds), eq(cards.boardId, o.boardId), isNull(cards.deletedAt)));

@@ -1,5 +1,6 @@
 // G19 F27 /v1/public/blog/*: no auth. Reads only `published`, never deleted. List, latest, feed, related and sitemap also need robots = index (D-908).
 import { Hono } from 'hono';
+import { pick } from '../pick';
 import { and, desc, eq, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import {
   BLOG_LIMITS, blogPublicListQuerySchema, err, errorHttpStatus, idSchema, ok, parseWith, type BlogPublicPost, type HttpErrorBody, type Result,
@@ -10,7 +11,8 @@ import { assetDto } from './images';
 import { getPublicObject } from '../storage/storage';
 import { verifyPreview } from './preview';
 import { buildBlogSitemap } from './sitemap';
-import { authorOf, listCategories, toItems, type PostRow, type Q } from './posts';
+import { ASSET_COLS } from './images';
+import { authorOf, listCategories, POST_LIST_COLS, POST_PUBLIC_COLS, toItems, type PublicRow, type Q } from './posts';
 
 const send = <T>(r: Result<T>, cache = 'public, max-age=60, stale-while-revalidate=300') =>
   r.ok ? Response.json({ ok: true, data: r.data }, { headers: { 'cache-control': cache } })
@@ -28,23 +30,23 @@ const indexed = async () => {
   return and(await published(), eq(p.robots, 'index'));
 };
 
-async function related(q: Q, row: PostRow) {
+async function related(q: Q, row: PublicRow) {
   const { blogPosts: p } = await dbm();
   const base = and(await indexed(), ne(p.id, row.id));
   const same = row.categoryId
-    ? await q.select().from(p).where(and(base, eq(p.categoryId, row.categoryId))).orderBy(desc(p.publishedAt)).limit(BLOG_LIMITS.related)
+    ? await q.select(pick(p, ...POST_LIST_COLS)).from(p).where(and(base, eq(p.categoryId, row.categoryId))).orderBy(desc(p.publishedAt)).limit(BLOG_LIMITS.related)
     : [];
   const rest = same.length < BLOG_LIMITS.related
-    ? await q.select().from(p).where(and(base, notInArray(p.id, [row.id, ...same.map((r) => r.id)]))).orderBy(desc(p.publishedAt)).limit(BLOG_LIMITS.related - same.length)
+    ? await q.select(pick(p, ...POST_LIST_COLS)).from(p).where(and(base, notInArray(p.id, [row.id, ...same.map((r) => r.id)]))).orderBy(desc(p.publishedAt)).limit(BLOG_LIMITS.related - same.length)
     : [];
   return toItems(q, [...same, ...rest]);
 }
 
-export async function toPublicPost(q: Q, row: PostRow, preview: boolean): Promise<BlogPublicPost> {
+export async function toPublicPost(q: Q, row: PublicRow, preview: boolean): Promise<BlogPublicPost> {
   const { blogCategories, blogAssets } = await dbm();
   const [[cat], [asset], author, rel] = await Promise.all([
-    row.categoryId ? q.select().from(blogCategories).where(eq(blogCategories.id, row.categoryId)) : [],
-    row.coverAssetId ? q.select().from(blogAssets).where(eq(blogAssets.id, row.coverAssetId)) : [],
+    row.categoryId ? q.select(pick(blogCategories, 'id', 'slug', 'name')).from(blogCategories).where(eq(blogCategories.id, row.categoryId)) : [],
+    row.coverAssetId ? q.select(pick(blogAssets, ...ASSET_COLS)).from(blogAssets).where(eq(blogAssets.id, row.coverAssetId)) : [],
     authorOf(q, row.authorId),
     related(q, row),
   ]);
@@ -70,7 +72,7 @@ export const publicBlogRoutes = new Hono()
     const where = and(await indexed(), cat ? eq(p.categoryId, cat.id) : undefined,
       text ? or(sql`${p.title} ilike ${likeOf(text)}`, sql`${p.description} ilike ${likeOf(text)}`) : undefined);
     const [rows, [t]] = await Promise.all([
-      db.select().from(p).where(where).orderBy(desc(p.publishedAt), desc(p.id)).limit(BLOG_LIMITS.pageSize).offset((page - 1) * BLOG_LIMITS.pageSize),
+      db.select(pick(p, ...POST_LIST_COLS)).from(p).where(where).orderBy(desc(p.publishedAt), desc(p.id)).limit(BLOG_LIMITS.pageSize).offset((page - 1) * BLOG_LIMITS.pageSize),
       db.select({ n: sql<number>`count(*)::int` }).from(p).where(where),
     ]);
     return send(ok({ items: await toItems(db, rows), total: t?.n ?? 0, page, pageSize: BLOG_LIMITS.pageSize }));
@@ -78,14 +80,14 @@ export const publicBlogRoutes = new Hono()
   .get('/posts/latest', async (c) => {
     const n = Math.min(Math.max(Math.trunc(Number(c.req.query('n') ?? BLOG_LIMITS.latest)) || BLOG_LIMITS.latest, 1), BLOG_LIMITS.latest);
     const { db, blogPosts: p } = await dbm();
-    return send(ok(await toItems(db, await db.select().from(p).where(await indexed()).orderBy(desc(p.publishedAt), desc(p.id)).limit(n))));
+    return send(ok(await toItems(db, await db.select(pick(p, ...POST_LIST_COLS)).from(p).where(await indexed()).orderBy(desc(p.publishedAt), desc(p.id)).limit(n))));
   })
   .get('/posts/:slug', async (c) => {
     const slug = c.req.param('slug');
     const { db, blogPosts: p, blogRedirects } = await dbm();
-    const [row] = await db.select().from(p).where(and(await published(), eq(p.slug, slug)));
+    const [row] = await db.select(pick(p, ...POST_PUBLIC_COLS)).from(p).where(and(await published(), eq(p.slug, slug)));
     if (row) return send(ok({ kind: 'post' as const, post: await toPublicPost(db, row, false) }));
-    const [r] = await db.select().from(blogRedirects).where(eq(blogRedirects.fromPath, `/blog/${slug}`));
+    const [r] = await db.select({ toPath: blogRedirects.toPath }).from(blogRedirects).where(eq(blogRedirects.fromPath, `/blog/${slug}`));
     return r ? send(ok({ kind: 'redirect' as const, to: r.toPath })) : send(gone());
   })
   .get('/categories', async () => send(ok(await listCategories((await dbm()).db, { publicOnly: true }))))
@@ -95,7 +97,7 @@ export const publicBlogRoutes = new Hono()
   })
   .get('/feed', async () => {
     const { db, blogPosts: p } = await dbm();
-    return send(ok(await toItems(db, await db.select().from(p).where(await indexed()).orderBy(desc(p.publishedAt), desc(p.id)).limit(BLOG_LIMITS.rssItems))));
+    return send(ok(await toItems(db, await db.select(pick(p, ...POST_LIST_COLS)).from(p).where(await indexed()).orderBy(desc(p.publishedAt), desc(p.id)).limit(BLOG_LIMITS.rssItems))));
   })
   .get('/sitemap', async () => send(ok(await buildBlogSitemap((await dbm()).db))))
   // Blog images when the bucket is private (R2_PUBLIC_BASE_URL = <api>/v1/public/blog/files).
@@ -111,6 +113,6 @@ export const publicBlogRoutes = new Hono()
     const id = verifyPreview(c.req.param('token'));
     if (!id || !idSchema.safeParse(id).success) return send(gone(), 'no-store');
     const { db, blogPosts: p } = await dbm();
-    const [row] = await db.select().from(p).where(and(eq(p.id, id), isNull(p.deletedAt)));
+    const [row] = await db.select(pick(p, ...POST_PUBLIC_COLS)).from(p).where(and(eq(p.id, id), isNull(p.deletedAt)));
     return row ? send(ok(await toPublicPost(db, row, true)), 'private, no-store') : send(gone(), 'no-store');
   });

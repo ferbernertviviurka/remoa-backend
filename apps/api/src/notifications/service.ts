@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import {
   NOTIFICATION_PREFS, NOTIFICATIONS_PAGE_SIZE, effectivePref, err, idSchema, notificationCategories, notificationPrefKeys, ok, reviewReminderHour, reviewReminderTimeOf,
   type MarkReadInput, type Notification, type NotificationCategory, type NotificationPrefs, type NotificationPrefsPatch, type Result,
@@ -83,7 +84,7 @@ export async function dismiss(userId: string, id: string): Promise<Result<null>>
 export async function getPrefs(userId: string): Promise<Result<NotificationPrefs>> {
   const { db, userPreferences: up } = await dbm();
   const [rows, [pref]] = await Promise.all([
-    run(userId, (tx, s) => tx.select().from(s.notificationPreferences).where(eq(s.notificationPreferences.userId, userId))),
+    run(userId, (tx, s) => tx.select(pick(s.notificationPreferences, 'key', 'inApp', 'email')).from(s.notificationPreferences).where(eq(s.notificationPreferences.userId, userId))),
     db.select({ pause: up.notifPauseReminders, hour: up.reminderHour }).from(up).where(eq(up.userId, userId)),
   ]);
   const matrix = Object.fromEntries(notificationPrefKeys.map((k) => [k, effectivePref(k, rows.find((r) => r.key === k) ?? null)])) as NotificationPrefs['matrix'];
@@ -94,7 +95,7 @@ export async function getPrefs(userId: string): Promise<Result<NotificationPrefs
 export async function setPref(userId: string, key: (typeof notificationPrefKeys)[number], channel: 'inApp' | 'email', value: boolean) {
   await run(userId, async (tx, s) => {
     const t = s.notificationPreferences;
-    const [row] = await tx.select().from(t).where(and(eq(t.userId, userId), eq(t.key, key)));
+    const [row] = await tx.select(pick(t, 'inApp', 'email')).from(t).where(and(eq(t.userId, userId), eq(t.key, key)));
     const cur = effectivePref(key, row ?? null);
     const next = { ...cur, [channel]: value };
     await tx.insert(t).values({ userId, key, inApp: next.inApp, email: next.email }).onConflictDoUpdate({ target: [t.userId, t.key], set: { inApp: next.inApp, email: next.email } });

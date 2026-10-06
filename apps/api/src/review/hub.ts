@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import {
   REVIEW_HUB_ACTIVITY_WEEKS, REVIEW_HUB_AHEAD_DAYS, REVIEW_HUB_DEFAULT_SECONDS_PER_CARD, REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_HARD_CARDS_MAX,
   activityLevel, areas, cacheTags, ok, type Area, type GetReviewHub, type MapState, type ReviewHub,
@@ -7,8 +7,8 @@ import { retrievability } from '@remoa/fsrs';
 import { run } from '../db';
 import { cached, type UserCacheDef } from '../cache';
 import { planOf } from '../billing/plan';
-import { dayWindow, dueByOffset, newCardBudget, queueRows, recallSql } from './queue';
-import { mapStatsFor, scopeBoards } from './stats';
+import { budgetOf, dueByOffsetSql, dueFrom, queueRowsSql, recallSql, sortQueueRows, toWindow, windowSql, type QueueSqlRow, type WindowSqlRow } from './queue';
+import { mapStatsFrom, mapStatsSql, scopeBoardsSql, type MapStatsData, type ScopeBoard } from './stats';
 
 const DAY_MS = 86_400_000;
 const STREAK_LOOKBACK_DAYS = 400; // ponytail: streaks (and best streak) cap at this
@@ -24,16 +24,30 @@ const at = (ms: number) => sql`${new Date(ms).toISOString()}::timestamptz`;
  */
 export async function computeReviewHub(userId: string, now: Date): Promise<ReviewHub> {
   const plan = planOf(userId, now); // other connection, in parallel
+  // G21 P-482 (D-1049): 3 statements in the transaction (+1 upsert when a map_stats row is stale) and 1 for the plan; was 12-16.
+  //   1. claims (run); 2. study day + new-card budget inputs; 3. every read below as one json row (CTE `sb` = boards in scope).
   const hub = await run(userId, async (tx) => {
-    const win = await dayWindow(tx, userId, now);
+    const [w] = await tx.execute<WindowSqlRow & { pref: number | null; introduced: number }>(sql`
+      with w as (${windowSql(userId, now)})
+      select w.*, (select new_cards_per_day from user_preferences where user_id = ${userId}) as pref,
+        (select count(*)::int from fsrs_state where user_id = ${userId} and created_at >= to_timestamp(round(w.start_ms) / 1000)) as introduced
+      from w`);
+    const win = toWindow(w!);
     const today = win.day;
-    const [budget, boards, due, days, recent, hard, [med]] = await Promise.all([
-      newCardBudget(tx, userId, plan, win.startMs),
-      scopeBoards(tx, userId),
-      dueByOffset(tx, userId, win, Math.max(REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_AHEAD_DAYS + 1)),
-      tx.execute<{ day: string; n: number; hits: number }>(sql`
-        select day::text, reviews as n, hits from user_daily_stats where user_id = ${userId} and day >= ${today}::date - ${STREAK_LOOKBACK_DAYS}::int`),
-      tx.execute<{ board_id: string; area: Area; n: number; hits: number }>(sql`
+    const budget = budgetOf(w, (await plan).plan);
+    const json = (q: SQL | null) => (q ? sql`(select coalesce(json_agg(t), '[]') from (${q}) t)` : sql`'[]'::json`);
+    const queue = queueRowsSql({ userId, boardId: null }, { now, endMs: win.endMs, due: null, weak: null, fresh: budget.limit === null ? { limit: null, perBoard: null } : budget.remaining > 0 ? { limit: null, perBoard: budget.remaining } : false });
+    const forecastDays = Math.max(REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_AHEAD_DAYS + 1);
+    const [r] = await tx.execute<{
+      boards: ScopeBoard[]; due: { k: number; n: number }[]; days: { day: string; n: number; hits: number }[]; recent: { board_id: string; area: Area; n: number; hits: number }[];
+      hard: { card_id: string; board_id: string; board_title: string; title: string; lapses: number; stability: number; difficulty: number; due: string; reps: number; last_review: string | null; state: 'new' | 'learning' | 'review' | 'relearning'; learning_steps: number; scheduled_days: number }[];
+      med: number | null; items: QueueSqlRow[]; stats: MapStatsData;
+    }>(sql`
+      with sb as (${scopeBoardsSql(userId)})
+      select (select coalesce(json_agg(sb), '[]') from sb) as boards,
+        ${json(dueByOffsetSql(userId, win, forecastDays))} as due,
+        ${json(sql`select day::text, reviews as n, hits from user_daily_stats where user_id = ${userId} and day >= ${today}::date - ${STREAK_LOOKBACK_DAYS}::int`)} as days,
+        ${json(sql`
         select c.board_id, b.area::text as area, sum(a.n)::int as n, sum(a.hits)::int as hits
         from (
           select card_id, count(*) as n, count(*) filter (where grade >= 3) as hits from attempts
@@ -41,24 +55,21 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
         ) a -- grouped per card first (attempts_user_created_idx), then one PK probe per card (see queue.ts stateItemsSql)
         cross join lateral (select c.board_id from cards c where c.id = a.card_id offset 0) c
         cross join lateral (select b.area from boards b where b.id = c.board_id offset 0) b
-        group by 1, 2`), // ponytail: 30 x 24 h before today's 04:00 (the old buckets were local days; differs by 1 h across a DST change, BR has none)
-      tx.execute<{ card_id: string; board_id: string; board_title: string; title: string; lapses: number; stability: number; difficulty: number; due: string; reps: number; last_review: string | null; state: 'new' | 'learning' | 'review' | 'relearning'; learning_steps: number; scheduled_days: number }>(sql`
+        group by 1, 2`)} as recent,
+        ${json(sql`
         select f.card_id, c.board_id, b.title as board_title, c.title, f.lapses, f.stability, f.difficulty, f.due, f.reps, f.last_review, f.state::text as state, f.learning_steps, f.scheduled_days
         from fsrs_state f
         cross join lateral (select c.board_id, c.title, c.type, c.deleted_at, c.suspended_at from cards c where c.id = f.card_id offset 0) c
         cross join lateral (select b.title, b.archived_at from boards b where b.id = c.board_id offset 0) b
         where f.user_id = ${userId} and f.sub_id = '' and f.reps > 0 and f.lapses > 0 and c.deleted_at is null and c.suspended_at is null and c.type <> 'note' and b.archived_at is null
-        order by f.lapses desc, ${recallSql(now.getTime())}, f.card_id limit ${REVIEW_HUB_HARD_CARDS_MAX}`),
-      tx.execute<{ m: number | null }>(sql`
-        select percentile_cont(0.5) within group (order by duration_ms)::float8 as m
-        from (select duration_ms from attempts where user_id = ${userId} and duration_ms > 0 order by created_at desc limit 200) t`),
-    ]);
-    const [items, stats] = await Promise.all([
-      // new items: at most the day's remaining cap per board (any selection takes at most newRemaining, so more per board is dead weight)
-      queueRows(tx, { userId, boardId: null }, { now, endMs: win.endMs, due: null, weak: null, fresh: budget.limit === null ? { limit: null, perBoard: null } : budget.remaining > 0 ? { limit: null, perBoard: budget.remaining } : false }),
-      mapStatsFor(tx, userId, boards.map((b) => b.id), now, win),
-    ]);
-    return { win, budget, boards, items, stats, due, days, recent, hard, medianMs: med?.m ?? null };
+        order by f.lapses desc, ${recallSql(now.getTime())}, f.card_id limit ${REVIEW_HUB_HARD_CARDS_MAX}`)} as hard,
+        (select percentile_cont(0.5) within group (order by duration_ms)::float8
+          from (select duration_ms from attempts where user_id = ${userId} and duration_ms > 0 order by created_at desc limit 200) t) as med,
+        ${json(queue)} as items,
+        ${mapStatsSql(userId, sql`array(select id from sb)`, now.getTime(), sql`${win.endMs}::float8`)} as stats`);
+    // new items: at most the day's remaining cap per board (any selection takes at most newRemaining, so more per board is dead weight)
+    const stats = await mapStatsFrom(tx, userId, [...new Set(r!.boards.map((b) => b.id))], r!.stats, now);
+    return { win, budget, boards: r!.boards, items: sortQueueRows(r!.items), stats, due: dueFrom(r!.due, forecastDays), days: r!.days, recent: r!.recent, hard: r!.hard, medianMs: r!.med };
   });
   const { win, budget, boards, items, stats, days, recent } = hub;
   const today = win.day;

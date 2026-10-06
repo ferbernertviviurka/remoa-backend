@@ -1,12 +1,10 @@
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
-import { AVATAR_MAX_BYTES, err, imageMimes, ok, type AvatarVariants, type ConfirmAvatar, type RemoveAvatar } from '@remoa/contracts';
+import { AVATAR_MAX_BYTES, err, imageMimes, ok, type AvatarVariants, type ConfirmAvatar, type RemoveAvatar, type Result } from '@remoa/contracts';
 import { recordEvent } from './events';
 import { deleteObject, getBytes, headObject, presignGet, putBytes } from '../storage/storage';
 import { invalidate } from '../cache';
-
-/** D-055: decompression-bomb guard, same as card images. */
-const PIXEL_LIMIT = 50e6;
+import { PIXEL_LIMIT } from '../uploads/uploads';
 // Layout: avatars/<uid>/raw/<uuid>.<ext> (upload), avatars/<uid>/<id>/512.webp + 96.webp (processed; profiles.avatar_key = the 512 one).
 const small = (largeKey: string) => largeKey.replace(/512\.webp$/, '96.webp');
 
@@ -39,29 +37,32 @@ export const confirmAvatar: ConfirmAvatar = async (userId, { key }) => {
     await deleteObject(key);
     return err('validation', 'avatar too large');
   }
-  const original = await getBytes(key);
-  // Content-Type is not signed: sniff the real format (rejects SVG/GIF/TIFF declared as png).
+  const r = await processAvatar(userId, await getBytes(key));
+  await deleteObject(key);
+  return r;
+};
+
+/** Bytes -> avatars/<uid>/<id>/{512,96}.webp; only these are stored, never the original (D-1202). */
+export async function processAvatar(userId: string, original: Buffer): Promise<Result<AvatarVariants>> {
+  // The declared Content-Type is never trusted: sniff the real format (rejects SVG/GIF/TIFF declared as png).
   const sniffed = await sharp(original, { limitInputPixels: PIXEL_LIMIT }).metadata().catch(() => null);
   const formats: readonly string[] = imageMimes.map((m) => m.split('/')[1]!);
-  if (!sniffed || !formats.includes(sniffed.format ?? '')) {
-    await deleteObject(key);
-    return err('validation', 'file is not a jpeg/png/webp image');
-  }
+  if (!sniffed || !formats.includes(sniffed.format ?? '')) return err('validation', 'file is not a jpeg/png/webp image');
   const large = `avatars/${userId}/${crypto.randomUUID()}/512.webp`;
   try {
-    // No withMetadata(): sharp drops EXIF/ICC by default. rotate() applies orientation before it is lost.
+    // No withMetadata(): sharp drops EXIF/ICC by default. rotate() applies orientation before it is lost. Sequential: big photos.
     const enc = (size: number) =>
       sharp(original, { limitInputPixels: PIXEL_LIMIT }).rotate().resize(size, size, { fit: 'cover' }).webp({ quality: 85 }).toBuffer();
-    const [b512, b96] = await Promise.all([enc(512), enc(96)]);
-    await Promise.all([putBytes(large, b512, 'image/webp'), putBytes(small(large), b96, 'image/webp')]);
+    await putBytes(large, await enc(512), 'image/webp');
+    await putBytes(small(large), await enc(96), 'image/webp');
   } catch {
-    await deleteObject(key);
+    await dropVariants(large).catch(() => undefined);
     return err('validation', 'invalid_image');
   }
   const prev = await setKey(userId, large, 'upload');
-  await Promise.all([deleteObject(key), dropVariants(prev)]);
+  await dropVariants(prev);
   return ok(await signAvatarUrls(large));
-};
+}
 
 export const removeAvatar: RemoveAvatar = async (userId) => {
   const prev = await setKey(userId, null, 'removed');

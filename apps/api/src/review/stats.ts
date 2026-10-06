@@ -1,8 +1,8 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import type { MapState } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { dbm, run } from '../db';
-import { active, cardState, dayWindow, isDue, itemsOf, loadCards, loadStates, stateKey, uuids, type CardRow, type StateRow } from './queue';
+import { active, cardState, isDue, itemsOf, cardsSql, statesSql, stateKey, toCardRow, toStates, uuids, windowSql, type CardRow, type CardSqlRow, type StateRow, type StateSqlRow } from './queue';
 
 /**
  * G21 FR-23 / CCR-055 (D-1029/D-1030): reads of `map_stats`. Triggers (migration 0034) mark a row stale in the transaction of every write
@@ -57,55 +57,74 @@ export function nextChange(cards: CardRow[], states: Map<string, StateRow>, now:
   return hi;
 }
 
-/** Recomputes the given boards for the user. Another user's board counts only the cards the user has state on (the daily scope). */
-async function compute(tx: Tx, userId: string, boardIds: string[], now: Date, endMs: number) {
-  const [cards, edgeRows] = await Promise.all([
-    loadCards(tx, userId, boardIds, true),
-    tx.execute<{ board_id: string; n: number }>(sql`
-      select e.board_id, count(*)::int as n from edges e where e.board_id = any(${uuids(boardIds)})
-        and not exists (select 1 from cards d where d.id in (e.from_card_id, e.to_card_id) and d.deleted_at is not null) group by 1`),
-  ]);
-  const states = await loadStates(tx, userId, cards.map((c) => c.id));
-  const withState = new Set([...states.values()].map((s) => s.cardId));
-  const edges = new Map(edgeRows.map((r) => [r.board_id, r.n]));
-  const byBoard = new Map<string, CardRow[]>(boardIds.map((id) => [id, []]));
-  for (const c of cards) if (c.own || withState.has(c.id)) byBoard.get(c.boardId)?.push(c);
-  return new Map([...byBoard].map(([id, list]) => [id, { stat: boardStat(list, states, now, endMs, edges.get(id) ?? 0), staleMs: nextChange(list, states, now, endMs) }]));
-}
-
 type StoredRow = {
   board_id: string; cards: number; notes: number; edges: number; review: number; watch: number; steady: number; unknown: number; due: number;
-  reviewed: number; r_sum: number; day_end_ms: number | null; stale_ms: number | null; version: number;
+  reviewed: number; r_sum: number; version: number; fresh: boolean;
 };
 const fromRow = (r: StoredRow): MapStat => ({
   cards: r.cards, notes: r.notes, edges: r.edges, states: { review: r.review, watch: r.watch, steady: r.steady, unknown: r.unknown }, due: r.due, reviewed: r.reviewed, rSum: r.r_sum,
 });
+/** What `mapStatsSql` returns: the stored rows (with `fresh`), and for the boards without a fresh row their cards, states and edge counts. */
+export type MapStatsData = { rows: StoredRow[]; cards: CardSqlRow[]; states: StateSqlRow[]; edges: { board_id: string; n: number }[]; end_ms: number };
+
+/**
+ * G21 P-482 (D-1045): ONE scalar expression (json) with everything `mapStatsFor` needs: the stored rows of `ids` (a uuid[] expression)
+ * and, for the stale/missing ones, the recompute inputs (was read + window + cards/edges + states = 4 statements). Embeddable in a
+ * bigger statement (hub). `end` = the study-day end (ms) as SQL; freshness is decided here only, so JS never lacks the data it needs.
+ */
+export const mapStatsSql = (userId: string, ids: SQL, nowMs: number, end: SQL) => sql`(
+  with st as (
+    select board_id, cards, notes, edges, review, watch, steady, unknown, due, reviewed, r_sum, version,
+      coalesce(stale_at is not null and day_end is not null and round(extract(epoch from day_end) * 1000) = ${end}
+        and extract(epoch from stale_at) * 1000 > ${nowMs}::float8, false) as fresh
+    from map_stats where user_id = ${userId} and board_id = any(${ids})),
+  cold as (select x.id from unnest(${ids}) as x(id) where not exists (select 1 from st where st.board_id = x.id and st.fresh)),
+  cc as (${cardsSql(userId, sql`c.board_id = any(array(select id from cold))`, true)})
+  select json_build_object(
+    'rows', (select coalesce(json_agg(st), '[]') from st),
+    'cards', (select coalesce(json_agg(cc), '[]') from cc),
+    'states', (select coalesce(json_agg(f), '[]') from (${statesSql(userId, sql`and card_id = any(array(select id from cc))`)}) f),
+    'edges', (select coalesce(json_agg(e), '[]') from (
+      select e.board_id, count(*)::int as n from edges e where e.board_id = any(array(select id from cold))
+        and not exists (select 1 from cards d where d.id in (e.from_card_id, e.to_card_id) and d.deleted_at is not null) group by 1) e),
+    'end_ms', ${end}))`;
 
 /**
  * Stats per board for the user (any board ids: unknown or unreadable ones come back as zeros and are not stored).
- * Reads the rows first, then recomputes the stale ones: a write committed after that read bumps `version`, so the upsert below
- * (`where version = what we read`) loses and the row stays stale for the next reader instead of holding pre-write numbers.
+ * One statement reads the rows and the recompute inputs of the stale ones (same snapshot); a write committed after it bumps `version`,
+ * so the upsert below (`where version = what we read`) loses and the row stays stale for the next reader instead of holding pre-write numbers.
+ * Without `win` the study day is computed in the same statement. Cost: 1 statement, +1 (the upsert) when something was stale.
  */
 export async function mapStatsFor(tx: Tx, userId: string, boardIds: readonly string[], now = new Date(), win?: { endMs: number }): Promise<Map<string, MapStat>> {
   const ids = [...new Set(boardIds)];
+  if (!ids.length) return new Map();
+  const [r] = await tx.execute<{ m: MapStatsData }>(win
+    ? sql`select ${mapStatsSql(userId, uuids(ids), now.getTime(), sql`${win.endMs}::float8`)} as m`
+    : sql`with w as (${windowSql(userId, now)}) select ${mapStatsSql(userId, uuids(ids), now.getTime(), sql`round((select end_ms from w))`)} as m`);
+  return mapStatsFrom(tx, userId, ids, r!.m, now);
+}
+
+/** Finishes `mapStatsSql`: fresh rows as stored, the rest recomputed (pure) and written back in one upsert. */
+export async function mapStatsFrom(tx: Tx, userId: string, ids: readonly string[], d: MapStatsData, now: Date): Promise<Map<string, MapStat>> {
   const out = new Map<string, MapStat>();
-  if (!ids.length) return out;
-  const rows = await tx.execute<StoredRow>(sql`
-    select board_id, cards, notes, edges, review, watch, steady, unknown, due, reviewed, r_sum, version,
-      (extract(epoch from day_end) * 1000)::float8 as day_end_ms, (extract(epoch from stale_at) * 1000)::float8 as stale_ms
-    from map_stats where user_id = ${userId} and board_id = any(${uuids(ids)})`);
-  const { endMs } = win ?? (await dayWindow(tx, userId, now));
-  const stored = new Map(rows.map((r) => [r.board_id, r]));
-  const fresh = (r: StoredRow | undefined) => !!r && r.stale_ms !== null && r.day_end_ms !== null && Math.round(r.day_end_ms) === endMs && r.stale_ms > now.getTime();
-  const todo = ids.filter((id) => !fresh(stored.get(id)));
+  const stored = new Map(d.rows.map((r) => [r.board_id, r]));
+  const todo = ids.filter((id) => !stored.get(id)?.fresh);
   for (const id of ids) if (!todo.includes(id)) out.set(id, fromRow(stored.get(id)!));
   if (!todo.length) return out;
-  const computed = await compute(tx, userId, todo, now, endMs);
-  for (const [id, c] of computed) out.set(id, c.stat);
-  const recs = [...computed].map(([id, { stat: s, staleMs }]) => ({
-    board_id: id, cards: s.cards, notes: s.notes, edges: s.edges, review: s.states.review, watch: s.states.watch, steady: s.states.steady, unknown: s.states.unknown,
-    due: s.due, reviewed: s.reviewed, r_sum: s.rSum, stale_ms: staleMs, version: stored.get(id)?.version ?? 0,
-  }));
+  const endMs = Math.round(d.end_ms);
+  const states = toStates(d.states);
+  const withState = new Set([...states.values()].map((x) => x.cardId));
+  const edges = new Map(d.edges.map((e) => [e.board_id, e.n]));
+  const byBoard = new Map<string, CardRow[]>(todo.map((id) => [id, []]));
+  for (const c of d.cards.map(toCardRow)) if (c.own || withState.has(c.id)) byBoard.get(c.boardId)?.push(c);
+  const recs = [...byBoard].map(([id, list]) => {
+    const st = boardStat(list, states, now, endMs, edges.get(id) ?? 0);
+    out.set(id, st);
+    return {
+      board_id: id, cards: st.cards, notes: st.notes, edges: st.edges, review: st.states.review, watch: st.states.watch, steady: st.states.steady, unknown: st.states.unknown,
+      due: st.due, reviewed: st.reviewed, r_sum: st.rSum, stale_ms: nextChange(list, states, now, endMs), version: stored.get(id)?.version ?? 0,
+    };
+  });
   await tx.execute(sql`
     insert into map_stats as m (user_id, board_id, cards, notes, edges, review, watch, steady, unknown, due, reviewed, r_sum, day_end, stale_at, version)
     select ${userId}, v.board_id, v.cards, v.notes, v.edges, v.review, v.watch, v.steady, v.unknown, v.due, v.reviewed, v.r_sum,
@@ -121,11 +140,12 @@ export async function mapStatsFor(tx: Tx, userId: string, boardIds: readonly str
 }
 
 /** Hub/coverage scope: the user's non-archived boards plus other users' boards the user studies (rows the fsrs_state trigger created). */
-export const scopeBoards = (tx: Tx, userId: string) =>
-  tx.execute<{ id: string; title: string; area: CardRow['area']; own: boolean }>(sql`
+export const scopeBoards = (tx: Tx, userId: string) => tx.execute<ScopeBoard>(scopeBoardsSql(userId));
+export type ScopeBoard = { id: string; title: string; area: CardRow['area']; own: boolean };
+export const scopeBoardsSql = (userId: string) => sql`
     select b.id, b.title, b.area::text as area, true as own from boards b where b.user_id = ${userId} and b.archived_at is null
     union
-    select b.id, b.title, b.area::text, false from map_stats m join boards b on b.id = m.board_id where m.user_id = ${userId} and b.user_id <> ${userId} and b.archived_at is null`);
+    select b.id, b.title, b.area::text, false from map_stats m join boards b on b.id = m.board_id where m.user_id = ${userId} and b.user_id <> ${userId} and b.archived_at is null`;
 
 /**
  * Own non-archived boards: live cards, notes and connections (onboarding, entitlements). Counts change only by writes, and every write

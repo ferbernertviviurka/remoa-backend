@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import {
   challengeItemSchema, ok, type CardType, type CaseStage, type QueueFilter, type ChallengeItem, type ChallengeMode, type FsrsMemory, type QueueItem, type Result,
 } from '@remoa/contracts';
@@ -176,8 +177,8 @@ export async function loadCtx(tx: Tx, userId: string, queue: QueueItem[]): Promi
   if (!boardIds.length) return ctx;
   const s = await import('@remoa/db');
   const [cards, edges, boards] = await Promise.all([
-    tx.select().from(s.cards).where(and(inArray(s.cards.boardId, boardIds), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note'))), // D-522: suspended = out of challenges
-    tx.select().from(s.edges).where(inArray(s.edges.boardId, boardIds)),
+    tx.select(pick(s.cards, 'id', 'boardId', 'type', 'title', 'front', 'back', 'payload', 'rubric', 'order')).from(s.cards).where(and(inArray(s.cards.boardId, boardIds), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note'))), // D-522: suspended = out of challenges
+    tx.select(pick(s.edges, 'id', 'boardId', 'fromCardId', 'toCardId', 'label')).from(s.edges).where(inArray(s.edges.boardId, boardIds)),
     tx.select({ id: s.boards.id, status: s.boards.status, userId: s.boards.userId }).from(s.boards).where(inArray(s.boards.id, boardIds)),
   ]);
   for (const c of cards) ctx.cards.set(c.id, { id: c.id, boardId: c.boardId, type: c.type, title: c.title, front: c.front, back: c.back, payload: c.payload, rubric: c.rubric as CardData['rubric'], order: c.order });
@@ -187,7 +188,7 @@ export async function loadCtx(tx: Tx, userId: string, queue: QueueItem[]): Promi
   // retrievability of every card in these boards (edge target choice), last mode and attempt counts of the queued cards
   const allIds = [...ctx.cards.keys()];
   const now = new Date();
-  const states = allIds.length ? await tx.select().from(s.fsrsState).where(and(eq(s.fsrsState.userId, userId), inArray(s.fsrsState.cardId, allIds))) : [];
+  const states = allIds.length ? await tx.select(pick(s.fsrsState, 'cardId', 'stability', 'difficulty', 'due', 'reps', 'lapses', 'lastReview', 'state', 'learningSteps', 'scheduledDays')).from(s.fsrsState).where(and(eq(s.fsrsState.userId, userId), inArray(s.fsrsState.cardId, allIds))) : [];
   const acc = new Map<string, number[]>();
   for (const st of states) acc.set(st.cardId, [...(acc.get(st.cardId) ?? []), retrievability(st as FsrsMemory, now)]);
   for (const [k, v] of acc) ctx.retr.set(k, v.reduce((a, b) => a + b, 0) / v.length);

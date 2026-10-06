@@ -1,13 +1,14 @@
 // F17 T4: "Copiar para os meus mapas". The original is read by the server connection (it belongs to someone else);
 // the copy is written through withUser, so RLS applies to every row the copier gets.
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import { createLogger } from '@remoa/log';
 import { err, ok, type CopySharedBoard } from '@remoa/contracts';
 import { Abort, dbm, guard, run } from '../db';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
 import { copyObject, deletePrefix } from '../storage/storage';
 import { resolveShared, cardAssetIds } from '../public/shared';
-import { cloneBoardContent, duplicateBoard, toBoard } from './boards';
+import { CLONE_CARD_COLS, cloneBoardContent, duplicateBoard, toBoard } from './boards';
 import { maybeQualifyReferral } from '../referral/qualify';
 import { invalidate } from '../cache';
 
@@ -26,7 +27,7 @@ export const copySharedBoard: CopySharedBoard = async (userId, input, { grant })
   const cardLimit = await limitFor(userId, 'cards');
   const { db, boards: b, cards: c, edges: e, assets: a, boardMatrixItems: bm } = await dbm();
   const [meta] = await db.select({ matrixItemId: b.matrixItemId }).from(b).where(eq(b.id, src.id));
-  const cards = await db.select().from(c).where(and(eq(c.boardId, src.id), isNull(c.deletedAt))).orderBy(asc(c.order), asc(c.createdAt));
+  const cards = await db.select(pick(c, ...CLONE_CARD_COLS)).from(c).where(and(eq(c.boardId, src.id), isNull(c.deletedAt))).orderBy(asc(c.order), asc(c.createdAt));
   if (await overTotal(db, userId, 'cards', cardLimit, cards.length)) return err('quota_exceeded', 'cards'); // before any object is copied
   const edges = await db.select({ fromCardId: e.fromCardId, toCardId: e.toCardId, label: e.label, question: e.question }).from(e).where(eq(e.boardId, src.id));
   const items = await db.select({ matrixItemId: bm.matrixItemId }).from(bm).where(eq(bm.boardId, src.id)).orderBy(asc(bm.createdAt));

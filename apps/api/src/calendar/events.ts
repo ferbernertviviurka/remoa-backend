@@ -9,6 +9,7 @@ import { presignGet } from '../storage/storage';
 import { localCols, profileTz } from './common';
 import { replanEventReminders } from './reminders/schedule';
 import { invalidate } from '../cache';
+import { pick } from '../pick';
 
 type S = typeof import('@remoa/db');
 export type EventInput = ReturnType<typeof calendarEventInputSchema.parse>;
@@ -28,7 +29,7 @@ async function present(tx: Tx, s: S, rows: Row[]): Promise<CalendarEvent[]> {
   const ids = rows.map((r) => r.e.id);
   const assetIds = rows.flatMap((r) => (r.e.coverAssetId ? [r.e.coverAssetId] : []));
   const [plans, assets] = await Promise.all([
-    tx.select().from(s.calendarReminders).where(inArray(s.calendarReminders.eventId, ids)).orderBy(asc(s.calendarReminders.sendAt)),
+    tx.select(pick(s.calendarReminders, 'eventId', 'kind', 'occurrenceDate', 'sendAt', 'status')).from(s.calendarReminders).where(inArray(s.calendarReminders.eventId, ids)).orderBy(asc(s.calendarReminders.sendAt)),
     assetIds.length ? tx.select({ id: s.assets.id, key: s.assets.key }).from(s.assets).where(inArray(s.assets.id, assetIds)) : [],
   ]);
   const covers = new Map(await Promise.all(assets.map(async (a) => [a.id, { assetId: a.id, urls: { w800: await presignGet(`${a.key}/w800.webp`), w1600: await presignGet(`${a.key}/w1600.webp`) } }] as const)));

@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { err, ok, parseWith, reviewDecisionSchema, resolveDisputeInputSchema, publishVersionInputSchema } from '@remoa/contracts';
+import { pick } from '../pick';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
 import { dbm } from '../db';
 import { firstNameOf } from '../notifications/names';
@@ -9,7 +10,7 @@ import { invalidate } from '../cache';
 
 async function reviewer(userId: string) {
   const { db, profiles } = await dbm();
-  const [p] = await db.select().from(profiles).where(eq(profiles.userId, userId));
+  const [p] = await db.select(pick(profiles, 'role', 'name', 'crm')).from(profiles).where(eq(profiles.userId, userId));
   if (!p || (p.role !== 'reviewer' && p.role !== 'admin')) return null;
   return p;
 }
@@ -23,6 +24,10 @@ export function normalizeCrm(raw: string | null | undefined): string | null {
   const uf = parts.filter((x) => UFS.has(x));
   return parts.length === 2 && num.length === 1 && uf.length === 1 ? `${num[0]}-${uf[0]}` : null;
 }
+
+// Edition snapshot (publishBoard) stores every column of the live cards and edges, so these lists stay complete (FR-17 exception, D-1066).
+const CARD_COLS = ['id', 'boardId', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order', 'reviewerId', 'deletedAt', 'suspendedAt', 'sourceCardId', 'createdAt', 'updatedAt'] as const;
+const EDGE_COLS = ['id', 'boardId', 'fromCardId', 'toCardId', 'label', 'question', 'createdAt', 'updatedAt'] as const;
 
 type Signer = { userId: string; name: string; crm: string };
 
@@ -144,10 +149,10 @@ export async function decideReview(userId: string, body: unknown) {
   const input = parseWith(reviewDecisionSchema, body);
   if (!input.ok) return input;
   const { db, reviewQueue, cards, boards } = await dbm();
-  const [item] = await db.select().from(reviewQueue).where(eq(reviewQueue.id, input.data.reviewItemId));
+  const [item] = await db.select(pick(reviewQueue, 'id', 'cardId', 'status')).from(reviewQueue).where(eq(reviewQueue.id, input.data.reviewItemId));
   if (!item) return err('not_found', 'not found');
   if (item.status !== 'pending') return err('conflict', 'already decided');
-  const [card] = await db.select().from(cards).where(eq(cards.id, item.cardId));
+  const [card] = await db.select(pick(cards, 'id', 'boardId', 'reviewerId', 'title', 'back', 'source', 'rubric')).from(cards).where(eq(cards.id, item.cardId));
   const [board] = card ? await db.select({ userId: boards.userId, status: boards.status }).from(boards).where(eq(boards.id, card.boardId)) : [];
   // Approval is for seed content only. A student's private card (a dispute row) is settled by /dispute, never stamped here.
   if (!card || !board || board.status === 'private') return err('conflict', 'not a seed card');
@@ -216,7 +221,7 @@ export async function resolveDispute(userId: string, body: unknown) {
   const input = parseWith(resolveDisputeInputSchema, body);
   if (!input.ok) return input;
   const { db, reviewQueue, cards, attempts } = await dbm();
-  const [item] = await db.select().from(reviewQueue).where(eq(reviewQueue.id, input.data.reviewItemId));
+  const [item] = await db.select(pick(reviewQueue, 'id', 'cardId', 'status', 'flagSource', 'attemptId')).from(reviewQueue).where(eq(reviewQueue.id, input.data.reviewItemId));
   if (!item || item.flagSource !== 'user_disagree') return err('not_found', 'not found');
   if (item.status !== 'pending') return err('conflict', 'already resolved');
   const targetId = input.data.outcome === 'rubric_adjusted' ? await adjustTarget(item.cardId, item.attemptId) : null;
@@ -226,7 +231,7 @@ export async function resolveDispute(userId: string, body: unknown) {
       .where(and(eq(reviewQueue.id, item.id), eq(reviewQueue.status, 'pending'))).returning({ id: reviewQueue.id });
     if (!done.length) return false;
     if (!targetId) return true;
-    const [card] = await tx.select().from(cards).where(eq(cards.id, targetId)).for('update');
+    const [card] = await tx.select(pick(cards, 'id', 'rubric', 'title', 'back', 'source')).from(cards).where(eq(cards.id, targetId)).for('update');
     if (!card) return true;
     const prev = card.rubric && typeof card.rubric === 'object' ? card.rubric as { version?: number; source?: string } : null;
     const previousPoints = pointsOf(card.rubric);
@@ -244,7 +249,7 @@ export async function resolveDispute(userId: string, body: unknown) {
   if (!resolved) return err('conflict', 'already resolved');
   if (targetId) await invalidate('catalog.changed', {}); // a rubric adjusted on a seed card
   if (item.attemptId) {
-    const [attempt] = await db.select().from(attempts).where(eq(attempts.id, item.attemptId));
+    const [attempt] = await db.select({ userId: attempts.userId }).from(attempts).where(eq(attempts.id, item.attemptId));
     if (attempt) {
       if (targetId) await invalidate('card.changed', { userId: attempt.userId }); // the reopened card goes back to draft
       await notify(attempt.userId, 'dispute_resolved', { reference: item.id, email: { name: await firstNameOf(attempt.userId) } });
@@ -261,11 +266,11 @@ export async function publishBoard(userId: string, body: unknown) {
   const { db, boards, cards, edges, boardVersions } = await dbm();
   const published = await db.transaction(async (tx) => {
     // D-498: only seed boards publish (seed_draft → first edition, seed_approved → next edition). A student's private board is 404.
-    const [board] = await tx.select().from(boards).where(and(eq(boards.id, input.data.boardId), sql`${boards.status} <> 'private'`, sql`${boards.archivedAt} is null`)).for('update');
+    const [board] = await tx.select(pick(boards, 'id', 'version')).from(boards).where(and(eq(boards.id, input.data.boardId), sql`${boards.status} <> 'private'`, sql`${boards.archivedAt} is null`)).for('update');
     if (!board) return err('not_found', 'not found');
-    const allCards = await tx.select().from(cards).where(and(eq(cards.boardId, board.id), sql`${cards.deletedAt} is null`));
+    const allCards = await tx.select(pick(cards, ...CARD_COLS)).from(cards).where(and(eq(cards.boardId, board.id), sql`${cards.deletedAt} is null`));
     if (allCards.some((c) => c.status !== 'approved')) return err('validation', 'cards still draft');
-    const allEdges = await tx.select().from(edges).where(eq(edges.boardId, board.id));
+    const allEdges = await tx.select(pick(edges, ...EDGE_COLS)).from(edges).where(eq(edges.boardId, board.id));
     const next = board.version + 1;
     const [version] = await tx.insert(boardVersions).values({
       boardId: board.id,
@@ -286,13 +291,13 @@ export async function listDrafts(userId: string) {
   const who = await reviewer(userId);
   if (!who) return err('not_found', 'not found');
   const { db, boards } = await dbm();
-  const rows = await db.select().from(boards).where(eq(boards.status, 'seed_draft'));
+  const rows = await db.select(pick(boards, 'id', 'title')).from(boards).where(eq(boards.status, 'seed_draft'));
   return ok(rows.map((b) => ({ id: b.id, title: b.title })));
 }
 
 export async function listSeeds() {
   const { db, boards } = await dbm();
-  const rows = await db.select().from(boards).where(and(eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`)).orderBy(asc(boards.area), asc(boards.title));
+  const rows = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark')).from(boards).where(and(eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`)).orderBy(asc(boards.area), asc(boards.title));
   // Rule 6 provenance: who signed the latest published edition (snapshot written by publishBoard).
   const ids = rows.map((b) => b.id);
   const signed = ids.length
@@ -326,9 +331,9 @@ function copiedImage(card: { type: string; payload: unknown }, cardId: string, a
 
 export async function copySeed(userId: string, boardId: string) {
   const { db, boards, cards, edges, masks, assets } = await dbm();
-  const [source] = await db.select().from(boards).where(and(eq(boards.id, boardId), eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`));
+  const [source] = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark')).from(boards).where(and(eq(boards.id, boardId), eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`));
   if (!source) return err('not_found', 'not found');
-  const srcCards = await db.select().from(cards).where(and(eq(cards.boardId, source.id), sql`${cards.deletedAt} is null`));
+  const srcCards = await db.select(pick(cards, 'id', 'type', 'shape', 'title', 'front', 'back', 'frontAssetId', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order')).from(cards).where(and(eq(cards.boardId, source.id), sql`${cards.deletedAt} is null`));
   const boardQuota = await assertQuota(userId, 'boards');
   if (!boardQuota.ok) return boardQuota;
   const cardLimit = await limitFor(userId, 'cards');
@@ -363,7 +368,7 @@ export async function copySeed(userId: string, boardId: string) {
   });
   if (cardRows.length) await db.insert(cards).values(cardRows);
   if (maskRows.length) await db.insert(masks).values(maskRows);
-  const srcEdges = await db.select().from(edges).where(eq(edges.boardId, source.id));
+  const srcEdges = await db.select(pick(edges, 'fromCardId', 'toCardId', 'label', 'question')).from(edges).where(eq(edges.boardId, source.id));
   const edgeRows = srcEdges.flatMap((edge) => {
     const from = map.get(edge.fromCardId);
     const to = map.get(edge.toCardId);

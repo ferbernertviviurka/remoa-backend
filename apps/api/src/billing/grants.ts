@@ -1,5 +1,6 @@
 // F18 FR-18/FR-19 (D-381, D-408–D-410): the referral month, as Pro time (grant) or as Stripe balance credit.
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import type { Tx } from '@remoa/db';
 import { dbm } from '../db';
 import { subscriptionPro } from './plan';
@@ -34,12 +35,12 @@ export async function grantReferralMonth(
 ): Promise<ReferralReward> {
   const { entitlementGrants: g, billingCredits: c, subscriptions: s } = await dbm();
   await lockGrants(tx, userId);
-  const [grant] = await tx.select().from(g).where(and(eq(g.referralId, referralId), eq(g.userId, userId)));
+  const [grant] = await tx.select(pick(g, 'id', 'userId', 'source', 'referralId', 'plan', 'startsAt', 'endsAt', 'revokedAt', 'revokedReason', 'createdAt')).from(g).where(and(eq(g.referralId, referralId), eq(g.userId, userId)));
   if (grant) return { kind: 'month', created: false, grant };
-  const [credit] = await tx.select().from(c).where(and(eq(c.referralId, referralId), eq(c.userId, userId)));
+  const [credit] = await tx.select(pick(c, 'id', 'userId', 'referralId', 'amountCents', 'currency', 'stripeBalanceTxnId', 'appliedAt', 'createdAt')).from(c).where(and(eq(c.referralId, referralId), eq(c.userId, userId)));
   if (credit) return { kind: 'credit', created: false, credit };
 
-  const [sub] = await tx.select().from(s).where(eq(s.userId, userId));
+  const [sub] = await tx.select(pick(s, 'plan', 'status', 'stripeSubscriptionId', 'renewsAt', 'cancelAtPeriodEnd')).from(s).where(eq(s.userId, userId));
   const paid = subscriptionPro(sub, now);
   if (paid.pro && sub!.stripeSubscriptionId && !sub!.cancelAtPeriodEnd) {
     const amountCents = await monthCents(stripe, sub!.stripeSubscriptionId);

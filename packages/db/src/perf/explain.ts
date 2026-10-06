@@ -102,6 +102,27 @@ export const QUERIES: Q[] = [
     left join profiles pr on pr.user_id = b.user_id left join auth.users u on u.id = b.user_id order by b.created_at desc` },
 ];
 
+/** G21 "depois": SQL built by the current app code (apps/api/src/review/queue.ts, stats.ts, hub.ts), rendered with its parameters inlined. */
+export async function generated(user: string, sqlc: postgres.Sql): Promise<Q[]> {
+  const root = '../../../../apps/api/src/review/';
+  const [{ PgDialect }, { sql }, q, st] = await Promise.all([import('drizzle-orm/pg-core'), import('drizzle-orm'), import(`${root}queue`), import(`${root}stats`)]);
+  const d = new PgDialect();
+  const render = (x: ReturnType<typeof sql>) => { const r = d.sqlToQuery(x); return r.sql.replace(/\$(\d+)/g, (_, i: string) => { const v = r.params[Number(i) - 1]; return typeof v === 'number' || typeof v === 'boolean' ? String(v) : lit(String(v)); }); };
+  const now = new Date();
+  const [w] = await sqlc.unsafe<{ end_ms: number }[]>(`with w as (${render(q.windowSql(user, now))}) select end_ms from w`);
+  const endMs = Math.round(w!.end_ms);
+  const scope = { userId: user, boardId: null };
+  const mk = (name: string, src: string, x: ReturnType<typeof sql> | null): Q[] => (x ? [{ name, src, sql: render(x) }] : []);
+  return [
+    ...mk('queue-daily-limit1', 'review/queue.ts queueRowsSql (Hoje, limit=1)', q.queueRowsSql(scope, { now, endMs, due: 1, weak: 1, fresh: { limit: 1, perBoard: null } })),
+    ...mk('queue-daily-full', 'review/queue.ts queueRowsSql (fila inteira, 20 novos)', q.queueRowsSql(scope, { now, endMs, due: null, weak: null, fresh: { limit: 20, perBoard: null } })),
+    ...mk('hub-queue', 'review/hub.ts via queueRowsSql (20 novos por mapa)', q.queueRowsSql(scope, { now, endMs, due: null, weak: null, fresh: { limit: null, perBoard: 20 } })),
+    ...mk('hub-due-forecast', 'review/queue.ts dueByOffsetSql (30 dias)', q.dueByOffsetSql(user, { endMs }, 30)),
+    ...mk('boards-list-mapstats', 'review/stats.ts mapStatsSql (lista de mapas)', sql`select ${st.mapStatsSql(user, sql`array(select id from boards where user_id = ${user} and archived_at is null)`, now.getTime(), sql`${endMs}::float8`)}`),
+    ...mk('hub-days', 'review/hub.ts user_daily_stats (400 dias)', sql`select day::text, reviews as n, hits from user_daily_stats where user_id = ${user} and day >= current_date - 400`),
+  ];
+}
+
 const lit = (v: string) => `'${v.replace(/'/g, "''")}'`;
 export const fill = (q: string, p: Record<string, string>) => q.replace(/:(user|boards|board|cards5|card|session)\b/g, (_, k: string) => p[k]!);
 
@@ -122,11 +143,13 @@ async function main() {
       coalesce((select id::text from sessions where user_id = ${user} limit 1), gen_random_uuid()::text) as session`;
     if (!ids?.board || !ids.card) throw new Error('remoa_perf sem dados do usuário 1: rode pnpm perf:seed');
     const p = { user: lit(user), board: lit(ids.board), boards: lit(ids.boards), cards5: lit(ids.cards5), card: lit(ids.card), session: lit(ids.session) };
-    for (const q of QUERIES.filter((x) => !only.length || only.includes(x.name))) {
+    const all = label === 'depois' ? [...QUERIES, ...(await generated(user, sql))] : QUERIES;
+    for (const q of all.filter((x) => !only.length || only.includes(x.name))) {
       const plan = await sql.begin(async (tx) => {
         if (!q.admin) {
           await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: user, role: 'authenticated' })}, true), set_config('role', 'authenticated', true)`;
         }
+        if (q.name === 'challenge-rate-write') await tx.unsafe(`insert into sessions (id, user_id, kind, started_at, items, options) values (${p.session}::uuid, ${p.user}, 'daily', now(), '[]'::jsonb, '{}'::jsonb) on conflict do nothing`);
         const rows = await tx.unsafe<{ 'QUERY PLAN': string }[]>(`explain (analyze, buffers, settings) ${fill(q.sql, p)}`);
         throw Object.assign(new Error('rollback'), { plan: rows.map((r) => r['QUERY PLAN']).join('\n') });
       }).catch((e: { plan?: string }) => { if (e.plan !== undefined) return e.plan; throw e; });

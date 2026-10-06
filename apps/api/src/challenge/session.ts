@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pick } from '../pick';
 import { and, count, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
   CHALLENGE_MIN_CARDS, MAX_SKIPS_PER_ITEM, challengeErrors, challengeItemPublicSchema, challengeOptionsSchema, err, unavailableChallengeOption, idSchema, ok, rubricSchema, type Answer, type AnswerInput, type AnswerOutput, type Dispute, type FinishSession,
@@ -24,7 +25,7 @@ async function locked<T>(userId: string, sessionId: string, fn: (tx: Tx, s: type
   return guard(() =>
     run(userId, async (tx, s) => {
       if (!idSchema.safeParse(sessionId).success) throw fail('not_found', 'session not found');
-      const [row] = await tx.select().from(s.sessions).where(eq(s.sessions.id, sessionId)).for('no key update');
+      const [row] = await tx.select(pick(s.sessions, 'id', 'userId', 'boardId', 'startedAt', 'endedAt', 'items', 'options')).from(s.sessions).where(eq(s.sessions.id, sessionId)).for('no key update');
       if (!row) throw fail('not_found', 'session not found');
       return fn(tx, s, row, row.items as StoredItem[]);
     }),
@@ -93,7 +94,7 @@ const medianMs = async (tx: Tx, userId: string, mode: string): Promise<number | 
 };
 
 const previewOf = async (tx: Tx, s: typeof import('@remoa/db'), userId: string, item: StoredItem) => {
-  const [st] = await tx.select().from(s.fsrsState).where(and(eq(s.fsrsState.userId, userId), eq(s.fsrsState.cardId, item.cardId), eq(s.fsrsState.subId, item.subId ?? '')));
+  const [st] = await tx.select(pick(s.fsrsState, 'reps', 'stability', 'difficulty', 'due', 'lapses', 'lastReview', 'state', 'learningSteps', 'scheduledDays')).from(s.fsrsState).where(and(eq(s.fsrsState.userId, userId), eq(s.fsrsState.cardId, item.cardId), eq(s.fsrsState.subId, item.subId ?? '')));
   return preview(st && st.reps > 0 ? (st as FsrsMemory) : null, new Date());
 };
 const outputOf = (item: StoredItem, a: Answered, pv: AnswerOutput['preview']): AnswerOutput => ({

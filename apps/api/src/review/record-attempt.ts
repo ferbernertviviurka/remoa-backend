@@ -1,4 +1,5 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import type { Tx } from '@remoa/db';
 import { ok, type FsrsMemory, type FsrsState, type RecordAttempt } from '@remoa/contracts';
 import { grades } from '@remoa/contracts';
@@ -29,7 +30,7 @@ export const recordAttempt: RecordAttempt = async (a) => {
       // The row lock serialises concurrent attempts on the same item, so no update is lost.
       await tx.insert(s.fsrsState).values({ userId: a.userId, cardId: a.cardId, subId, due: a.createdAt, createdAt: a.createdAt }).onConflictDoNothing();
       const [row] = await tx
-        .select()
+        .select(pick(s.fsrsState, 'stability', 'difficulty', 'due', 'reps', 'lapses', 'lastReview', 'state', 'learningSteps', 'scheduledDays'))
         .from(s.fsrsState)
         .where(and(eq(s.fsrsState.userId, a.userId), eq(s.fsrsState.cardId, a.cardId), eq(s.fsrsState.subId, subId)))
         .for('update');

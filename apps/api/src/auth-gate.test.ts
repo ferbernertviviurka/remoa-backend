@@ -100,6 +100,15 @@ describe('fused session check on reads (D-990)', () => {
     await quiet(() => w.request('/v1/boards', { method: 'POST', headers: { authorization: 'Bearer t' } }));
     expect(deferred).toBe(false);
   });
+
+  it('FUSED_WRITES (D-1047): POST /v1/challenge/rate defers; dead session = 401 from the first statement, nothing else runs', async () => {
+    sessionRow = undefined;
+    const body = JSON.stringify({ sessionId: SID, itemId: 'i1', grade: 'good', overridden: false });
+    const res = await quiet(() => app.request('/v1/challenge/rate', { method: 'POST', headers: { authorization: 'Bearer t', 'content-type': 'application/json' }, body }));
+    expect(res.status).toBe(401);
+    expect(executed).toHaveLength(1);
+    expect(executed[0]).toMatch(/set_config\('request\.jwt\.claims'.*auth\.sessions/s);
+  });
 });
 
 describe('run(): one fixed statement (D-991) with timeouts (D-993)', () => {

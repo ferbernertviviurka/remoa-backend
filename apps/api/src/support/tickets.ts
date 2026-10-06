@@ -1,5 +1,6 @@
 // F19 FR-3..FR-9, user side. Server-owned writes on the superuser connection with explicit user filters (D-427: users have no write grants).
 import { and, asc, desc, eq, gt, isNotNull, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import {
   err, ok, SUPPORT_LIMITS, supportErrors,
   type GetMyTicket, type GetSupportUnread, type ListMyTickets, type MarkTicketRead, type ReplyToTicket, type SubmitSupportTicket, type SupportTicketDetail,
@@ -60,16 +61,16 @@ const isUnread = (t: { lastAdminReplyAt: Date | null; lastUserReadAt: Date | nul
 
 export const listMyTickets: ListMyTickets = async (userId) => {
   const { db, supportTickets: t } = await dbm();
-  const rows = await db.select().from(t).where(eq(t.userId, userId)).orderBy(desc(t.createdAt));
+  const rows = await db.select(pick(t, 'id', 'number', 'type', 'subject', 'status', 'createdAt', 'lastAdminReplyAt', 'lastUserReadAt', 'lastUserMessageAt')).from(t).where(eq(t.userId, userId)).orderBy(desc(t.createdAt));
   return ok(rows.map((r) => ({ id: r.id, number: r.number, type: r.type, subject: r.subject, status: r.status, unread: isUnread(r), createdAt: r.createdAt, updatedAt: r.lastAdminReplyAt && r.lastAdminReplyAt > r.lastUserMessageAt ? r.lastAdminReplyAt : r.lastUserMessageAt })));
 };
 
 export const getMyTicket: GetMyTicket = async (userId, ticketId) => {
   if (!/^[0-9a-f-]{36}$/i.test(ticketId)) return err('not_found', 'ticket not found');
   const { db, supportTickets: t, supportMessages: m } = await dbm();
-  const [r] = await db.select().from(t).where(and(eq(t.id, ticketId), eq(t.userId, userId)));
+  const [r] = await db.select(pick(t, 'id', 'number', 'type', 'subject', 'status', 'createdAt', 'lastAdminReplyAt', 'lastUserReadAt', 'lastUserMessageAt', 'context', 'resolvedAt')).from(t).where(and(eq(t.id, ticketId), eq(t.userId, userId)));
   if (!r) return err('not_found', 'ticket not found'); // another user's ticket looks the same
-  const msgs = await db.select().from(m).where(and(eq(m.ticketId, ticketId), eq(m.internal, false))).orderBy(asc(m.createdAt));
+  const msgs = await db.select(pick(m, 'id', 'authorType', 'body', 'createdAt')).from(m).where(and(eq(m.ticketId, ticketId), eq(m.internal, false))).orderBy(asc(m.createdAt));
   const files = await attachmentsOf(ticketId);
   return ok({
     id: r.id, number: r.number, type: r.type, subject: r.subject, status: r.status, unread: isUnread(r), createdAt: r.createdAt,
@@ -86,7 +87,7 @@ export const replyToTicket: ReplyToTicket = async (userId, ticketId, input) => {
   const files = await processAttachments(userId, input.attachments ?? []);
   if (!files.ok) return files;
   const r = await db.transaction(async (tx) => {
-    const [row] = await tx.select().from(t).where(and(eq(t.id, ticketId), eq(t.userId, userId))).for('update');
+    const [row] = await tx.select(pick(t, 'status', 'resolvedAt')).from(t).where(and(eq(t.id, ticketId), eq(t.userId, userId))).for('update');
     if (!row) return err('not_found', 'ticket not found');
     if (row.status === 'resolved' && row.resolvedAt && Date.now() - row.resolvedAt.getTime() > SUPPORT_LIMITS.reopenDays * DAY) return err('conflict', supportErrors.closed);
     const [msg] = await tx.insert(m).values({ ticketId, authorType: 'user', body: input.body }).returning({ id: m.id });

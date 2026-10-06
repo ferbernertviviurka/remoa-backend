@@ -157,6 +157,20 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/boards', () => {
     expect((await graph('ta', id)).edges.map((e) => e.id)).toEqual([e2]);
   });
 
+  it('D-1203: labeling an edge whose end was deleted (same batch or earlier) is a no-op, not an RLS 500', async () => {
+    const id = await newBoard();
+    const [c1, c2, e] = [uuid(), uuid(), uuid()];
+    await ops('ta', [mkCard(id, c1), mkCard(id, c2), mkEdge(id, c1, c2, 'antes', e)]);
+    const sameBatch = await ops('ta', [
+      { op: 'deleteCards', opId: uuid(), boardId: id, cardIds: [c2] },
+      { op: 'updateEdgeLabel', opId: uuid(), boardId: id, edgeId: e, label: 'depois' },
+    ]);
+    expect(sameBatch.status).toBe(200);
+    expect((await ops('ta', [{ op: 'updateEdgeLabel', opId: uuid(), boardId: id, edgeId: e, label: 'de novo' }])).status).toBe(200);
+    await ops('ta', [mkCard(id, c2)]); // undo restores the edge with its old label
+    expect((await graph('ta', id)).edges.find((x) => x.id === e)?.label).toBe('antes');
+  });
+
   it('duplicate copies live cards and remapped edges; works for own and seed boards', async () => {
     const id = await newBoard('ta', 'Origem');
     const [c1, c2, dead] = [uuid(), uuid(), uuid()];

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pick } from '../pick';
 import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import sharp from 'sharp';
 import {
@@ -342,7 +343,7 @@ export function createImports({ anki }: { anki: AnkiPort }) {
   const read = (userId: string, importId: string) =>
     run(userId, async (tx, s) => {
       if (!/^[0-9a-f-]{36}$/i.test(importId)) return null;
-      return (await tx.select().from(s.imports).where(and(eq(s.imports.id, importId), eq(s.imports.userId, userId), eq(s.imports.kind, 'anki'))))[0] ?? null;
+      return (await tx.select(pick(s.imports, 'status', 'stats', 'updatedAt', 'error')).from(s.imports).where(and(eq(s.imports.id, importId), eq(s.imports.userId, userId), eq(s.imports.kind, 'anki'))))[0] ?? null;
     });
 
   const progress: GetImportProgress = async (userId, importId) => {

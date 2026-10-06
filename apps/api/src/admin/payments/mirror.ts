@@ -1,6 +1,7 @@
 // F19 FR-16 (D-428, D-456, D-457): `payments` mirror, written from the F08 webhook inside its transaction, after the
 // stripe_events insert (same dedupe). Never throws on a payload it doesn't understand: the F08 handler must keep working.
 import { z } from 'zod';
+import { pick } from '../../pick';
 import { eq, or, sql } from 'drizzle-orm';
 import type { PaymentEventType, PaymentItem, PaymentRecordMethod, PaymentStatus } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
@@ -128,7 +129,7 @@ async function upsert(tx: Tx, at: string, u: Upsert): Promise<PaidNotice | null>
     u.status === 'paid' && userId && u.method !== 'credit' ? { paymentId: u.id, userId, amountCents, method: u.method, item: u.item, paidAt: at } : null;
   const fresh = await tx.insert(t).values(row).onConflictDoNothing().returning({ id: t.id });
   if (fresh.length) return notice(u.amountCents, u.userId);
-  const [cur] = await tx.select().from(t).where(eq(t.id, u.id)).for('update');
+  const [cur] = await tx.select(pick(t, 'amountCents', 'coupon', 'events', 'status', 'stripeCustomerId', 'stripeInvoiceId', 'stripePaymentIntent', 'stripeSubscriptionId', 'userId')).from(t).where(eq(t.id, u.id)).for('update');
   if (!cur) return null;
   const forward = RANK[u.status] > RANK[cur.status];
   await tx.update(t).set({
@@ -150,7 +151,7 @@ async function upsert(tx: Tx, at: string, u: Upsert): Promise<PaidNotice | null>
  */
 async function refunded(tx: Tx, at: string, pi: string, amount: number | null, event: Event, touched?: string[]) {
   const { payments: t, subscriptions: s } = await dbm();
-  const [p] = await tx.select().from(t).where(or(eq(t.id, pi), eq(t.stripePaymentIntent, pi))).limit(1).for('update');
+  const [p] = await tx.select(pick(t, 'id', 'userId', 'amountCents', 'method', 'item', 'status', 'events')).from(t).where(or(eq(t.id, pi), eq(t.stripePaymentIntent, pi))).limit(1).for('update');
   if (!p || p.status === 'refunded' || (amount !== null && amount < p.amountCents)) return; // unknown, done, or partial (P2)
   await tx.update(t).set({ status: 'refunded', refundedAt: new Date(at), events: merge(p.events, ['refunded'], at), updatedAt: new Date() }).where(eq(t.id, p.id));
   let plan = 'kept';
