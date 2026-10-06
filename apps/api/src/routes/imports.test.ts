@@ -105,7 +105,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('/v1/impo
     const zip = Buffer.alloc(12 * 1024 * 1024, 7); // > one 8 MB part: exercises the S3 multipart path
     zip.set([0x50, 0x4b, 0x03, 0x04]);
     const post = (auth: string | null, body: Buffer) =>
-      app.request('/v1/imports/anki/direct', { method: 'POST', body, headers: { ...(auth ? { authorization: `Bearer ${auth}` } : {}), 'content-type': 'application/octet-stream' } });
+      app.request('/v1/imports/anki/direct', { method: 'POST', body: new Uint8Array(body), headers: { ...(auth ? { authorization: `Bearer ${auth}` } : {}), 'content-type': 'application/octet-stream' } });
     expect((await post(null, zip)).status).toBe(401);
     expect((await post(u, Buffer.from('not a zip'))).status).toBe(422);
     const r = await post(u, zip);

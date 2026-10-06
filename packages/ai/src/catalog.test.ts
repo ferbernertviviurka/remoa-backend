@@ -39,6 +39,8 @@ describe('modelProblems', () => {
     expect(modelProblems('x', model('x', { pricing: { prompt: '0.000001', completion: '0' } }), [], true)).toEqual(['x: price is not zero']);
     expect(modelProblems('x', model('x', { pricing: { prompt: '0.000001', completion: '0' } }), [], false)).toEqual([]);
     expect(modelProblems('x', model('x', { architecture: { input_modalities: ['text', 'image'] } }), [], true)[0]).toMatch(/not text only/);
+    expect(modelProblems('x', model('x', { architecture: { input_modalities: ['text', 'image'] } }), [], false)).toEqual([]); // paid multimodal: fine
+    expect(modelProblems('x', model('x', { architecture: { input_modalities: ['image'] } }), [], false)).toEqual(['x: does not accept text']);
     expect(modelProblems('x', model('x', { supported_parameters: ['max_tokens'] }), ['tools', 'tool_choice'], true)[0]).toMatch(/does not support tools, tool_choice/);
     expect(modelProblems('x', model('x'), ['tools'], true)).toEqual([]);
   });

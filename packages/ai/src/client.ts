@@ -223,7 +223,7 @@ function body(model: string, messages: Message[], o: ChatOptions, c: AiConfig, s
       : o.json
         ? { response_format: { type: 'json_object' } }
         : {}),
-    provider: { data_collection: c.dataCollection },
+    provider: { data_collection: c.dataCollection, ...(c.zdr ? { zdr: true } : {}) },
   };
 }
 
@@ -323,13 +323,29 @@ async function send(o: ChatOptions, messages: Message[], stream: boolean): Promi
   });
   if (!allowed.length) throw new AiError('model_refused', { local: true, detail: chain.join(',') });
   const doFetch = o.fetchImpl ?? fetch;
+  const post = (model: string, signal: AbortSignal, opts: ChatOptions) =>
+    doFetch(`${c.baseUrl}/chat/completions`, { method: 'POST', headers: headers(c), body: JSON.stringify(body(model, messages, opts, c, stream)), signal });
+  const withReasoning = { ...o, reasoning: undefined };
   return withRetries(
     o,
     allowed,
-    (model, signal) => doFetch(`${c.baseUrl}/chat/completions`, { method: 'POST', headers: headers(c), body: JSON.stringify(body(model, messages, o, c, stream)), signal }),
+    async (model, signal) => {
+      if (o.reasoning !== false) return post(model, signal, o);
+      if (reasoningMandatory.has(model)) return post(model, signal, withReasoning);
+      const res = await post(model, signal, o);
+      if (res.status !== 400 || !/reasoning is mandatory/i.test(await res.clone().text())) return res;
+      reasoningMandatory.add(model);
+      return post(model, signal, withReasoning);
+    },
     { count: true, needBody: stream, primary: chain[0] },
   );
 }
+
+/**
+ * G22 (production model): some paid models refuse `reasoning.enabled=false` with a 400 "Reasoning is mandatory" (Gemini 3.5
+ * Flash Lite, GPT-5 nano). The same attempt is sent again without the field, and the model is remembered for this process.
+ */
+const reasoningMandatory = new Set<string>();
 
 type ChatBody = ApiError & { model?: string; choices?: { message?: { content?: string | null; tool_calls?: { function?: { arguments?: string } }[] } }[]; usage?: Usage };
 

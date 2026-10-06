@@ -32,6 +32,13 @@ describe('extractWithMeta model replies', () => {
     expect(r.extracted.cards.map((c) => c.ref)).toEqual(['c1', 'c2']);
     expect(r.extracted.edges).toEqual([{ fromRef: 'c1', toRef: 'c2', label: 'causa' }]);
   });
+  it('asks the model not to reason (latency of the paid reserves)', async () => {
+    process.env.OPENROUTER_API_KEY = 'k';
+    let sent: Record<string, unknown> = {};
+    const spy = (async (_u: string, init?: RequestInit) => { sent = JSON.parse(String(init?.body)) as Record<string, unknown>; return reply(JSON.stringify({ cards: [card('c1', 'Sepse')] }))(''); }) as unknown as typeof fetch;
+    await extractWithMeta(TEXT, 'fonte', spy);
+    expect(sent.reasoning).toEqual({ enabled: false });
+  });
   it('throws no_content when the model validly finds nothing to study', async () => {
     await expect(run(JSON.stringify({ cards: [], edges: [] }))).rejects.toThrow('no_content');
   });

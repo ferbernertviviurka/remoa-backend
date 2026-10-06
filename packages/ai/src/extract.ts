@@ -318,8 +318,9 @@ export async function extractWithMeta(
       if (remaining <= 0) throw new Error('generate_timeout');
       const chunk = redact(piece).slice(0, LIMITS.chunk);
       try {
+        // No reasoning (G22 production model): GPT-6 Luna took 13–16 s per slice thinking, DeepSeek V4.1 Flash hit the 45 s timeout.
         const done = await generateJson(extractReply(source, chunk), {
-          fn: 'extract', system: extractPrompt, user: extractUser(chunk, maxCards - merged.cards.length), temperature: 0, signal: AbortSignal.timeout(remaining), fetchImpl,
+          fn: 'extract', system: extractPrompt, user: extractUser(chunk, maxCards - merged.cards.length), temperature: 0, reasoning: false, signal: AbortSignal.timeout(remaining), fetchImpl,
         });
         tokensIn += done.tokensIn;
         tokensOut += done.tokensOut;

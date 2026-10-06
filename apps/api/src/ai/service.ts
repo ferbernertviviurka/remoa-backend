@@ -7,7 +7,7 @@ import {
   type AiInfo, type AiQuota, type AppError, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput, type GraderVerdict,
 } from '@remoa/contracts';
 import {
-  AI_ERROR_MESSAGES, AiError, aiMode, aiUsage, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf,
+  AI_ERROR_MESSAGES, AiError, aiMode, aiUsage, cleanDeep, cleanText, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf,
   pdfPageCount, readPdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent,
 } from '@remoa/ai';
 import type { Tx } from '@remoa/db';
@@ -64,6 +64,7 @@ const JOB_MESSAGES: Record<string, string> = {
   boards: 'Você atingiu o limite de mapas do seu plano.',
   cards: 'Você atingiu o limite de cards do seu plano.',
   offline: 'Correção automática, sem IA.',
+  invalid_input: 'Esse arquivo tem caracteres que não conseguimos gravar. Tente outro arquivo ou cole o texto.',
 };
 const messageOf = (code: string) => (AI_ERROR_MESSAGES as Record<string, string>)[code] ?? JOB_MESSAGES[code] ?? AI_ERROR_MESSAGES.provider_error;
 
@@ -288,7 +289,8 @@ const maxInputChars = () => Number(process.env.AI_MAX_INPUT_CHARS) || 120_000;
 /** Running in this process: cancel aborts the model call. Another process sees the cancel when it reads the job row. */
 const running = new Map<string, AbortController>();
 
-async function saveBoard(tx: Tx, userId: string, input: JobInput, cards: (CardDraft & { sourceExcerpt?: string })[], edges: { fromRef: string; toRef: string; label: string | null }[]) {
+async function saveBoard(tx: Tx, userId: string, rawInput: JobInput, rawCards: (CardDraft & { sourceExcerpt?: string })[], rawEdges: { fromRef: string; toRef: string; label: string | null }[]) {
+  const [input, cards, edges] = cleanDeep([rawInput, rawCards, rawEdges] as const); // D-1446: nothing with NUL reaches the insert
   const { boards, boardMatrixItems, cards: cardTable, edges: edgeTable } = await dbm();
   const places = new Map(layout(cards, edges).map((p) => [p.ref, p]));
   const itemIds = input.extras?.matrixItemIds ?? [];
@@ -330,7 +332,7 @@ export function sourcedCards<T extends { sourceExcerpt?: string }>(cards: T[], t
 
 async function readableText(bytes: Uint8Array): Promise<string> {
   const literal = await readPdfText(bytes);
-  return literal.length >= 40 ? literal : ocrPdf(bytes);
+  return cleanText(literal.length >= 40 ? literal : await ocrPdf(bytes)); // D-1446: OCR text too
 }
 
 async function pdfSource(userId: string, assetId: string): Promise<string> {
@@ -352,7 +354,7 @@ async function failJob(jobId: string, code: string, ai: AiInfo = failedInfo('err
     with old as (select id, user_id, charged, quota_period from ai_jobs
       where id = ${jobId} and status in ('queued', 'running') and board_id is null ${extra.userId ? sql`and user_id = ${extra.userId}` : sql``}
         ${extra.stale ? sql`and updated_at < ${staleBefore()}` : sql``} for update),
-    j as (update ai_jobs j set status = 'failed', progress = 100, stage = null, error = ${code}, ai = ${JSON.stringify(ai)}::jsonb, charged = false,
+    j as (update ai_jobs j set status = 'failed', progress = 100, stage = null, error = ${code}, ai = ${JSON.stringify(cleanDeep(ai))}::jsonb, charged = false,
         text = ${extra.clearText ? null : sql`j.text`}, updated_at = now()
       from old where j.id = old.id
       returning old.id, old.user_id, old.charged, old.quota_period),
@@ -406,7 +408,7 @@ async function setProgress(jobId: string, progress: number, stage: 'ocr' | 'extr
 
 async function dispatch(jobId: string) {
   const sent = await dispatchBoardJob(jobId).catch(() => false);
-  if (!sent) void executeGeneration(jobId);
+  if (!sent) void executeGeneration(jobId).catch((e) => jobErrorCode(e)); // never an unhandled rejection (D-1446: it took the process down)
 }
 
 /**
@@ -447,7 +449,7 @@ async function createJob(userId: string, input: JobInput, hash: string, text: st
   const { db, aiJobs } = await dbm();
   try {
     const [job] = await db.insert(aiJobs).values({
-      userId, kind: input.kind, input, text, inputHash: hash, stats, charged: true, quotaPeriod: held.quota.period,
+      userId, kind: input.kind, input: cleanDeep(input), text: text === null ? null : cleanText(text), inputHash: hash, stats, charged: true, quotaPeriod: held.quota.period,
       status: ocr ? 'running' : 'queued', stage: ocr ? 'ocr' : 'extract', progress: ocr ? 10 : 0,
     }).returning({ id: aiJobs.id });
     return { ok: true, data: { jobId: job!.id, ai: { ...OK, quota: held.quota } } };
@@ -463,7 +465,7 @@ export async function startGeneration(userId: string, input: GenerateBoardInput)
   if (input.kind === 'text' && input.text.length > maxInputChars()) return { ok: false, error: { code: 'validation', message: 'text_too_long' } };
   let text: string;
   try {
-    text = input.kind === 'text' ? input.text : await pdfSource(userId, input.pdfAssetId);
+    text = input.kind === 'text' ? cleanText(input.text) : await pdfSource(userId, input.pdfAssetId);
   } catch (e) {
     const known = e instanceof Error && (e.message === 'pdf_not_found' || e.message === 'pdf_unreadable');
     return { ok: false, error: { code: 'validation', message: known ? e.message : 'failed' } }; // never a storage error text (P-614)
@@ -499,6 +501,10 @@ export async function startPdfGeneration(userId: string, board: z.output<typeof 
   });
 }
 
+/**
+ * Runs detached (`void`): it must never reject. D-1446: a PDF text with NUL made the `update` below throw, the unhandled
+ * rejection killed the API process (502 on every request in flight, the job left `running` until the P-617 sweep).
+ */
 async function readPdfJob(jobId: string, bytes: Uint8Array) {
   let text: string;
   const stop = heartbeat(jobId); // OCR may take minutes (P-617)
@@ -509,20 +515,34 @@ async function readPdfJob(jobId: string, bytes: Uint8Array) {
   } finally {
     stop();
   }
-  if (text.length < 40) {
-    await failJob(jobId, 'pdf_unreadable');
-    return;
+  try {
+    if (text.length < 40) {
+      await failJob(jobId, 'pdf_unreadable');
+      return;
+    }
+    const { db } = await dbm();
+    const [moved] = await db.execute<{ id: string }>(sql`
+      update ai_jobs set text = ${text}, status = 'queued', stage = 'extract', progress = 20, updated_at = now() where id = ${jobId} and status = 'running' returning id`);
+    if (moved) await dispatch(jobId); // canceled while reading: nothing to do
+  } catch (e) {
+    await failJob(jobId, jobErrorCode(e)).catch(() => undefined); // unit back; if even this fails, the P-617 sweep ends it
   }
-  const { db } = await dbm();
-  const [moved] = await db.execute<{ id: string }>(sql`
-    update ai_jobs set text = ${text}, status = 'queued', stage = 'extract', progress = 20, updated_at = now() where id = ${jobId} and status = 'running' returning id`);
-  if (moved) await dispatch(jobId); // canceled while reading: nothing to do
 }
 
 /** Inngest function body and inline runner. Claims the job (queued -> running) so only one process ever runs it. */
 export async function runGeneration(jobId: string) {
   await executeGeneration(jobId);
 }
+
+/** D-1446: Postgres codes for text it cannot store (NUL 0x00, bad encoding, lone surrogate in jsonb). */
+const BAD_TEXT = new Set(['22021', '22P05', '22P02']);
+const pgCode = (e: unknown): string | undefined => {
+  for (let x = e, i = 0; x && typeof x === 'object' && i < 3; x = (x as { cause?: unknown }).cause, i++) {
+    const code = (x as { code?: unknown }).code;
+    if (typeof code === 'string') return code;
+  }
+  return undefined;
+};
 
 class JobError extends Error {
   constructor(readonly code: string, readonly info?: AiInfo) {
@@ -537,6 +557,7 @@ class JobError extends Error {
 export function jobErrorCode(e: unknown): string {
   if (e instanceof JobError) return e.code;
   if (e instanceof Error && (e.message === 'generate_timeout' || e.message === 'no_content')) return e.message;
+  if (BAD_TEXT.has(pgCode(e) ?? '')) return 'invalid_input';
   createLogger({ requestId: 'ai-job' }).error('generation crashed', { error: e instanceof Error ? e.name : 'unknown' });
   return 'failed';
 }
@@ -568,11 +589,11 @@ async function executeGeneration(jobId: string) {
     const error = errorOf(meta);
     // D-1414: a model failure is a failed job (unit given back, retry available), never a paragraph split saved as an AI map
     if (live && error) throw new JobError(error.code, failedInfo('error', error.code, error.userMessage));
-    const all = extracted.cards as (CardDraft & { sourceExcerpt?: string })[];
+    const all = cleanDeep(extracted.cards) as (CardDraft & { sourceExcerpt?: string })[]; // D-1446: model output may carry NUL too
     const kept = (live ? sourcedCards(all, text) : all.map((c) => ({ ...c, source: OFFLINE_DRAFT_SOURCE }))).slice(0, room ?? Infinity);
     if (!kept.length) throw new JobError('no_sourced_cards');
     const refs = new Set(kept.map((c) => c.ref));
-    const edges = extracted.edges.filter((e) => refs.has(e.fromRef) && refs.has(e.toRef));
+    const edges = cleanDeep(extracted.edges).filter((e) => refs.has(e.fromRef) && refs.has(e.toRef));
     const stats: JobStats = { ...(job.stats as JobStats | null), cards: kept.length, edges: edges.length, dropped: all.length - kept.length + (meta.dropped ?? 0), ...(meta.truncated ? { truncated: true } : {}) };
     await setProgress(jobId, 75, 'layout');
     if (!(await boardRoom(job.userId)).ok) throw new JobError('boards'); // a concurrent map took the last slot: refund below

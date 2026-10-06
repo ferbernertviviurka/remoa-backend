@@ -45,7 +45,9 @@ export function modelProblems(id: string, m: CatalogModel | undefined, params: r
   const completion = num(m.pricing?.completion) ?? 0;
   if (requireFree && (prompt !== 0 || completion !== 0)) out.push(`${id}: price is not zero`);
   const input = m.architecture?.input_modalities ?? [];
-  if (input.some((x) => x !== 'text')) out.push(`${id}: accepts ${input.join('+')}, not text only`);
+  // "Text only" is the free-model test rule (G22); a paid production model only has to take text (we never send anything else).
+  if (requireFree && input.some((x) => x !== 'text')) out.push(`${id}: accepts ${input.join('+')}, not text only`);
+  if (input.length && !input.includes('text')) out.push(`${id}: does not accept text`);
   const supported = m.supported_parameters ?? [];
   const missing = params.filter((p) => !supported.includes(p));
   if (missing.length) out.push(`${id}: does not support ${missing.join(', ')}`);

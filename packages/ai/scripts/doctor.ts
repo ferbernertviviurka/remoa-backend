@@ -23,6 +23,7 @@ for (const fn of ['grader', 'rubric', 'extract']) out(`  cadeia ${fn}`, chainFor
 out('AI_REQUIRE_FREE', yes(c.requireFree));
 out('AI_ALLOW_FREE_IN_PROD', yes(c.allowFreeInProd));
 out('AI_DATA_COLLECTION', c.dataCollection);
+out('AI_ZDR', c.zdr ? 'sim (só endpoints sem retenção)' : 'não');
 out('AI_TIMEOUT_MS', c.timeoutMs);
 out('AI_MAX_RETRIES', c.maxRetries);
 out('AI_RPM_LIMIT / RPD', `${c.rpmLimit} / ${c.rpdLimit}`);
