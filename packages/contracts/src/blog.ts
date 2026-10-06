@@ -414,6 +414,25 @@ export const blogPublicPostSchema = blogPostSchema
   });
 export type BlogPublicPost = z.infer<typeof blogPublicPostSchema>;
 
+/** GET /v1/public/blog/posts/:slug: a live post, or the 301 target when the slug changed (FR-12). Unknown/unpublished = 404. */
+export const blogSlugResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('post'), post: blogPublicPostSchema }),
+  z.object({ kind: z.literal('redirect'), to: z.string().startsWith('/blog/') }),
+]);
+export type BlogSlugResponse = z.infer<typeof blogSlugResponseSchema>;
+
+/** `AppError.message` of blog actions (generic code in parentheses). The editor recomputes the reasons with publishBlockers(). */
+export const blogErrors = {
+  /** validation — publish/schedule with publishBlockers() not empty */
+  publishBlocked: 'publish_blocked',
+  /** conflict — slug used by another live post */
+  slugTaken: 'slug_taken',
+  /** validation — schedule with publishAt <= now */
+  scheduleInPast: 'schedule_in_past',
+  /** validation — image not PNG/JPEG/WebP by signature, or > 5 MB */
+  badImage: 'bad_image',
+} as const;
+
 /** POST /v1/admin/blog/posts (FR-4). Slug = slugify(title), "-2"… when taken. */
 export const blogPostCreateInputSchema = z.object({ title: titleSchema, template: z.enum(blogTemplates) });
 export type BlogPostCreateInput = z.input<typeof blogPostCreateInputSchema>;
@@ -487,6 +506,8 @@ export type PreviewLink = z.infer<typeof previewLinkSchema>;
 export const sitemapEntryKinds = ['home', 'blog', 'category', 'post', 'legal'] as const;
 export const sitemapEntrySchema = z.object({ path: z.string().startsWith('/'), kind: z.enum(sitemapEntryKinds), lastmod: timestampSchema });
 export type SitemapEntry = z.infer<typeof sitemapEntrySchema>;
+/** Public routes the web adds itself (lastmod: newest post for '/' and '/blog', LEGAL_UPDATED_AT for legal pages). D-916. */
+export const SITEMAP_STATIC_PATHS = ['/', '/blog', '/termos-de-uso', '/politica-de-privacidade'] as const;
 /** Card of the admin list (FR-3). */
 export const sitemapStatusSchema = z.object({
   urlCount: z.number().int().nonnegative(),
@@ -495,6 +516,9 @@ export const sitemapStatusSchema = z.object({
   hash: z.string().nullable(),
 });
 export type SitemapStatus = z.infer<typeof sitemapStatusSchema>;
+/** Admin "Ver URLs" (GET /v1/admin/blog/sitemap). urlCount = entries.length + SITEMAP_STATIC_PATHS.length. */
+export const adminSitemapSchema = z.object({ status: sitemapStatusSchema, entries: z.array(sitemapEntrySchema) });
+export type AdminSitemap = z.infer<typeof adminSitemapSchema>;
 
 /** Body of the web's POST /api/revalidate (Bearer REVALIDATE_SECRET, D-907). Tags: 'blog', `blog:post:<slug>`, `blog:category:<slug>`, 'landing', 'sitemap', 'feed'. */
 export const revalidateInputSchema = z.object({ tags: z.array(z.string().min(1).max(200)).min(1).max(50), paths: z.array(z.string().startsWith('/')).max(50).optional() });
