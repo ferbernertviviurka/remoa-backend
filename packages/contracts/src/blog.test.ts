@@ -185,3 +185,17 @@ describe('inputs and audit enums', () => {
     expect(auditTargetTypes).toEqual(expect.arrayContaining(['blog_post', 'blog_category', 'sitemap']));
   });
 });
+
+describe('F25 telemetry events (CCR-045, CCR-047)', () => {
+  it('accepts the documented props and rejects free text or the search term', async () => {
+    const { eventSchemas: ev } = await import('./index');
+    expect(ev.blog_post_viewed.safeParse({ slug: 'a', template: 'guia', category: 'x' }).success).toBe(true);
+    expect(ev.blog_cta_clicked.safeParse({ slug: 'a', position: 'end' }).success).toBe(true);
+    expect(ev.blog_search_used.safeParse({ resultCount: 3, queryLength: 5 }).success).toBe(true);
+    expect(ev.blog_search_used.safeParse({ resultCount: 3, queryLength: 5, query: 'dm2' }).success).toBe(false);
+    expect(ev.landing_blog_clicked.safeParse({ position: 4 }).success).toBe(true);
+    expect(ev.landing_blog_clicked.safeParse({ position: 5 }).success).toBe(false);
+    expect(ev.legal_page_viewed.safeParse({ document: 'terms' }).success).toBe(true);
+    expect(ev.legal_page_viewed.safeParse({ document: 'cookies' }).success).toBe(false);
+  });
+});
