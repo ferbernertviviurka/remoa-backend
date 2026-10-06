@@ -3,6 +3,7 @@ import { confirmAvatarInputSchema, errorHttpStatus, parseWith, type HttpErrorBod
 import type { Env } from '../app';
 import { confirmAvatar, processAvatar, removeAvatar } from '../account/avatar';
 import { imageBodyLimit, readImageForm } from './uploads';
+import { takeUploadSlot } from '../uploads/rate-limit';
 
 const send = <T>(r: Result<T>) =>
   r.ok ? Response.json({ ok: true, data: r.data }) : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
@@ -16,6 +17,9 @@ export const accountAvatarRoutes = new Hono<Env>()
   })
   // D-1202: multipart `file` up to 100 MB, compressed server-side (no browser PUT to the bucket).
   .post('/avatar/direct', imageBodyLimit, async (c) => {
+    // Same per-user cap as /uploads/sign and /uploads/direct (P-019): each call decodes up to 100 MB.
+    const slot = takeUploadSlot(c.get('userId'));
+    if (!slot.ok) return send(slot);
     const form = await readImageForm(c.req.raw);
     const r = form.ok ? await processAvatar(c.get('userId'), form.data.bytes) : form;
     if (!r.ok) c.get('log').warn('avatar rejected', { code: r.error.code });

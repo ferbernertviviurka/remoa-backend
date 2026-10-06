@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { BoardGraph, MapOp } from '@remoa/contracts';
+import { IMAGE_MAX_BYTES, type BoardGraph, type MapOp } from '@remoa/contracts';
 
 config({ path: '../../.env' });
 
@@ -60,6 +60,16 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('cards, u
     expect(put.status).toBe(200);
     return key;
   }
+  /** D-1202: multipart POST like the web app (no content-type header: fetch sets the boundary). */
+  const direct = async (t: string | null, bytes: Buffer | null, fields: Record<string, string> = {}, path = '/v1/uploads/direct') => {
+    const form = new FormData();
+    if (bytes) form.append('file', new Blob([new Uint8Array(bytes)]), 'x.png');
+    for (const [k, v] of Object.entries(fields)) form.append(k, v);
+    const res = await app.request(path, { method: 'POST', headers: t ? { authorization: `Bearer ${t}` } : {}, body: form });
+    return { status: res.status, json: (await res.json()) as J };
+  };
+  /** 105 MP solid PNG (~300 KB on disk) above PIXEL_LIMIT (100 MP). */
+  const pixelBomb = () => sharp({ create: { width: 10500, height: 10000, channels: 3, background: '#fff' } }).png({ compressionLevel: 9 }).toBuffer();
   const mkAsset = async (t = 'ta') => {
     const key = await upload(t, await tinyPng());
     const done = await call(t, 'POST', '/v1/uploads/complete', { key });
@@ -126,7 +136,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('cards, u
 
   it('upload validation: bad body, foreign key, nested key, wrong type', async () => {
     expect((await call('ta', 'POST', '/v1/uploads/sign', { mime: 'image/gif', sizeBytes: 10 })).status).toBe(422);
-    expect((await call('ta', 'POST', '/v1/uploads/sign', { mime: 'image/png', sizeBytes: 11 * 1024 * 1024 })).status).toBe(422);
+    expect((await call('ta', 'POST', '/v1/uploads/sign', { mime: 'image/png', sizeBytes: IMAGE_MAX_BYTES + 1 })).status).toBe(422);
     const key = await upload('ta', await tinyPng());
     const stolen = await call('tb', 'POST', '/v1/uploads/complete', { key });
     expect(stolen.status).toBe(403);
@@ -151,11 +161,42 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.S3_ENDPOINT)('cards, u
     const k1 = await upload('ta', svg, 'image/png');
     expect((await call('ta', 'POST', '/v1/uploads/complete', { key: k1 })).status).toBe(422);
     expect(await st.headObject(k1)).toBeNull();
-    // 60 MP solid PNG (tiny on disk) exceeds the pixel limit
-    const bomb = await sharp({ create: { width: 8000, height: 7500, channels: 3, background: '#fff' } }).png({ compressionLevel: 9 }).toBuffer();
+    const bomb = await pixelBomb();
     const k2 = await upload('ta', bomb, 'image/png');
     expect((await call('ta', 'POST', '/v1/uploads/complete', { key: k2 })).status).toBe(422);
     expect(await st.headObject(k2)).toBeNull();
+  }, 60_000);
+
+  it('D-1202 direct: multipart -> 2 WebP variants without EXIF, asset row; same rejections as the signed flow', async () => {
+    const jpeg = await sharp({ create: { width: 2400, height: 1200, channels: 3, background: '#33c' } })
+      .jpeg().withMetadata({ orientation: 6 }).withExif({ IFD3: { GPSLatitudeRef: 'S', GPSLatitude: '23/1 32/1 0/1' } }).toBuffer();
+    const done = await direct('ta', jpeg, { license: 'cc_by', attribution: 'Autor' });
+    expect(done.status).toBe(201);
+    const asset = done.json.data;
+    expect(asset).toMatchObject({ mime: 'image/webp', width: 1200, height: 2400, license: 'cc_by', attribution: 'Autor' });
+    expect(asset.key).toBe(`assets/${a}/${asset.id}`);
+    const w1600 = await sharp(await st.getBytes(`${asset.key}/w1600.webp`)).metadata();
+    expect([w1600.format, w1600.exif]).toEqual(['webp', undefined]);
+    expect((await sharp(await st.getBytes(`${asset.key}/w800.webp`)).metadata()).width).toBe(800);
+    expect((await call('ta', 'GET', `/v1/assets/${asset.id}`)).status).toBe(200);
+    expect((await call('tb', 'GET', `/v1/assets/${asset.id}`)).status).toBe(404); // owner only
+
+    const before = await dbm.db.execute<{ n: number }>(sql`select count(*)::int n from assets where user_id = ${a}`);
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>alert(1)</script></svg>');
+    expect((await direct('ta', svg)).status).toBe(422);
+    expect((await direct('ta', Buffer.from('not an image at all'))).status).toBe(422);
+    expect((await direct('ta', await pixelBomb())).status).toBe(422);
+    expect((await direct('ta', null)).status).toBe(422);
+    expect((await direct('ta', await tinyPng(), { license: 'stolen' })).status).toBe(422);
+    const after = await dbm.db.execute<{ n: number }>(sql`select count(*)::int n from assets where user_id = ${a}`);
+    expect(after[0]?.n).toBe(before[0]?.n); // nothing saved on rejection
+    expect((await direct(null, await tinyPng())).status).toBe(401);
+    const huge = await app.request('/v1/uploads/direct', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ta', 'content-length': String(IMAGE_MAX_BYTES + 1024 * 1024) },
+      body: 'x',
+    });
+    expect(huge.status).toBe(413);
   }, 60_000);
 
   it('GET asset: own urls fetch as image/webp; other user 404; visible via seed_approved card', async () => {
