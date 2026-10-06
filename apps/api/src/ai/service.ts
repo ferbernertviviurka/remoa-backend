@@ -50,11 +50,11 @@ type BoardExtras = { matrixItemIds: string[]; share: Awaited<ReturnType<typeof i
 const work = new Map<string, { userId: string; input: GenerateBoardInput; text: string; charged: boolean; refunded: boolean; logKind?: string; extras?: BoardExtras }>();
 const counts = new Map<string, { cards: number; edges: number; pages?: number }>();
 
-async function recordCall(userId: string, kind: string, meta: { model: string; tokensIn: number; tokensOut: number }) {
+async function recordCall(userId: string, kind: string, meta: { model: string; tokensIn: number; tokensOut: number; latencyMs: number }) {
   if (!process.env.DATABASE_URL) return;
   const { db, aiCalls } = await dbm();
   await db.insert(aiCalls).values({
-    userId, kind, model: meta.model, promptVersion: EXTRACT_PROMPT_VERSION, inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: 0,
+    userId, kind, model: meta.model, promptVersion: EXTRACT_PROMPT_VERSION, inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: meta.latencyMs,
   });
 }
 
@@ -206,7 +206,7 @@ export async function attachRubric(userId: string, cardId: string) {
   if (process.env.DATABASE_URL) {
     await db.insert(aiCalls).values({
       userId, kind: 'rubric', model: meta.model, promptVersion: RUBRIC_PROMPT_VERSION,
-      inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: 0,
+      inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: meta.latencyMs,
     });
   }
   return ok(rubric);

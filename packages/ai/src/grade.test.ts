@@ -70,10 +70,10 @@ describe('rubrics', () => {
     expect(r.meta).toMatchObject({ tokensIn: 5, tokensOut: 7 });
     expect(cachedRubric('T2', 'back', 's2')).toEqual(r.rubric);
   });
-  it('uses the offline rubric (with real meta) when the reply fails the schema', async () => {
+  it('uses the offline rubric (with the real meta of both calls) when the reply fails the schema after the one repair', async () => {
     withKey();
     const r = await rubricWithMeta('T3', 'back', 's3', completion(JSON.stringify({ points: [] })));
-    expect(r.meta.tokensIn).toBe(5);
+    expect(r.meta.tokensIn).toBe(10);
     expect(r.rubric.points.length).toBeGreaterThan(0);
   });
   it('uses the offline rubric on failure', async () => {

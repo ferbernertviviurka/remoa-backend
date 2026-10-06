@@ -1,13 +1,46 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rubricSchema, type GraderInput, type GraderVerdict, type Rubric } from '@remoa/contracts';
+import { z } from 'zod';
+import { graderVerdictSchema, rubricSchema, type GraderInput, type GraderVerdict, type Rubric } from '@remoa/contracts';
 import { gradeOffline } from './offline';
-import { GRADER_PROMPT_VERSION, completeJSON, feedbackSoFar, graderModel, rubricModel, graderUser, parseVerdict, streamJSON } from './openrouter';
+import { AiError, generateJson, streamText, type Tool } from './client';
+import { aiMode } from './config';
+import { GRADER_PROMPT_VERSION, feedbackSoFar, graderUser, parseVerdict } from './openrouter';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 const graderPrompt = readFileSync(join(dir, '../prompts/grader/v2.md'), 'utf8');
 const rubricPrompt = readFileSync(join(dir, '../prompts/rubric/v1.md'), 'utf8');
+
+/** Whole budget of one grade or rubric call (all retries and fallbacks); the challenge also cuts at 8 s (GRADER_TIMEOUT_MS). */
+const GRADE_BUDGET_MS = 8_000;
+
+const gradeTool: Tool = {
+  type: 'function',
+  function: {
+    name: 'grade',
+    description: 'Veredito da resposta somente contra a rubrica.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        verdict: { type: 'string', enum: ['correct', 'partial', 'incorrect'] },
+        matched: { type: 'array', items: { type: 'string' } },
+        missing: { type: 'array', items: { type: 'string' } },
+        criticalError: { type: 'boolean' },
+        feedback: { type: 'string' },
+      },
+      required: ['verdict', 'matched', 'missing', 'criticalError', 'feedback'],
+    },
+  },
+};
+
+/** Same contract as `parseVerdict`: the model's `costCents` is dropped and `model` defaults to the one that answered. */
+const verdictReply = graderVerdictSchema.omit({ model: true, costCents: true }).extend({ model: z.string().min(1).optional() });
+
+const graderCall = (input: GraderInput, fetchImpl?: typeof fetch) => ({
+  fn: 'grader', system: graderPrompt, user: graderUser(input), tool: gradeTool, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
+});
 
 export type GradeMeta = { promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number };
 
@@ -21,17 +54,17 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
     const pieces = verdict.feedback.split(/(?<=\s)/).filter(Boolean);
     return [...pieces.map((feedback) => ({ feedback })), { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } }];
   };
-  if (!process.env.OPENROUTER_API_KEY) {
+  if (aiMode() !== 'live') {
     for (const event of offline()) yield event;
     return;
   }
   let acc = '';
   let shown = '';
-  let model = graderModel();
+  let model = '';
   let tokensIn = 0;
   let tokensOut = 0;
   try {
-    for await (const part of streamJSON({ model: graderModel(), system: graderPrompt, user: graderUser(input), timeoutMs: 8_000, fetchImpl, tool: 'grade' })) {
+    for await (const part of streamText(graderCall(input, fetchImpl))) {
       acc += part.delta;
       model = part.model;
       tokensIn = part.tokensIn;
@@ -55,12 +88,12 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
 
 export async function gradeWithMeta(input: GraderInput, fetchImpl?: typeof fetch): Promise<{ verdict: GraderVerdict; meta: GradeMeta }> {
   const started = Date.now();
-  if (!process.env.OPENROUTER_API_KEY) {
+  if (aiMode() !== 'live') {
     return { verdict: gradeOffline(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
   }
   try {
-    const done = await completeJSON({ model: graderModel(), system: graderPrompt, user: graderUser(input), timeoutMs: 8_000, fetchImpl, tool: 'grade' });
-    const verdict = parseVerdict(done.text, done.model);
+    const done = await generateJson(verdictReply, graderCall(input, fetchImpl));
+    const verdict: GraderVerdict = { ...done.data, model: done.data.model ?? done.model };
     return { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: Date.now() - started } };
   } catch {
     return { verdict: gradeOffline(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
@@ -86,34 +119,23 @@ export function rubricFromCard(title: string, back: string | null, source: strin
   return rubric;
 }
 
-export type RubricMeta = { model: string; tokensIn: number; tokensOut: number };
+export type RubricMeta = { model: string; tokensIn: number; tokensOut: number; latencyMs: number };
 
-/** OpenRouter when the key exists; the cached offline rubric otherwise, or if the model reply is invalid. */
+/** The model's rubric with the server-owned fields forced (source, draft status, no reviewer). */
+const rubricReply = (source: string) =>
+  z.record(z.unknown()).transform((raw) => ({ ...raw, source, version: raw.version ?? 1, status: 'draft' as const, reviewerId: null })).pipe(rubricSchema);
+
+/** OpenRouter when configured; the cached offline rubric otherwise, or if the model reply stays invalid after one repair. */
 export async function rubricWithMeta(title: string, back: string | null, source: string, fetchImpl?: typeof fetch): Promise<{ rubric: Rubric; meta: RubricMeta }> {
-  const offline = (): { rubric: Rubric; meta: RubricMeta } => ({ rubric: rubricFromCard(title, back, source), meta: { model: 'offline-rubric', tokensIn: 0, tokensOut: 0 } });
-  if (!process.env.OPENROUTER_API_KEY) return offline();
+  const offline = (meta: RubricMeta = { model: 'offline-rubric', tokensIn: 0, tokensOut: 0, latencyMs: 0 }) => ({ rubric: rubricFromCard(title, back, source), meta });
+  if (aiMode() !== 'live') return offline();
   try {
-    const done = await completeJSON({
-      model: rubricModel(),
-      system: rubricPrompt,
-      user: JSON.stringify({ title, back, source }),
-      fetchImpl,
+    const done = await generateJson(rubricReply(source), {
+      fn: 'rubric', system: rubricPrompt, user: JSON.stringify({ title, back, source }), fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
     });
-    const raw = JSON.parse(done.text) as Record<string, unknown>;
-    const parsed = rubricSchema.safeParse({ ...raw, source, version: raw.version ?? 1, status: 'draft', reviewerId: null });
-    const meta = { model: done.model, tokensIn: done.tokensIn, tokensOut: done.tokensOut };
-    if (!parsed.success) return { ...offline(), meta };
-    rubricCache.set(`${source}\n${title}\n${back ?? ''}`, parsed.data);
-    return { rubric: parsed.data, meta };
-  } catch {
-    return offline();
+    rubricCache.set(`${source}\n${title}\n${back ?? ''}`, done.data);
+    return { rubric: done.data, meta: { model: done.model, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: done.latencyMs } };
+  } catch (e) {
+    return offline(e instanceof AiError && e.usage ? e.usage : undefined);
   }
-}
-
-/** Integer cents at list price. Haiku 3.5 is $0.80 / $4 per million tokens; Sonnet 3.5 is $3 / $15. A call that used tokens but costs under half a cent is recorded as 1, because `ai_calls.cost_cents` is an integer. */
-export function costCents(tokensIn: number, tokensOut: number, model = ''): number {
-  if (tokensIn <= 0 && tokensOut <= 0) return 0;
-  const sonnet = model.includes('sonnet') || (model !== '' && !model.includes('haiku') && !model.startsWith('offline'));
-  const cents = (tokensIn * (sonnet ? 300 : 80) + tokensOut * (sonnet ? 1500 : 400)) / 1_000_000;
-  return Math.max(1, Math.round(cents));
 }

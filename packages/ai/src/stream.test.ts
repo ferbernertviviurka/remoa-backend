@@ -29,7 +29,7 @@ describe('feedback stream', () => {
   it('emits feedback as the model stream grows', async () => {
     process.env.OPENROUTER_API_KEY = 'test-key';
     const payload = '{"verdict":"incorrect","matched":[],"missing":["noradrenalina"],"criticalError":false,"feedback":"Faltou noradrenalina."}';
-    const sse = [`data: ${JSON.stringify({ choices: [{ delta: { content: payload.slice(0, 80) } }] })}\n\n`, `data: ${JSON.stringify({ choices: [{ delta: { content: payload.slice(80) } }], model: 'anthropic/claude-3.5-haiku' })}\n\n`, 'data: [DONE]\n\n'].join('');
+    const sse = [`data: ${JSON.stringify({ choices: [{ delta: { content: payload.slice(0, 80) } }] })}\n\n`, `data: ${JSON.stringify({ choices: [{ delta: { content: payload.slice(80) } }], model: 'test/model' })}\n\n`, 'data: [DONE]\n\n'].join('');
     const fetchImpl = async () => new Response(sse);
     try {
       const events = [];
@@ -48,7 +48,7 @@ describe('feedback stream', () => {
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
       sent = JSON.parse(String(init?.body));
       return Response.json({
-        model: 'anthropic/claude-3.5-haiku',
+        model: 'test/model',
         choices: [{ message: { tool_calls: [{ function: { name: 'grade', arguments: argumentsJson } }] } }],
         usage: { prompt_tokens: 20, completion_tokens: 12 },
       });

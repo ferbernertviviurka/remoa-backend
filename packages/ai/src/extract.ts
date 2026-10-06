@@ -11,7 +11,10 @@ const dagre = require('@dagrejs/dagre') as {
   graphlib: typeof graphlib;
   layout: (graph: InstanceType<typeof graphlib.Graph>) => void;
 };
-import { aiMode, completeJSON, EXTRACT_PROMPT_VERSION, extractModel } from './openrouter';
+import { z } from 'zod';
+import { AiError, generateJson } from './client';
+import { aiMode } from './config';
+import { EXTRACT_PROMPT_VERSION } from './openrouter';
 
 const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
@@ -191,10 +194,9 @@ export function extractOffline(text: string, source: string): Extracted {
 
 const extractPrompt = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../prompts/extract/v1.md'), 'utf8');
 
-export type ExtractMeta = { model: string; promptVersion: string; tokensIn: number; tokensOut: number };
+export type ExtractMeta = { model: string; promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number };
 
-function parseExtract(text: string, source: string): Extracted | null {
-  const raw = JSON.parse(text) as { cards?: unknown; edges?: unknown };
+function parseExtract(raw: { cards?: unknown; edges?: unknown }, source: string): Extracted | null {
   if (!Array.isArray(raw.cards)) return null;
   const cards: CardDraft[] = [];
   for (const item of raw.cards) {
@@ -221,31 +223,47 @@ function parseExtract(text: string, source: string): Extracted | null {
   return cards.length ? { cards, edges } : null;
 }
 
-/** OpenRouter when the key exists; paragraph extraction otherwise, or if the model reply is invalid. */
+/** A chunk reply: invalid items are dropped one by one (as before); no valid card at all fails validation and triggers the one repair. */
+const extractReply = (source: string) =>
+  z.object({ cards: z.array(z.unknown()), edges: z.unknown().optional() }).passthrough().transform((raw, ctx) => {
+    const parsed = parseExtract(raw, source);
+    if (!parsed) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['cards'], message: 'nenhum card válido (ref e title obrigatórios)' });
+    return parsed ?? z.NEVER;
+  });
+
+/** OpenRouter when configured; paragraph extraction otherwise, or if the provider fails. A chunk still invalid after one repair is skipped. */
 export async function extractWithMeta(text: string, source: string, fetchImpl?: typeof fetch, deadlineAt = Date.now() + GENERATE_BUDGET_MS): Promise<{ extracted: Extracted; meta: ExtractMeta }> {
   const offline = (): { extracted: Extracted; meta: ExtractMeta } => ({
     extracted: extractOffline(text, source),
-    meta: { model: 'offline-extract', promptVersion: EXTRACT_PROMPT_VERSION, tokensIn: 0, tokensOut: 0 },
+    meta: { model: 'offline-extract', promptVersion: EXTRACT_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: 0 },
   });
   if (aiMode() !== 'live') return offline();
   try {
     const parts: Extracted[] = [];
     let tokensIn = 0;
     let tokensOut = 0;
-    let model = extractModel();
+    let latencyMs = 0;
+    let model = '';
     for (const chunk of chunkText(text)) {
       const remaining = deadlineAt - Date.now();
       if (remaining <= 0) throw new Error('generate_timeout');
-      const done = await completeJSON({ model: extractModel(), system: extractPrompt, user: chunk, timeoutMs: Math.min(20_000, remaining), fetchImpl });
-      tokensIn += done.tokensIn;
-      tokensOut += done.tokensOut;
-      model = done.model;
-      const parsed = parseExtract(done.text, source);
-      if (parsed) parts.push(parsed);
+      try {
+        const done = await generateJson(extractReply(source), { fn: 'extract', system: extractPrompt, user: chunk, signal: AbortSignal.timeout(remaining), fetchImpl });
+        tokensIn += done.tokensIn;
+        tokensOut += done.tokensOut;
+        latencyMs += done.latencyMs;
+        model = done.model;
+        parts.push(done.data);
+      } catch (e) {
+        if (!(e instanceof AiError && e.code === 'invalid_output')) throw e;
+        tokensIn += e.usage?.tokensIn ?? 0;
+        tokensOut += e.usage?.tokensOut ?? 0;
+        latencyMs += e.usage?.latencyMs ?? 0;
+      }
     }
     const extracted = mergeDrafts(parts);
     if (!extracted.cards.length) return offline();
-    return { extracted, meta: { model, promptVersion: EXTRACT_PROMPT_VERSION, tokensIn, tokensOut } };
+    return { extracted, meta: { model, promptVersion: EXTRACT_PROMPT_VERSION, tokensIn, tokensOut, latencyMs } };
   } catch (e) {
     if (e instanceof Error && e.message === 'generate_timeout') throw e;
     return offline();
