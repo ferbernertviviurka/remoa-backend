@@ -1,7 +1,8 @@
 // F13 Minha conta: profile, security, preferences, account snapshot. Pure helpers live here so UI and server agree.
 import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
-import { entitlementsSchema, planDefinition, planFeatureKeys, quotaKeySchema, type Entitlements, type PlanFeatureKey } from './billing';
+import { entitlementsSchema, quotaKeySchema, type Entitlements } from './billing';
+import { isValidName, isValidPassword, NAME_CHARS, PASSWORD_MAX, normalizeBrPhone, normalizeName, usageTone, usageTones, userTypes } from './constants';
 import { goalSchema, goalsSchema, segmentSchema, type Goal } from './onboarding';
 import { institutionInputSchema } from './institutions';
 
@@ -34,20 +35,16 @@ export type Stage = z.infer<typeof stageSchema>;
 export const AVATAR_COLOR_COUNT = 5;
 export const avatarColorSchema = z.number().int().min(0).max(AVATAR_COLOR_COUNT - 1);
 
-/** Trim and collapse repeated whitespace. */
-export const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ');
-const NAME_CHARS = /^[\p{L}\p{M} '’-]+$/u;
+export { isValidName, normalizeBrPhone, normalizeName, userTypes } from './constants'; // CCR-058: zod-free in ./constants
 /** FR-6: 2–60 chars after normalizing; Unicode letters, space, hyphen, apostrophe; at least one letter. */
 export const nameSchema = z
   .string()
   .transform(normalizeName)
   .pipe(z.string().min(2).max(60).regex(NAME_CHARS).regex(/\p{L}/u));
-export const isValidName = (s: string) => nameSchema.safeParse(s).success;
 
 // --- personal data (CCR-017, D-570/D-571) -------------------------------------
 // PII: owner-only (profiles RLS select = own row; written only by the API). Never in logs, Mixpanel/telemetry, admin views,
 // or the referral/share surfaces. Included in the LGPD export (whole profiles row) and gone with the account (cascade).
-export const userTypes = ['aluno', 'professor', 'medico_formado'] as const;
 export const userTypeSchema = z.enum(userTypes);
 export type UserType = z.infer<typeof userTypeSchema>;
 /** "Sexo" in the form; inclusive options + "Prefiro não dizer". Labels in @remoa/strings. */
@@ -61,18 +58,6 @@ export const brUfSchema = z.enum(brUfs);
 export type BrUf = z.infer<typeof brUfSchema>;
 
 const digits = (s: string) => s.replace(/\D/g, '');
-/**
- * BR phone → E.164 (`+55` + DDD + number), or null if invalid. Accepts any mask ("(11) 91234-5678", "+55 11 ...").
- * DDD 11–99 without a 0; 11-digit numbers are mobiles (start with 9); 10-digit landlines start with 2–5.
- */
-export function normalizeBrPhone(input: string): string | null {
-  let d = digits(input);
-  if ((d.length === 12 || d.length === 13) && d.startsWith('55')) d = d.slice(2);
-  if (!/^[1-9][1-9]/.test(d)) return null;
-  const n = d.slice(2);
-  if (n.length === 9 ? n[0] !== '9' : n.length !== 8 || !/^[2-5]/.test(n)) return null;
-  return `+55${d}`;
-}
 export const BR_PHONE_E164 = /^\+55[1-9]{2}(9\d{8}|[2-5]\d{7})$/;
 export const brPhoneSchema = z.string().max(30).transform((v, ctx) => normalizeBrPhone(v) ?? (ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid phone' }), z.NEVER));
 /** CEP → 8 digits ("01310-100" → "01310100"). The web fills the rest from ViaCEP; the server never calls it. */
@@ -183,26 +168,10 @@ export const confirmAvatarInputSchema = z.object({ key: z.string().min(1).max(30
 export type ConfirmAvatarInput = z.infer<typeof confirmAvatarInputSchema>;
 
 // --- password ----------------------------------------------------------------
-const PASSWORD_MAX = 72; // GoTrue/bcrypt limit
-/** FR-9 minimum policy: 8+ chars with a letter and a digit. */
-export const isValidPassword = (pw: string) =>
-  pw.length >= 8 && pw.length <= PASSWORD_MAX && /\p{L}/u.test(pw) && /\d/.test(pw);
+export { isValidPassword, passwordLabels, passwordStrength } from './constants'; // CCR-058: zod-free in ./constants
+export type { PasswordLabel, PasswordStrength } from './constants';
 export const passwordSchema = z.string().refine(isValidPassword, 'weak password');
 
-export const passwordLabels = ['weak', 'fair', 'good', 'strong'] as const;
-export type PasswordLabel = (typeof passwordLabels)[number];
-export type PasswordStrength = {
-  /** 0 = empty; 1 = below policy; 2–4 = valid. Meter segments filled = score. */
-  score: 0 | 1 | 2 | 3 | 4;
-  label: PasswordLabel;
-  checks: { minLength: boolean; lettersAndNumbers: boolean; long: boolean };
-};
-export function passwordStrength(pw: string): PasswordStrength {
-  const checks = { minLength: pw.length >= 8, lettersAndNumbers: /\p{L}/u.test(pw) && /\d/.test(pw), long: pw.length >= 12 };
-  const varied = /[^\p{L}\d]/u.test(pw) || (/\p{Lu}/u.test(pw) && /\p{Ll}/u.test(pw));
-  const score = !pw ? 0 : !isValidPassword(pw) ? 1 : ((2 + Number(checks.long) + Number(varied)) as 2 | 3 | 4);
-  return { score, label: passwordLabels[Math.max(score, 1) - 1]!, checks };
-}
 
 export const changePasswordInputSchema = z.object({
   currentPassword: z.string().min(1).max(PASSWORD_MAX),
@@ -290,11 +259,8 @@ export function computeCompleteness(
 }
 
 // --- usage -------------------------------------------------------------------
-export const usageTones = ['normal', 'warn', 'full'] as const;
-export type UsageTone = (typeof usageTones)[number];
-/** FR-12: warn from 80%, full at 100%; null limit = unlimited (always normal). */
-export const usageTone = (used: number, limit: number | null): UsageTone =>
-  limit === null ? 'normal' : used >= limit ? 'full' : used >= limit * 0.8 ? 'warn' : 'normal';
+export { comparisonRows, usageTone, usageTones } from './constants'; // CCR-058: zod-free in ./constants
+export type { ComparisonRow, UsageTone } from './constants';
 
 export const usageRowSchema = z.object({
   key: quotaKeySchema,
@@ -374,22 +340,4 @@ export const accountEventTypes = [
 ] as const;
 export type AccountEventType = (typeof accountEventTypes)[number];
 
-// --- F15 matrix (lives here, not in billing.ts: billing → account would be an import cycle; D-183) ---
-export type ComparisonRow = {
-  key: PlanFeatureKey;
-  free: number | null;
-  pro: number | null;
-  /** Student usage in the current plan's column; null = not metered (Anki, new cards/day) or entitlements failed to load (FR-12). */
-  usage: { used: number; limit: number | null; tone: UsageTone } | null;
-};
-const meteredKeys: readonly string[] = quotaKeySchema.options;
-/** FR-4: matrix rows with the student's usage in the current plan column. */
-export const comparisonRows = (e: Pick<Entitlements, 'usage' | 'limits'> | null): ComparisonRow[] => {
-  const free = planDefinition('free');
-  const pro = planDefinition('pro');
-  return planFeatureKeys.map((key) => {
-    if (!e || !meteredKeys.includes(key)) return { key, free: free[key], pro: pro[key], usage: null };
-    const q = key as keyof Entitlements['usage'];
-    return { key, free: free[key], pro: pro[key], usage: { used: e.usage[q], limit: e.limits[q], tone: usageTone(e.usage[q], e.limits[q]) } };
-  });
-};
+// F15 matrix (`comparisonRows`): ./constants (CCR-058), re-exported above.

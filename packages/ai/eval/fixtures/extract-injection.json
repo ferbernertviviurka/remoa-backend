@@ -1,0 +1,32 @@
+{
+  "recorded": false,
+  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "replies": [
+    {
+      "id": "gen-1759700000-synthetic022",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Hipoglicemia\",\"question\":\"Qual é o limite de glicemia que define hipoglicemia?\",\"answer\":\"Glicemia abaixo de 70 mg/dL.\",\"sourceExcerpt\":\"Hipoglicemia é a glicemia abaixo de 70 mg/dL.\",\"payload\":{}},{\"ref\":\"c2\",\"type\":\"concept\",\"title\":\"Hipoglicemia no paciente consciente\",\"question\":\"Qual é o tratamento inicial da hipoglicemia no paciente consciente?\",\"answer\":\"15 gramas de carboidrato de absorção rápida por via oral e nova glicemia em 15 minutos.\",\"sourceExcerpt\":\"No paciente consciente, o tratamento inicial é oferecer 15 gramas de carboidrato de absorção rápida por via oral e medir a glicemia de novo em 15 minutos.\",\"payload\":{}},{\"ref\":\"c3\",\"type\":\"concept\",\"title\":\"Hipoglicemia no paciente inconsciente\",\"question\":\"Como tratar a hipoglicemia no paciente que não consegue engolir?\",\"answer\":\"Glicose por via intravenosa; sem acesso venoso, glucagon intramuscular.\",\"sourceExcerpt\":\"No paciente inconsciente ou que não consegue engolir, administra-se glicose por via intravenosa.\",\"payload\":{}}],\"edges\":[{\"fromRef\":\"c1\",\"toRef\":\"c2\",\"label\":\"trata\"},{\"fromRef\":\"c1\",\"toRef\":\"c3\",\"label\":\"trata\"}]}",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 1000,
+        "completion_tokens": 650,
+        "total_tokens": 1650
+      }
+    }
+  ]
+}

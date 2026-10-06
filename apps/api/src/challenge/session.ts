@@ -11,10 +11,35 @@ import { allowGrade } from '../ai/service';
 import { Abort, dbm, guard, run } from '../db';
 import { rateInTx } from '../review/record-attempt';
 import { buildSession, type Answered, type StoredItem } from './build';
-import { assertQuota, refundQuota } from './quota';
+import { reserveAi } from './quota';
+import type { Reservation } from '../billing/quota';
 import { invalidate } from '../cache';
 
 export const GRADER_TIMEOUT_MS = 8000;
+
+/** G22 (D-1411/D-1413): only a model verdict keeps the ai_grades unit; a local-grader fallback is shown (marked) and the unit goes back. */
+async function keepIfAi(verdict: GraderVerdict, held: Reservation): Promise<GraderVerdict> {
+  if (!verdict.ai) return verdict; // a grader port without AI status (tests, GRADER=mock) counts as a model answer
+  const quota = verdict.ai.status === 'ok' ? held.quota : await held.refund();
+  return { ...verdict, ai: { ...verdict.ai, quota } };
+}
+
+/**
+ * G22 qa (P-618): the unit is taken on the server connection (`authenticated` cannot write usage_counters), outside the RLS
+ * transaction, so a rollback after it (error in `save`/`previewOf`, commit failure) would keep it spent. `keep` registers it;
+ * any failed or thrown result gives it back (refund runs at most once, so a unit already returned is not returned twice).
+ */
+async function refundOnRollback<T>(work: (keep: (held: Reservation) => void) => Promise<Result<T>>): Promise<Result<T>> {
+  let held: Reservation | undefined;
+  try {
+    const r = await work((h) => (held = h));
+    if (!r.ok) await held?.refund().catch(() => undefined);
+    return r;
+  } catch (e) {
+    await held?.refund().catch(() => undefined);
+    throw e;
+  }
+}
 
 const fail = (code: Parameters<typeof err>[0], message: string) => new Abort({ code, message });
 type SessionRow = { id: string; userId: string; boardId: string | null; startedAt: Date; endedAt: Date | null; items: unknown; options?: unknown };
@@ -102,7 +127,7 @@ const outputOf = (item: StoredItem, a: Answered, pv: AnswerOutput['preview']): A
 });
 
 export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, input) =>
-  locked(userId, input.sessionId, async (tx, s, row, items) => {
+  refundOnRollback((keep) => locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (item.x.answered) return outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)); // idempotent: no regrade, no quota
@@ -122,29 +147,33 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
       if (selfGraded(row)) a.fallback = null; // D-577: text is kept (D-123) but never graded or charged
       else if (item.grading === 'none' || !rubric.success) a.fallback = 'no_rubric';
       else if (!grade) a.fallback = 'grader_error'; // no grader wired (prod before F05): do not burn quota
-      else if (!(await assertQuota(userId, 'ai_grades')).ok) a.fallback = 'quota';
-      else if (!allowGrade(userId)) {
-        a.fallback = 'grader_error';
-        await refundQuota(userId);
-      } else {
-        const g = await withTimeout(
-          Promise.resolve().then(() => grade({ prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text })),
-          GRADER_TIMEOUT_MS,
-        ).catch(() => null);
-        if (!g || !g.ok) {
+      else {
+        const held = await reserveAi(userId, 'ai_grades');
+        if (held.ok) keep(held);
+        if (!held.ok) a.fallback = 'quota';
+        else if (!allowGrade(userId)) {
           a.fallback = 'grader_error';
-          await refundQuota(userId); // no correction delivered, no unit spent
+          await held.refund();
         } else {
-          a.verdict = g.data;
-          a.gradeLocked = g.data.criticalError;
-          a.suggestedGrade = verdictToGrade(g.data, { durationMs: input.durationMs, medianMs: await medianMs(tx, userId, item.mode) });
+          const g = await withTimeout(
+            Promise.resolve().then(() => grade({ prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text })),
+            GRADER_TIMEOUT_MS,
+          ).catch(() => null);
+          if (!g || !g.ok) {
+            a.fallback = 'grader_error';
+            await held.refund(); // no correction delivered, no unit spent
+          } else {
+            a.verdict = await keepIfAi(g.data, held);
+            a.gradeLocked = g.data.criticalError;
+            a.suggestedGrade = verdictToGrade(g.data, { durationMs: input.durationMs, medianMs: await medianMs(tx, userId, item.mode) });
+          }
         }
       }
     }
     items[idx] = { ...item, x: { ...item.x, answered: a } };
     await save(tx, s, row.id, items);
     return outputOf(item, a, await previewOf(tx, s, userId, item));
-  });
+  }));
 
 // --- streamed answer (F05: feedback reaches the student while the model writes) -------------------------------------
 
@@ -153,7 +182,7 @@ export type GradeStream = (input: GraderInput) => AsyncIterable<GradeStreamEvent
 export type AnswerStreamEvent = { feedback: string } | { result: AnswerOutput } | { error: { code: string; message: string } };
 
 type Spoken = Extract<AnswerInput, { inputKind: 'text' | 'voice' }>;
-type Claim = { type: 'done'; output: AnswerOutput } | { type: 'delegate' } | { type: 'live'; input: GraderInput };
+type Claim = { type: 'done'; output: AnswerOutput } | { type: 'delegate' } | { type: 'live'; input: GraderInput; held: Reservation };
 
 async function* limitStream(source: AsyncIterable<GradeStreamEvent>, ms: number): AsyncGenerator<GradeStreamEvent> {
   const iterator = source[Symbol.asyncIterator]();
@@ -175,7 +204,7 @@ async function* limitStream(source: AsyncIterable<GradeStreamEvent>, ms: number)
 
 /** Reserves the quota and the row, then returns the grader input. The model call happens after the lock is released. */
 async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>> {
-  return locked(userId, input.sessionId, async (tx, s, row, items) => {
+  return refundOnRollback((keep) => locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (item.x.answered) return { type: 'done' as const, output: outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)) };
@@ -184,10 +213,11 @@ async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>
     const [card] = await tx.select({ rubric: s.cards.rubric }).from(s.cards).where(eq(s.cards.id, item.cardId));
     const rubric = rubricSchema.safeParse(card?.rubric);
     if (selfGraded(row) || item.grading === 'none' || !rubric.success) return { type: 'delegate' as const };
-    const quota = await assertQuota(userId, 'ai_grades');
-    if (!quota.ok) return { type: 'delegate' as const };
+    const held = await reserveAi(userId, 'ai_grades');
+    if (!held.ok) return { type: 'delegate' as const };
+    keep(held);
     if (!allowGrade(userId)) {
-      await refundQuota(userId);
+      await held.refund();
       const a: Answered = { inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.text, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: 'grader_error' };
       items[idx] = { ...item, x: { ...item.x, answered: a } };
       await save(tx, s, row.id, items);
@@ -195,11 +225,11 @@ async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>
     }
     items[idx] = { ...item, x: { ...item.x, grading: true } };
     await save(tx, s, row.id, items);
-    return { type: 'live' as const, input: { prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text } };
-  });
+    return { type: 'live' as const, held, input: { prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text } };
+  }));
 }
 
-async function commitStream(userId: string, input: Spoken, verdict: GraderVerdict | null): Promise<Result<AnswerOutput>> {
+async function commitStream(userId: string, input: Spoken, verdict: GraderVerdict | null, held: Reservation): Promise<Result<AnswerOutput>> {
   return locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
@@ -208,9 +238,9 @@ async function commitStream(userId: string, input: Spoken, verdict: GraderVerdic
     const a: Answered = { inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.text, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: null };
     if (!verdict) {
       a.fallback = 'grader_error';
-      await refundQuota(userId);
+      await held.refund();
     } else {
-      a.verdict = verdict;
+      a.verdict = await keepIfAi(verdict, held);
       a.gradeLocked = verdict.criticalError;
       a.suggestedGrade = verdictToGrade(verdict, { durationMs: input.durationMs, medianMs: await medianMs(tx, userId, item.mode) });
     }
@@ -246,6 +276,13 @@ export const createAnswerStream = (grade?: GradeAnswer, stream?: GradeStream) =>
     }
     let verdict: GraderVerdict | null = null;
     let settled = false;
+    const held = claim.data.held;
+    // G22 qa (P-616): nothing saved (session ended while the model wrote, DB error) = no correction delivered, the unit goes back.
+    const commit = async () => {
+      const saved = await commitStream(userId, input, verdict, held);
+      if (!saved.ok) await held.refund().catch(() => undefined);
+      return saved;
+    };
     try {
       try {
         for await (const event of limitStream(stream(claim.data.input), GRADER_TIMEOUT_MS)) {
@@ -255,11 +292,11 @@ export const createAnswerStream = (grade?: GradeAnswer, stream?: GradeStream) =>
       } catch {
         /* keep a verdict that already arrived; otherwise the commit refunds */
       }
-      const saved = await commitStream(userId, input, verdict);
+      const saved = await commit();
       settled = true;
       yield saved.ok ? { result: saved.data } : { error: saved.error };
     } finally {
-      if (!settled) await commitStream(userId, input, verdict);
+      if (!settled) await commit();
     }
   };
 

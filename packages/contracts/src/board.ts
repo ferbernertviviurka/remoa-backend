@@ -2,19 +2,17 @@ import { z } from 'zod';
 import { areas, boardAccess, boardStatuses, cardTypes, mapStates } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
 import { cardSchema, cardSizeSchema } from './card';
+import { MAX_MATRIX_ITEMS_PER_BOARD, SHARE_PASSWORD_MAX, SHARE_PASSWORD_MIN } from './constants';
 
 // --- F17 access and matrix items (D-281, D-285–D-289) ---------------------------
 export const boardAccessSchema = z.enum(boardAccess);
-/** F17 FR-5: at most 10 matrix items per board (leaf items of the board's area; the API answers 422 otherwise). */
-export const MAX_MATRIX_ITEMS_PER_BOARD = 10;
+export { MAX_MATRIX_ITEMS_PER_BOARD, SHARE_PASSWORD_MAX, SHARE_PASSWORD_MIN } from './constants'; // CCR-058: zod-free in ./constants
 /** Duplicates collapse; order is kept (the first one also goes to boards.matrix_item_id). */
 export const matrixItemIdsSchema = z
   .array(idSchema)
   .max(MAX_MATRIX_ITEMS_PER_BOARD)
   .transform((ids) => [...new Set(ids)]);
-/** Q-034: 6..64 characters, no other rule (attempt limit + slow hash do the rest). Never trimmed, never logged. */
-export const SHARE_PASSWORD_MIN = 6;
-export const SHARE_PASSWORD_MAX = 64;
+/** Q-034: SHARE_PASSWORD_MIN..MAX characters, no other rule (attempt limit + slow hash do the rest). Never trimmed, never logged. */
 export const sharePasswordSchema = z.string().min(SHARE_PASSWORD_MIN).max(SHARE_PASSWORD_MAX);
 /**
  * Password rule shared by every input that sets an access level: required with `password`, rejected with the others

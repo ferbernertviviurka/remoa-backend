@@ -1,0 +1,43 @@
+{
+  "recorded": false,
+  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "replies": [
+    {
+      "id": "gen-1759700000-synthetic014",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "tool_calls",
+          "native_finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "",
+            "refusal": null,
+            "reasoning": null,
+            "tool_calls": [
+              {
+                "id": "call_14",
+                "index": 0,
+                "type": "function",
+                "function": {
+                  "name": "grade",
+                  "arguments": "{\"verdict\":\"incorrect\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":false,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"A resposta não descreve a conduta e não cobre nenhum ponto da rubrica. Fonte: Hipoglicemia no adulto.\"}"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 610,
+        "completion_tokens": 120,
+        "total_tokens": 730
+      }
+    }
+  ]
+}

@@ -3,8 +3,9 @@ import { gradeOffline } from './offline';
 import { runOfflineEval } from './eval';
 import { graderCases } from './eval-cases';
 import { chunkText, extractOffline, extractWithMeta, layout, mergeDrafts } from './extract';
-import { cachedRubric, costCents, rubricFromCard } from './grade';
-import { graderUser, parseVerdict } from './openrouter';
+import { cachedRubric, rubricFromCard } from './grade';
+import { costCents, rememberPrice } from './client';
+import { graderUser } from './openrouter';
 import { pdfPageCount, pdfText } from './pdf';
 
 describe('offline grader', () => {
@@ -153,18 +154,15 @@ describe('openrouter parse', () => {
     expect(body).toContain(graderCases[0]!.input.answer);
   });
 
-  it('prices a million tokens at the list price of the model', () => {
-    expect(costCents(1_000_000, 0, 'anthropic/claude-3.5-haiku')).toBe(80);
-    expect(costCents(0, 1_000_000, 'anthropic/claude-3.5-haiku')).toBe(400);
-    expect(costCents(1_000_000, 0, 'anthropic/claude-3.5-sonnet')).toBe(300);
-    expect(costCents(0, 1_000_000, 'anthropic/claude-3.5-sonnet')).toBe(1500);
-    expect(costCents(10, 10, 'anthropic/claude-3.5-haiku')).toBe(1);
-    expect(costCents(0, 0, 'anthropic/claude-3.5-sonnet')).toBe(0);
-  });
-
-  it('accepts a model verdict', () => {
-    const v = parseVerdict(JSON.stringify({ verdict: 'partial', matched: [], missing: ['x'], criticalError: false, feedback: 'faltou' }), 'anthropic/claude-3.5-haiku');
-    expect(v.model).toBe('anthropic/claude-3.5-haiku');
+  it('prices from the catalog (USD per token) and is 0 for an unknown or free model', () => {
+    rememberPrice('test/paid', 0.000003, 0.000015);
+    rememberPrice('test/x:free', 0, 0);
+    expect(costCents(1_000_000, 0, 'test/paid')).toBe(300);
+    expect(costCents(0, 1_000_000, 'test/paid')).toBe(1500);
+    expect(costCents(10, 10, 'test/paid')).toBe(1);
+    expect(costCents(0, 0, 'test/paid')).toBe(0);
+    expect(costCents(1_000_000, 1_000_000, 'test/x:free')).toBe(0);
+    expect(costCents(1_000_000, 1_000_000, 'never/seen')).toBe(0);
   });
 
   it('extracts with OpenRouter when the key is set and falls back when the call fails', async () => {
@@ -172,7 +170,7 @@ describe('openrouter parse', () => {
     process.env.OPENROUTER_API_KEY = 'test-key';
     const text = 'Sepse exige noradrenalina na primeira hora do choque.';
     const reply = JSON.stringify({
-      cards: [{ ref: 'c1', type: 'concept', title: 'Noradrenalina', front: null, back: 'Droga do choque', source: null, payload: {} }],
+      cards: [{ ref: 'c1', type: 'concept', title: 'Noradrenalina', question: 'Qual droga?', answer: 'Noradrenalina', sourceExcerpt: 'Sepse exige noradrenalina na primeira hora', payload: {} }],
       edges: [],
     });
     const okFetch = (async () => Response.json({ choices: [{ message: { content: reply } }], usage: { prompt_tokens: 10, completion_tokens: 4 } })) as typeof fetch;

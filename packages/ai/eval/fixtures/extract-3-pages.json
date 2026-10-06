@@ -1,0 +1,58 @@
+{
+  "recorded": false,
+  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "replies": [
+    {
+      "id": "gen-1759700000-synthetic018",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Hipoglicemia\",\"question\":\"Qual é o limite de glicemia que define hipoglicemia?\",\"answer\":\"Glicemia abaixo de 70 mg/dL.\",\"sourceExcerpt\":\"Hipoglicemia é a glicemia abaixo de 70 mg/dL.\",\"payload\":{}},{\"ref\":\"c2\",\"type\":\"concept\",\"title\":\"Hipoglicemia no paciente consciente\",\"question\":\"Qual é o tratamento inicial da hipoglicemia no paciente consciente?\",\"answer\":\"15 gramas de carboidrato de absorção rápida por via oral e nova glicemia em 15 minutos.\",\"sourceExcerpt\":\"No paciente consciente, o tratamento inicial é oferecer 15 gramas de carboidrato de absorção rápida por via oral e medir a glicemia de novo em 15 minutos.\",\"payload\":{}},{\"ref\":\"c4\",\"type\":\"flow\",\"title\":\"Fluxo de atendimento da hipoglicemia\",\"question\":\"Quais são os passos do atendimento da hipoglicemia?\",\"answer\":\"Confirmar, avaliar a consciência, tratar, medir de novo e investigar a causa.\",\"sourceExcerpt\":\"Confirmar a glicemia capilar.\",\"payload\":{\"steps\":[{\"id\":\"s1\",\"text\":\"Confirmar a glicemia capilar.\"},{\"id\":\"s2\",\"text\":\"Avaliar se o paciente está consciente e consegue engolir.\"},{\"id\":\"s3\",\"text\":\"Tratar por via oral ou venosa conforme a avaliação.\"},{\"id\":\"s4\",\"text\":\"Medir a glicemia de novo em 15 minutos.\"},{\"id\":\"s5\",\"text\":\"Investigar a causa do episódio.\"}]}},{\"ref\":\"c5\",\"type\":\"concept\",\"title\":\"Cetoacidose diabética\",\"question\":\"O que causa a cetoacidose diabética?\",\"answer\":\"Deficiência de insulina, com hiperglicemia, cetose e acidose metabólica.\",\"sourceExcerpt\":\"A cetoacidose diabética é uma complicação aguda do diabetes causada por deficiência de insulina.\",\"payload\":{}},{\"ref\":\"c6\",\"type\":\"concept\",\"title\":\"Tratamento da cetoacidose diabética\",\"question\":\"Quais são os três pilares do tratamento da cetoacidose diabética?\",\"answer\":\"Hidratação venosa, insulina venosa e reposição de potássio conforme o nível sérico.\",\"sourceExcerpt\":\"O tratamento se apoia em três pilares: hidratação venosa, insulina venosa e reposição de potássio conforme o nível sérico.\",\"payload\":{}},{\"ref\":\"c7\",\"type\":\"concept\",\"title\":\"Estado hiperglicêmico hiperosmolar\",\"question\":\"O que caracteriza o estado hiperglicêmico hiperosmolar?\",\"answer\":\"Hiperglicemia muito alta, osmolaridade elevada e desidratação grave, com pouca ou nenhuma cetose.\",\"sourceExcerpt\":\"Ele se caracteriza por hiperglicemia muito alta, osmolaridade elevada e desidratação grave, com pouca ou nenhuma cetose.\",\"payload\":{}},{\"ref\":\"c8\",\"type\":\"case\",\"title\":\"Caso fictício: idoso sonolento com poliúria\",\"question\":\"Qual é o diagnóstico e a conduta inicial no caso?\",\"answer\":\"Estado hiperglicêmico hiperosmolar; hidratação venosa, seguida de insulina.\",\"sourceExcerpt\":\"Diagnóstico: estado hiperglicêmico hiperosmolar.\",\"payload\":{\"caseSteps\":[{\"stage\":\"presentation\",\"text\":\"Paciente fictício de 68 anos, com diabetes tipo 2, chega sonolento após três dias de poliúria.\"},{\"stage\":\"workup\",\"text\":\"Glicemia muito alta, osmolaridade elevada e ausência de cetose.\"},{\"stage\":\"diagnosis\",\"text\":\"Estado hiperglicêmico hiperosmolar.\"},{\"stage\":\"management\",\"text\":\"Hidratação venosa, seguida de insulina.\"}]}},{\"ref\":\"c9\",\"type\":\"concept\",\"title\":\"Órgão imaginário Zorb-1\",\"question\":\"O que produz o órgão imaginário Zorb-1?\",\"answer\":\"A substância fictícia Z1.\",\"sourceExcerpt\":\"Ele produz a substância fictícia Z1, que regula a cor do céu de Zorbo durante o ciclo 1.\",\"payload\":{}}],\"edges\":[{\"fromRef\":\"c1\",\"toRef\":\"c2\",\"label\":\"trata\"},{\"fromRef\":\"c2\",\"toRef\":\"c4\",\"label\":\"segue o fluxo\"},{\"fromRef\":\"c5\",\"toRef\":\"c6\",\"label\":\"trata\"},{\"fromRef\":\"c7\",\"toRef\":\"c8\",\"label\":\"exemplifica\"}]}",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2900,
+        "completion_tokens": 1700,
+        "total_tokens": 4600
+      }
+    },
+    {
+      "id": "gen-1759700000-synthetic019",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Órgão imaginário Zorb-5\",\"question\":\"O que produz o órgão imaginário Zorb-5?\",\"answer\":\"A substância fictícia Z5.\",\"sourceExcerpt\":\"Ele produz a substância fictícia Z5, que regula a cor do céu de Zorbo durante o ciclo 5.\",\"payload\":{}},{\"ref\":\"c2\",\"type\":\"concept\",\"title\":\"Órgão imaginário Zorb-6\",\"question\":\"O que produz o órgão imaginário Zorb-6?\",\"answer\":\"A substância fictícia Z6.\",\"sourceExcerpt\":\"Ele produz a substância fictícia Z6, que regula a cor do céu de Zorbo durante o ciclo 6.\",\"payload\":{}}],\"edges\":[{\"fromRef\":\"c1\",\"toRef\":\"c2\",\"label\":\"fica ao lado de\"}]}",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 1100,
+        "completion_tokens": 350,
+        "total_tokens": 1450
+      }
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import { sweepSupport } from '../support/retention';
 import { cleanOrphanAssets, purgeDeletedCards } from '../cleanup/assets';
 import { sendOnboardingEmails } from '../onboarding/emails';
 import { refreshRecentMetrics } from '../admin/overview/metrics';
+import { failStaleJobs } from '../ai/service';
 
 const log = createLogger({ requestId: 'job-maintenance' });
 
@@ -18,7 +19,8 @@ export async function runHourly(now = new Date()) {
   const support = await sweepSupport(now); // F19 FR-9 (Q-046)
   const metrics = await refreshRecentMetrics(now); // F19 FR-13 (D-458)
   const onboarding = await sendOnboardingEmails(now); // F12 FR-8 (D-525)
-  const out = { referrals, support, metrics, onboarding };
+  const staleJobs = await failStaleJobs(); // G22 qa (P-617): AI jobs of a process that died give their unit back
+  const out = { referrals, support, metrics, onboarding, staleJobs };
   log.info('maintenance hourly done', out);
   return out;
 }

@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { areas, boardAccess, cardTypes, challengeModes, grades, inputKinds, plans, sessionKinds, verdicts } from './enums';
-import { paywallReasons, billingPeriods, paymentMethods } from './billing';
+import { billingPeriods, paymentMethods } from './billing';
+import { paywallReasons, plansFromSources, upgradeSources } from './constants';
 import { disputeOutcomes } from './editorial';
 import { segments, startPaths } from './onboarding';
 import { friendStatuses, referralEntryPoints, referralRejectReasons, referralShareChannels, referralSides } from './referral';
 import { supportTicketTypes } from './support';
 import { calendarReminderKinds, calendarSystemLabels, calendarViews } from './calendar';
 import { notificationPrefKeys, notificationTypes } from './notifications';
+import { aiStatuses } from './ai';
 import { accountSections, completenessItems, identityProviders, passwordLabels, preferencesSchema, reminderHourSchema, themes } from './account';
 
 // Rule (F11): events carry counts and enums only, never answer text or card content.
@@ -15,9 +17,7 @@ const none = z.object({}).strict();
 const count = z.number().int().nonnegative();
 const ms = z.number().nonnegative();
 const authMethod = z.enum(['password', 'magic_link', 'google']);
-const upgradeSources = ['account_plan', 'usage_nudge', 'navbar_upgrade', 'plan_popover', 'map_slider_lock', 'library_lock', 'header_new_map_lock', 'referral'] as const;
-/** F15 `/planos?de=`: an upgrade_clicked source, a paywall reason, or 'direct' (missing or unknown `de`). */
-export const plansFromSources = [...upgradeSources, ...paywallReasons, 'direct'] as const;
+export { plansFromSources } from './constants'; // CCR-058: zod-free in ./constants (with upgradeSources)
 
 export const eventSchemas = {
   // F00
@@ -58,6 +58,12 @@ export const eventSchemas = {
   paywall_viewed: z.object({ reason: z.enum(paywallReasons) }).strict(),
   // F05
   ai_graded: z.object({ verdict: z.enum(verdicts), latencyMs: ms, costCents: z.number().nonnegative(), model: z.string().min(1).max(64) }).strict(),
+  // G22 (CCR-071): server only (log line with `event`), never prompt, answer or card text
+  ai_call: z.object({ fn: z.enum(['grade', 'rubric', 'extract']), model: z.string().min(1).max(80), latencyMs: ms, status: z.enum(aiStatuses) }).strict(),
+  ai_error: z.object({ fn: z.enum(['grade', 'rubric', 'extract']), type: z.string().regex(/^[a-z_]{1,40}$/) }).strict(),
+  // G22 (CCR-072): client; no user content (code = AiErrorCode)
+  ai_error_shown: z.object({ code: z.string().regex(/^[a-z_]{1,40}$/) }).strict(),
+  ai_grade_flagged: none,
   board_generated_from_pdf: z.object({ pages: count, cards: count, edges: count, durationMs: ms }).strict(),
   rubric_generated: none,
   // F06

@@ -11,11 +11,16 @@ const dagre = require('@dagrejs/dagre') as {
   graphlib: typeof graphlib;
   layout: (graph: InstanceType<typeof graphlib.Graph>) => void;
 };
-import { aiMode, completeJSON, EXTRACT_PROMPT_VERSION, extractModel } from './openrouter';
+import { z } from 'zod';
+import { AiError, generateJson } from './client';
+import { aiMode } from './config';
+import { EXTRACT_PROMPT_VERSION, extractUser, LIMITS, redact } from './openrouter';
 
 const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-export type Extracted = { cards: CardDraft[]; edges: EdgeDraft[] };
+/** `sourceExcerpt`: the literal passage of the input that backs an AI card (D-1422). Offline cards have none. */
+export type ExtractedCard = CardDraft & { sourceExcerpt?: string };
+export type Extracted = { cards: ExtractedCard[]; edges: EdgeDraft[] };
 
 /** Whole map generation, including every chunk, must finish inside this budget (F05). */
 export const GENERATE_BUDGET_MS = 10 * 60 * 1000;
@@ -37,7 +42,7 @@ export function chunkText(text: string, size = 1500): string[] {
 
 /** Merge drafts that share a normalized title. Edges are rewritten onto the kept ref. */
 export function mergeDrafts(chunks: Extracted[]): Extracted {
-  const cards: CardDraft[] = [];
+  const cards: ExtractedCard[] = [];
   const refOf = new Map<string, string>();
   for (const chunk of chunks) {
     for (const card of chunk.cards) {
@@ -189,65 +194,146 @@ export function extractOffline(text: string, source: string): Extracted {
   return mergeDrafts([{ cards, edges }]);
 }
 
-const extractPrompt = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../prompts/extract/v1.md'), 'utf8');
+const extractPrompt = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../prompts/extract/v2.md'), 'utf8');
 
-export type ExtractMeta = { model: string; promptVersion: string; tokensIn: number; tokensOut: number };
+/** Ceiling when the caller does not pass the plan's limit; the API passes the plan value (never a fixed quota). */
+export const DEFAULT_MAX_CARDS = 40;
+/** Characters per model call. ~1.5k tokens: few calls per text, which matters with 50 free calls a day (D-1423). */
+export const CHUNK_CHARS = 6_000;
+/** Text beyond this is not sent (about 30 pages); `meta.truncated` says so. */
+export const MAX_SOURCE_CHARS = 120_000;
 
-function parseExtract(text: string, source: string): Extracted | null {
-  const raw = JSON.parse(text) as { cards?: unknown; edges?: unknown };
-  if (!Array.isArray(raw.cards)) return null;
-  const cards: CardDraft[] = [];
+/** `dropped`: model cards thrown away because their `sourceExcerpt` is not literally in the text (content from outside). */
+/** `error` (G22, D-1414): set when the cards came from `extractOffline` because the model failed; the API fails the job instead of saving them as AI. */
+export type ExtractMeta = { model: string; promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number; dropped?: number; truncated?: boolean; error?: AiError };
+
+const replyCardSchema = z.object({
+  ref: z.string().min(1).max(40),
+  type: z.enum(['concept', 'flow', 'case']).catch('concept'),
+  title: z.string().trim().min(1).max(120),
+  question: z.string().trim().min(1).max(500),
+  answer: z.string().trim().min(1).max(2000),
+  sourceExcerpt: z.string().trim().min(12).max(1000),
+  payload: z.unknown().optional(),
+});
+
+const literalIn = (haystack: string, excerpt: string) => {
+  const needle = fold(excerpt.replace(/[^\p{L}\p{N}]+/gu, ' '));
+  return needle.length > 0 && fold(haystack.replace(/[^\p{L}\p{N}]+/gu, ' ')).includes(needle);
+};
+
+/** Valid items become drafts; an item whose excerpt is not in `chunk` is dropped and counted. Edges need a name. */
+export function parseExtract(raw: { cards: unknown[]; edges?: unknown }, source: string, chunk: string): { extracted: Extracted; dropped: number } {
+  const cards: ExtractedCard[] = [];
+  let dropped = 0;
   for (const item of raw.cards) {
-    if (!item || typeof item !== 'object') continue;
-    const row = item as Record<string, unknown>;
-    const type = row.type === 'flow' || row.type === 'case' ? row.type : 'concept';
-    const parsed = cardDraftSchema.safeParse({
-      ref: row.ref,
-      type,
-      title: row.title,
-      front: row.front ?? null,
-      back: row.back ?? null,
-      source: typeof row.source === 'string' ? row.source : source,
-      payload: type === 'concept' ? {} : row.payload,
-    });
-    if (parsed.success) cards.push(parsed.data);
+    const row = replyCardSchema.safeParse(item);
+    if (!row.success) continue;
+    const r = row.data;
+    if (!literalIn(chunk, r.sourceExcerpt)) {
+      dropped += 1;
+      continue;
+    }
+    const draft = cardDraftSchema.safeParse({ ref: r.ref, type: r.type, title: r.title, front: r.question, back: r.answer, source, payload: r.type === 'concept' ? {} : r.payload });
+    if (draft.success) cards.push({ ...draft.data, sourceExcerpt: r.sourceExcerpt });
   }
+  const refs = new Set(cards.map((c) => c.ref));
   const edges: EdgeDraft[] = Array.isArray(raw.edges)
     ? raw.edges.flatMap((edge) => {
         const parsed = edgeDraftSchema.safeParse(edge);
-        return parsed.success ? [parsed.data] : [];
+        if (!parsed.success || !parsed.data.label?.trim() || !refs.has(parsed.data.fromRef) || !refs.has(parsed.data.toRef)) return [];
+        return [{ ...parsed.data, label: parsed.data.label.trim().slice(0, 80) }];
       })
     : [];
-  return cards.length ? { cards, edges } : null;
+  return { extracted: { cards, edges }, dropped };
 }
 
-/** OpenRouter when the key exists; paragraph extraction otherwise, or if the model reply is invalid. */
-export async function extractWithMeta(text: string, source: string, fetchImpl?: typeof fetch, deadlineAt = Date.now() + GENERATE_BUDGET_MS): Promise<{ extracted: Extracted; meta: ExtractMeta }> {
-  const offline = (): { extracted: Extracted; meta: ExtractMeta } => ({
-    extracted: extractOffline(text, source),
-    meta: { model: 'offline-extract', promptVersion: EXTRACT_PROMPT_VERSION, tokensIn: 0, tokensOut: 0 },
+/**
+ * A chunk reply. `cards: []` is a valid answer (nothing to study). Items are checked one by one; a non-empty list where no
+ * item has the required fields fails validation and triggers the one repair.
+ */
+const extractReply = (source: string, chunk: string) =>
+  z.object({ cards: z.array(z.unknown()), edges: z.unknown().optional() }).passthrough().transform((raw, ctx) => {
+    const parsed = parseExtract(raw, source, chunk);
+    if (raw.cards.length && !parsed.extracted.cards.length && !parsed.dropped) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['cards'], message: 'nenhum card válido (ref, title, question, answer e sourceExcerpt literal obrigatórios)' });
+      return z.NEVER;
+    }
+    return parsed;
+  });
+
+/** Every chunk numbers its refs from c1: later chunks get a prefix so mergeDrafts never sees two cards with one ref. */
+const retag = (x: Extracted, p: string): Extracted => ({
+  cards: x.cards.map((c) => ({ ...c, ref: p + c.ref })),
+  edges: x.edges.map((e) => ({ ...e, fromRef: p + e.fromRef, toRef: p + e.toRef })),
+});
+
+const capCards = (x: Extracted, max: number): Extracted => {
+  if (x.cards.length <= max) return x;
+  const cards = x.cards.slice(0, max);
+  const keep = new Set(cards.map((c) => c.ref));
+  return { cards, edges: x.edges.filter((e) => keep.has(e.fromRef) && keep.has(e.toRef)) };
+};
+
+/**
+ * OpenRouter when configured; paragraph extraction otherwise, or if the provider fails. A chunk still invalid after one
+ * repair is skipped, and so is a reply whose cards all cite text that is not there (offline then). Stops calling once `maxCards` (the plan's limit) is reached. A model that validly finds nothing in the
+ * whole text throws `no_content` (the job fails and the API refunds), instead of inventing cards offline.
+ */
+export async function extractWithMeta(
+  text: string,
+  source: string,
+  fetchImpl?: typeof fetch,
+  deadlineAt = Date.now() + GENERATE_BUDGET_MS,
+  maxCards = DEFAULT_MAX_CARDS,
+): Promise<{ extracted: Extracted; meta: ExtractMeta }> {
+  const offline = (error?: AiError): { extracted: Extracted; meta: ExtractMeta } => ({
+    extracted: capCards(extractOffline(text, source), maxCards),
+    meta: { model: 'offline-extract', promptVersion: EXTRACT_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: 0, ...(error ? { error } : {}) },
   });
   if (aiMode() !== 'live') return offline();
+  const truncated = text.length > MAX_SOURCE_CHARS;
   try {
+    let merged: Extracted = { cards: [], edges: [] };
     const parts: Extracted[] = [];
     let tokensIn = 0;
     let tokensOut = 0;
-    let model = extractModel();
-    for (const chunk of chunkText(text)) {
+    let latencyMs = 0;
+    let dropped = 0;
+    let answered = false;
+    let model = '';
+    for (const [i, piece] of chunkText(text.slice(0, MAX_SOURCE_CHARS), CHUNK_CHARS).entries()) {
+      if (merged.cards.length >= maxCards) break;
       const remaining = deadlineAt - Date.now();
       if (remaining <= 0) throw new Error('generate_timeout');
-      const done = await completeJSON({ model: extractModel(), system: extractPrompt, user: chunk, timeoutMs: Math.min(20_000, remaining), fetchImpl });
-      tokensIn += done.tokensIn;
-      tokensOut += done.tokensOut;
-      model = done.model;
-      const parsed = parseExtract(done.text, source);
-      if (parsed) parts.push(parsed);
+      const chunk = redact(piece).slice(0, LIMITS.chunk);
+      try {
+        const done = await generateJson(extractReply(source, chunk), {
+          fn: 'extract', system: extractPrompt, user: extractUser(chunk, maxCards - merged.cards.length), signal: AbortSignal.timeout(remaining), fetchImpl,
+        });
+        tokensIn += done.tokensIn;
+        tokensOut += done.tokensOut;
+        latencyMs += done.latencyMs;
+        model = done.model;
+        answered = true;
+        dropped += done.data.dropped;
+        parts.push(i === 0 ? done.data.extracted : retag(done.data.extracted, `k${i}-`));
+        merged = mergeDrafts(parts);
+      } catch (e) {
+        if (!(e instanceof AiError && e.code === 'invalid_output')) throw e;
+        tokensIn += e.usage?.tokensIn ?? 0;
+        tokensOut += e.usage?.tokensOut ?? 0;
+        latencyMs += e.usage?.latencyMs ?? 0;
+      }
     }
-    const extracted = mergeDrafts(parts);
-    if (!extracted.cards.length) return offline();
-    return { extracted, meta: { model, promptVersion: EXTRACT_PROMPT_VERSION, tokensIn, tokensOut } };
+    const meta: ExtractMeta = { model, promptVersion: EXTRACT_PROMPT_VERSION, tokensIn, tokensOut, latencyMs, dropped, ...(truncated ? { truncated } : {}) };
+    if (!merged.cards.length) {
+      if (answered && !dropped) throw new Error('no_content');
+      return offline(new AiError('invalid_output', { detail: dropped ? 'every card cited text that is not in the input' : 'no valid chunk' }));
+    }
+    return { extracted: capCards(merged, maxCards), meta };
   } catch (e) {
-    if (e instanceof Error && e.message === 'generate_timeout') throw e;
-    return offline();
+    if (e instanceof Error && (e.message === 'generate_timeout' || e.message === 'no_content')) throw e;
+    return offline(e instanceof AiError ? e : new AiError('provider_error', { detail: e instanceof Error ? e.message : 'unknown' }));
   }
 }

@@ -401,6 +401,23 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
       expect(r.json.data.canonical).toBeTruthy();
       expect(r.json.data.preview.good).toBeDefined();
     }
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c?.aiGrades ?? 0).toBe(0); // P-623: no correction delivered, no unit spent
+  });
+
+  it('G22 qa (P-618): the answer transaction rolls back after a model verdict -> the ai_grades unit goes back', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
+    const it = s.items.find((i) => i.subId === 's1')!;
+    // Postgres jsonb refuses \u0000: `save` throws after the unit was taken, the whole transaction rolls back
+    const poisoned = mk(async (i) => { const g = await mockGrader(i); return g.ok ? ok({ ...g.data, feedback: 'a\u0000b' }) : g; });
+    const r = await answer(u, s.sessionId, it.id, { inputKind: 'text', text: 'hemocultura' }, poisoned);
+    expect(r.status).toBe(500);
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c?.aiGrades ?? 0).toBe(0);
+    const [row] = await dbm.db.select({ items: dbm.sessions.items }).from(dbm.sessions).where(eq(dbm.sessions.id, s.sessionId));
+    expect((row!.items as { id: string; x: { answered?: unknown } }[]).find((x) => x.id === it.id)!.x.answered).toBeUndefined();
   });
 
   it('dispute: needs a graded answer; inserts review_queue with attempt_id; idempotent; works before or after rate', async () => {
@@ -570,6 +587,29 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     const events = (await res.text()).trim().split('\n\n').map((block) => JSON.parse(block.replace(/^data: /, '')) as { feedback?: string; result?: { fallback: string | null; verdict: unknown } });
     expect(events.some((e) => e.feedback === 'Quase')).toBe(true);
     expect(events.at(-1)?.result).toMatchObject({ fallback: 'grader_error', verdict: null });
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c?.aiGrades ?? 0).toBe(0);
+  });
+
+  it('G22 qa (P-616): the session ends while the model writes -> nothing saved and the ai_grades unit goes back', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    let sessionId = '';
+    const ending: GradeStream = async function* () {
+      await dbm.db.update(dbm.sessions).set({ endedAt: new Date() }).where(eq(dbm.sessions.id, sessionId));
+      yield { verdict: { verdict: 'correct', matched: [], missing: [], criticalError: false, feedback: 'Certo.', model: 'stream-test' } };
+    };
+    const streaming = mk(mockGrader, ending);
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
+    sessionId = s.sessionId;
+    const it = s.items.find((i) => i.subId === 's1')!;
+    const res = await streaming.request('/v1/challenge/answer', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${u}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({ sessionId: s.sessionId, itemId: it.id, durationMs: 4000, inputKind: 'text', text: 'noradrenalina' }),
+    });
+    const events = (await res.text()).trim().split('\n\n').map((block) => JSON.parse(block.replace(/^data: /, '')) as { error?: { code: string } });
+    expect(events.at(-1)?.error?.code).toBe('conflict');
     const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
     expect(c?.aiGrades ?? 0).toBe(0);
   });

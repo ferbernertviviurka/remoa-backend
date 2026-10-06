@@ -7,7 +7,7 @@ import { createLogger } from '@remoa/log';
 import { createMockStripe, createStripe, installStripe } from './billing/stripe';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
 import { gradeAnswer, streamGradeAnswer } from './ai/service';
-import { aiMode } from '@remoa/ai';
+import { aiMode, missingConfig, validateAi } from '@remoa/ai';
 import { env as configEnv } from '@remoa/config';
 import { drainEmails } from './notifications/notify';
 
@@ -26,7 +26,9 @@ const devLike = process.env.NODE_ENV === 'development' || process.env.NODE_ENV =
 configEnv();
 for (const k of ['GRADER', 'STRIPE', 'AI'] as const) if (process.env[k] === 'mock' && !devLike) throw new Error(`${k}=mock requires NODE_ENV=development or test`);
 // D-580: map generation without OPENROUTER_API_KEY answers 503 ai_unavailable unless AI=mock (deterministic offline drafts). Said once at boot.
-if (aiMode() !== 'live') createLogger({ requestId: 'boot' }).warn(aiMode() === 'mock' ? 'AI=mock: generated maps are offline drafts' : 'AI off: set OPENROUTER_API_KEY (or AI=mock in dev) to generate maps');
+if (aiMode() !== 'live') createLogger({ requestId: 'boot' }).warn(aiMode() === 'mock' ? 'AI=mock: generated maps are offline drafts' : 'AI off: set the AI_* variables (or AI=mock in dev) to generate maps', { missing: missingConfig() });
+// G22 (D-1407): model, fallbacks and key checked against the OpenRouter catalog in the background; problems go to the log and /health.
+void validateAi();
 // F05: OpenRouter when OPENROUTER_API_KEY is set; rubric-only grader otherwise. GRADER=mock keeps the deterministic test double.
 const grade = process.env.GRADER === 'mock' ? mockGrader : gradeAnswer;
 const stream = process.env.GRADER === 'mock' ? undefined : streamGradeAnswer;

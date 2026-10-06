@@ -1,6 +1,9 @@
-export { aiMode, type AiMode, completeJSON, feedbackSoFar, streamJSON, graderModel, rubricModel, extractModel, GRADER_PROMPT_VERSION, RUBRIC_PROMPT_VERSION, EXTRACT_PROMPT_VERSION } from './openrouter';
+export { feedbackSoFar, GRADER_PROMPT_VERSION, RUBRIC_PROMPT_VERSION, EXTRACT_PROMPT_VERSION } from './openrouter';
+export { aiConfig, aiMode, type AiMode, type AiConfig, chainFor, modelFor, missingConfig } from './config';
+export { AiError, AI_ERROR_MESSAGES, type AiErrorCode, aiUsage, classify, costCents, generateJson, generateText, jsonStats, streamText, type Completion } from './client';
+export { aiHealth, validateAi, type AiHealth } from './catalog';
 export { gradeOffline } from './offline';
-export { gradeWithMeta, streamGrade, cachedRubric, rubricFromCard, rubricWithMeta, costCents, type GradeEvent } from './grade';
+export { gradeWithMeta, streamGrade, cachedRubric, rubricFromCard, rubricWithMeta, type GradeEvent } from './grade';
 export { chunkText, mergeDrafts, layout, extractOffline, extractWithMeta } from './extract';
 export { pdfPageCount, pdfText, readPdfText } from './pdf';
 export { ocrPdf } from './ocr';

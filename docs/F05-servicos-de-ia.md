@@ -23,9 +23,9 @@ A tela (progresso do PDF, marca de rascunho, feedback ao vivo) está em `remoa-f
 
 `gradeWithMeta` e `streamGrade` recebem o enunciado, a rubrica, os vizinhos e a resposta. O veredito é `correct`, `partial` ou `incorrect` (inglês, decisão D-019), com `matched`, `missing`, `criticalError`, `feedback` e `model`.
 
-O modelo padrão do corretor é `anthropic/claude-3.5-haiku` (`OPENROUTER_GRADER_MODEL` troca). A chamada é `POST https://openrouter.ai/api/v1/chat/completions`. O grader não pede JSON solto: pede a ferramenta `grade`, com `tool_choice` forçado nessa função. Os campos obrigatórios são `verdict`, `matched`, `missing`, `criticalError` e `feedback`. `completeJSON` lê `tool_calls[0].function.arguments` e, se não houver, o `content`. `parseVerdict` valida com zod e descarta `costCents` se o modelo inventar esse campo.
+O modelo do corretor vem do `.env` (`AI_MODEL_GRADER`, senão `AI_MODEL`, com reservas em `AI_MODEL_FALLBACKS`); nenhum id de modelo fica no código (D-1404). A chamada é `POST {AI_BASE_URL}/chat/completions` pelo cliente de `packages/ai`. Operação e erros: `docs/runbooks/ia.md`. O grader não pede JSON solto: pede a ferramenta `grade`, com `tool_choice` forçado nessa função. Os campos obrigatórios são `verdict`, `matched`, `missing`, `criticalError` e `feedback`. `generateJson` (cliente de `packages/ai`, com um reparo se o JSON não valida) lê `tool_calls[0].function.arguments` e, se não houver, o `content`. `parseVerdict` valida com zod e descarta `costCents` se o modelo inventar esse campo.
 
-`streamJSON` lê o SSE. Cada delta pode ser o pedaço dos argumentos da ferramenta ou o texto do conteúdo. `feedbackSoFar` extrai o valor de `"feedback"` mesmo com a string ainda aberta, para a tela mostrar o texto enquanto o modelo escreve. O timeout da chamada é 8 segundos.
+`streamJSON` lê o SSE. Cada delta pode ser o pedaço dos argumentos da ferramenta ou o texto do conteúdo. `feedbackSoFar` extrai o valor de `"feedback"` mesmo com a string ainda aberta, para a tela mostrar o texto enquanto o modelo escreve. O orçamento do corretor é 8 segundos, como sinal de cancelamento que cobre todas as tentativas (D-1409).
 
 `graderUser` monta o JSON do usuário só com `prompt`, `rubric`, `neighbors` e `answer`. `canonical` existe no `GraderInput` porque o desafio o carrega no servidor, mas não entra nesse JSON.
 
@@ -55,7 +55,7 @@ Os 50 casos incluem 10 erros críticos. A avaliação conta quantos desses o cor
 
 ## FR-4 — Rubrica
 
-`rubricWithMeta` usa `anthropic/claude-3.5-sonnet` (`OPENROUTER_RUBRIC_MODEL`) e o prompt `rubric/v1`, em modo `json_object`. A rubrica nasce `status: draft`, `reviewerId: null`, com `source` e `version` (1 se o modelo não mandar). Se o JSON não passa no schema, vale a rubrica local.
+`rubricWithMeta` usa o modelo de `AI_MODEL_RUBRIC` (senão `AI_MODEL`) e o prompt `rubric/v1`, em modo `json_object`. A rubrica nasce `status: draft`, `reviewerId: null`, com `source` e `version` (1 se o modelo não mandar). Se o JSON não passa no schema, vale a rubrica local.
 
 `rubricFromCard` quebra o verso (ou o título, se o verso estiver vazio) em frases por ponto ou ponto e vírgula, fica com trechos de mais de 8 caracteres, no máximo 8, e marca só o primeiro como essencial. O cache é um `Map` no processo, chave `fonte + título + verso`. `cachedRubric` devolve essa entrada. Não existe coluna `card.version`; o hash persistido no card é SHA-256 de título, verso e fonte (`inputHash`), em `attachRubric`.
 
@@ -71,7 +71,7 @@ O texto literal do PDF vem de `pdfText` (strings entre parênteses com pelo meno
 
 Estágios gravados no `Map` do processo: OCR em 10, extração em 20–30, layout em 75, pronto em 100. `generationOf` só devolve o job do mesmo usuário, com `cards`, `edges` e `pages`.
 
-`extractWithMeta` fatia o texto e, com chave, manda cada fatia ao Sonnet (`OPENROUTER_EXTRACT_MODEL`, prompt `extract/v1`). O orçamento inteiro é `GENERATE_BUDGET_MS` = 10 minutos. Entre fatias, se o prazo acabou, lança `generate_timeout` (esse erro não cai no extrator local). Cada fatia tem timeout de no máximo 20 segundos, ou o que restar. JSON inválido ou sem cards cai em `extractOffline`.
+`extractWithMeta` fatia o texto e, com chave, manda cada fatia ao modelo de `AI_MODEL_EXTRACT` (senão `AI_MODEL`; prompt `extract/v1`). O orçamento inteiro é `GENERATE_BUDGET_MS` = 10 minutos. Entre fatias, se o prazo acabou, lança `generate_timeout` (esse erro não cai no extrator local). Cada tentativa usa `AI_TIMEOUT_MS`, dentro do que restar dos 10 minutos (D-1409). JSON inválido ou sem cards cai em `extractOffline`.
 
 O layout usa `@dagrejs/dagre` 1.1.4 via `createRequire`. O import nomeado quebra o processo da API no tsx. O grafo é da esquerda para a direita, nó 240×140, `nodesep` 48, `ranksep` 80, margem 80. A coordenada gravada é o canto superior esquerdo. Auto-ligação e referência inexistente são ignoradas. Referência repetida também.
 
@@ -97,7 +97,7 @@ As versões gravadas são `grader/v2`, `rubric/v1` e `extract/v1`. `ai_calls.pro
 
 ## FR-8 — Custo, ritmo e cota
 
-`costCents` usa preço de lista em centavos por milhão de tokens. Haiku 3.5: 80 de entrada e 400 de saída. Sonnet 3.5: 300 e 1.500. Modelo com “sonnet” no nome, ou qualquer modelo que não seja Haiku e não comece com `offline`, usa a tabela do Sonnet. Zero tokens custam 0. Custo positivo abaixo de meio centavo vira 1, porque `ai_calls.cost_cents` é inteiro.
+`costCents` usa o preço do catálogo do OpenRouter lido na subida (USD por token); `:free`, modelo desconhecido ou zero tokens custam 0 (D-1410). Custo positivo abaixo de meio centavo vira 1, porque `ai_calls.cost_cents` é inteiro.
 
 `allowGrade` guarda, na memória do processo, os horários das últimas correções daquele usuário. A partir de 30 em 60 segundos responde `rate_limited` (“30 por minuto”). No fluxo com cota já cobrada, essa recusa devolve a cota.
 

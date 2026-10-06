@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { allowGrade, generationOf, startGeneration, startPdfGeneration } from './service';
+import { allowGrade, jobErrorCode, sourcedCards, startGeneration, startPdfGeneration } from './service';
 
 const env = { ...process.env };
 beforeEach(() => {
@@ -33,88 +32,29 @@ describe('AI not configured (D-580)', () => {
     const text = await startGeneration('ai-off-user', { kind: 'text', title: 'Sepse', area: 'CM', text: 'Sepse. '.repeat(20) } as Parameters<typeof startGeneration>[1]);
     expect(text).toMatchObject({ ok: false, error: { code: 'ai_unavailable' } });
   });
+});
 
-  it('AI=mock wins over a configured key: deterministic draft, no provider call', async () => {
-    process.env.OPENROUTER_API_KEY = 'would-call-openrouter';
-    delete process.env.DATABASE_URL;
-    delete process.env.INNGEST_EVENT_KEY;
-    delete process.env.INNGEST_DEV;
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    const started = await startGeneration('ai-mock-user', { kind: 'text', title: 'Sepse', area: 'CM', text: 'Sepse. Disfuncao organica por infeccao.\n\nChoque septico. Hipotensao refrataria a volume.' } as Parameters<typeof startGeneration>[1]);
-    expect(started.ok).toBe(true);
-    if (!started.ok || !('data' in started)) return;
-    let job = generationOf('ai-mock-user', started.data.jobId);
-    for (let i = 0; i < 100 && job?.status !== 'done' && job?.status !== 'failed'; i++) {
-      await new Promise((r) => setTimeout(r, 10));
-      job = generationOf('ai-mock-user', started.data.jobId);
-    }
-    expect(job).toMatchObject({ status: 'done', error: null });
-    expect(job?.cards).toBeGreaterThan(0);
-    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('openrouter'))).toBe(false);
+// G22: the job tests (mock map, PDF, cancel, retry) need the ai_jobs table: g22.test.ts (integration).
+
+describe('sourcedCards (D-1414)', () => {
+  const text = 'A sepse é uma disfunção orgânica ameaçadora à vida, causada por resposta desregulada à infecção.';
+  it('keeps a card whose excerpt is literally in the text (accents, case, punctuation ignored) and drops the rest', () => {
+    const cards = [
+      { ref: 'a', sourceExcerpt: 'DISFUNCAO organica ameacadora a vida' },
+      { ref: 'b', sourceExcerpt: 'Choque séptico exige vasopressor' },
+      { ref: 'c', sourceExcerpt: '' },
+      { ref: 'd' },
+      { ref: 'e', sourceExcerpt: 'sepse' }, // too short to prove anything
+    ];
+    expect(sourcedCards(cards, text).map((c) => c.ref)).toEqual(['a']);
   });
 });
 
-describe('pdf generation job', () => {
-  it('fails an unreadable PDF without leaving the job running', async () => {
-    delete process.env.DATABASE_URL; // pure in-memory job: with a database the quota/charge path needs a real auth.users row (this user has none)
-    const user = randomUUID();
-    const started = await startPdfGeneration(user, pdfBoard, new TextEncoder().encode('curto'));
-    expect(started.ok).toBe(true);
-    if (!started.ok) return;
-    let job = generationOf(user, started.data.jobId);
-    for (let i = 0; i < 30 && job?.status !== 'failed'; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      job = generationOf(user, started.data.jobId);
-    }
-    expect(job).toMatchObject({ status: 'failed', error: 'pdf_unreadable' });
-  });
-
-  it('turns a 20-page PDF into a map with progress from the start to 100 in under 90 seconds', async () => {
-    const prev = {
-      DATABASE_URL: process.env.DATABASE_URL,
-      OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-      INNGEST_EVENT_KEY: process.env.INNGEST_EVENT_KEY,
-      INNGEST_DEV: process.env.INNGEST_DEV,
-    };
-    delete process.env.DATABASE_URL;
-    delete process.env.OPENROUTER_API_KEY;
-    delete process.env.INNGEST_EVENT_KEY;
-    delete process.env.INNGEST_DEV;
-    const outline = [
-      'Sepse.',
-      'Disfuncao organica por infeccao que exige reconhecimento clinico.',
-      '',
-      'Fluxo: Conduta de sepse',
-      '1. Reconhecer a disfuncao organica',
-      '2. Reavaliar o pacote inicial',
-      '',
-      'Caso: Caso de sepse',
-      'Apresentacao: febre e hipotensao',
-      'Conduta: reconhecer e reavaliar',
-    ].join('\n');
-    const literal = `(${outline.replace(/[()\\]/g, (ch) => `\\${ch}`).replace(/\n/g, '\\n')}) Tj`;
-    const bytes = new TextEncoder().encode(`${'/Type /Page '.repeat(20)}${literal}`);
-    const startedAt = Date.now();
-    try {
-      const started = await startPdfGeneration('pdf-twenty-user', pdfBoard, bytes);
-      expect(started.ok).toBe(true);
-      if (!started.ok) return;
-      const seen = new Set<number>();
-      let job = generationOf('pdf-twenty-user', started.data.jobId);
-      while (job && job.status !== 'done' && job.status !== 'failed' && Date.now() - startedAt < 5_000) {
-        seen.add(job.progress);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        job = generationOf('pdf-twenty-user', started.data.jobId);
-      }
-      expect(Date.now() - startedAt).toBeLessThan(90_000);
-      expect(job).toMatchObject({ status: 'done', progress: 100, pages: 20 });
-      expect(job?.cards).toBeGreaterThan(0);
-      expect([...seen].some((n) => n < 100)).toBe(true);
-    } finally {
-      for (const [key, value] of Object.entries(prev)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
-    }
+describe('jobErrorCode (G22 qa, P-614)', () => {
+  it('stores a known job code, never a raw exception text', () => {
+    expect(jobErrorCode(new Error('no_content'))).toBe('no_content');
+    expect(jobErrorCode(new Error('generate_timeout'))).toBe('generate_timeout');
+    expect(jobErrorCode(new Error('duplicate key value violates unique constraint "cards_pkey"'))).toBe('failed');
+    expect(jobErrorCode('boom')).toBe('failed');
   });
 });

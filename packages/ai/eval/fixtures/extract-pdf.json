@@ -1,0 +1,32 @@
+{
+  "recorded": false,
+  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "replies": [
+    {
+      "id": "gen-1759700000-synthetic024",
+      "provider": "Nvidia",
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "object": "chat.completion",
+      "created": 1759700000,
+      "choices": [
+        {
+          "logprobs": null,
+          "finish_reason": "stop",
+          "native_finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"cards\":[{\"ref\":\"c1\",\"type\":\"concept\",\"title\":\"Estado hiperglicêmico hiperosmolar\",\"question\":\"Em quem o estado hiperglicêmico hiperosmolar é mais comum?\",\"answer\":\"Em idosos com diabetes tipo 2.\",\"sourceExcerpt\":\"O estado hiperglicemico hiperosmolar e mais comum em idosos com diabetes tipo 2.\",\"payload\":{}},{\"ref\":\"c2\",\"type\":\"concept\",\"title\":\"Tratamento do estado hiperosmolar\",\"question\":\"Qual é a medida mais importante do tratamento?\",\"answer\":\"A hidratação venosa; a insulina vem depois da hidratação inicial.\",\"sourceExcerpt\":\"A hidratacao venosa e a medida mais importante do tratamento.\",\"payload\":{}}],\"edges\":[{\"fromRef\":\"c1\",\"toRef\":\"c2\",\"label\":\"é tratado com\"}]}",
+            "refusal": null,
+            "reasoning": null
+          }
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 700,
+        "completion_tokens": 400,
+        "total_tokens": 1100
+      }
+    }
+  ]
+}

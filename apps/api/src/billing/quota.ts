@@ -1,18 +1,28 @@
 import { sql } from 'drizzle-orm';
-import { err, ok, PLAN_LIMITS, type AssertQuota, type QuotaKey } from '@remoa/contracts';
+import { err, ok, PLAN_LIMITS, planDefinition, type AiQuota, type AppError, type AssertQuota, type QuotaKey } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { dbm, run } from '../db';
-import { dayWindow } from '../review/queue';
+import { dbm } from '../db';
 import { planOf } from './plan';
 
-/** Local study day (profile timezone, 04:00 rollover) used as `usage_counters.period`. */
-export const localDay = (userId: string, now: Date) => run(userId, async (tx) => (await dayWindow(tx, userId, now)).day);
+const DEFAULT_TZ = 'America/Sao_Paulo';
+/** G22 (D-1411): AI quotas turn over at midnight of the profile timezone (the calendar day), not at the 04:00 study-day rollover. */
+const daySql = (userId: string, now: Date) =>
+  sql`(${now.toISOString()}::timestamptz at time zone coalesce((select timezone from profiles where user_id = ${userId}), ${DEFAULT_TZ}::text))::date`;
 
+/** Local calendar day (profile timezone, midnight rollover) used as `usage_counters.period` of the AI counters. */
+export const localDay = async (userId: string, now: Date) => {
+  const { db } = await dbm();
+  const [r] = await db.execute<{ day: string }>(sql`select ${daySql(userId, now)}::text as day`);
+  return r!.day;
+};
+
+export type AiKey = AiQuota['key'];
 // column = fixed identifier (never user input)
-const COUNTER = {
-  ai_grades: { col: sql.identifier('ai_grades'), period: (d: string) => sql`${d}::date` }, // per local study day
-  ai_generations: { col: sql.identifier('ai_generations'), period: (d: string) => sql`date_trunc('month', ${d}::date)::date` }, // per calendar month
-} as const;
+const COUNTER: Record<AiKey, { col: ReturnType<typeof sql.identifier>; period: (day: ReturnType<typeof sql>) => ReturnType<typeof sql> }> = {
+  ai_grades: { col: sql.identifier('ai_grades'), period: (d) => d }, // per local day
+  ai_rubrics: { col: sql.identifier('ai_rubrics'), period: (d) => d }, // per local day (D-1412)
+  ai_generations: { col: sql.identifier('ai_generations'), period: (d) => sql`date_trunc('month', ${d})::date` }, // per calendar month
+};
 
 /** D-167: one rule for display and blocking: live cards of non-archived boards. */
 export const liveCardsSql = (userId: string) =>
@@ -29,28 +39,70 @@ export async function overTotal(exec: Pick<Tx, 'execute'>, userId: string, key: 
   return r!.n + add > limit;
 }
 
-/** Plan limit of one key (null = unlimited). */
-export const limitFor = async (userId: string, key: QuotaKey, now = new Date()) => PLAN_LIMITS[(await planOf(userId, now)).plan].limits[key];
+/** Plan limit of one key (null = unlimited), from PlanDefinition. ai_rubrics = the plan's ai_grades number on its own counter (D-1412). */
+export const limitFor = async (userId: string, key: QuotaKey | 'ai_rubrics', now = new Date()) =>
+  planDefinition((await planOf(userId, now)).plan)[key === 'ai_rubrics' ? 'ai_grades' : key];
+
+export const quotaView = (key: AiKey, used: number, limit: number | null, period: string): AiQuota => ({
+  key, used, limit, period, remaining: limit === null ? null : Math.max(0, limit - used), nearLimit: limit !== null && limit > 0 && used >= Math.ceil(limit * 0.8),
+});
+
+export type Reservation = { ok: true; readonly quota: AiQuota; refund: () => Promise<AiQuota> };
 
 /**
- * AssertQuota-shaped. ai_grades/ai_generations: checks AND consumes one unit atomically (call right before the AI call);
- * unlimited still counts. boards/cards: only checks the live total (creation is the caller's job).
+ * G22 (D-1411): takes one unit BEFORE the AI call, atomically (`on conflict do update ... where used < limit`: N concurrent calls on
+ * the last unit, exactly one row comes back). The caller gives it back with `refund()` on any failure or offline fallback, so only
+ * a successful AI answer stays counted. `refund()` hits the same period (a call that crosses midnight refunds the day it was taken)
+ * and runs at most once. Unlimited plans still count. Server connection: `authenticated` cannot write usage_counters.
+ */
+export async function reserveAi(userId: string, key: AiKey, now = new Date()): Promise<Reservation | { ok: false; error: AppError }> {
+  const limit = await limitFor(userId, key, now);
+  const { db } = await dbm();
+  const { col, period } = COUNTER[key];
+  if (limit === 0) return { ok: false, error: { code: 'quota_exceeded', message: key } }; // D-647: Free has no PDF maps
+  const cap = limit === null ? sql`` : sql`where usage_counters.${col} < ${limit}`;
+  const [row] = await db.execute<{ period: string; used: number }>(sql`
+    insert into usage_counters (user_id, period, ${col}) values (${userId}, ${period(daySql(userId, now))}, 1)
+    on conflict (user_id, period) do update set ${col} = usage_counters.${col} + 1, updated_at = now() ${cap}
+    returning period::text as period, ${col} as used`);
+  if (!row) return { ok: false, error: { code: 'quota_exceeded', message: key } };
+  let quota = quotaView(key, row.used, limit, row.period);
+  let done = false;
+  return {
+    ok: true,
+    get quota() {
+      return quota;
+    },
+    refund: async () => {
+      if (done) return quota;
+      done = true;
+      await refundAt(userId, key, row.period);
+      quota = quotaView(key, Math.max(0, quota.used - 1), limit, row.period);
+      return quota;
+    },
+  };
+}
+
+/** Gives one unit back on the exact period it was taken from (never below zero). */
+export async function refundAt(userId: string, key: AiKey, period: string) {
+  const { db } = await dbm();
+  const { col } = COUNTER[key];
+  await db.execute(sql`update usage_counters set ${col} = ${col} - 1, updated_at = now() where user_id = ${userId} and period = ${period}::date and ${col} > 0`);
+}
+
+/**
+ * AssertQuota-shaped. ai_grades/ai_generations: reserves one unit (see reserveAi; the refund handle is dropped, so only callers
+ * that never fail after it should use this). boards/cards: only checks the live total (creation is the caller's job).
  * Failure message is exactly the key (D-101: the frontend maps it to the paywall reason).
- * Written with the server connection: `authenticated` cannot write usage_counters.
  * ponytail: boards/cards check-then-insert is not serialized across concurrent requests; a lock per user if abuse shows up.
  */
 export const assertQuota = async (userId: string, key: QuotaKey, now = new Date()): ReturnType<AssertQuota> => {
-  const limit = await limitFor(userId, key, now);
-  const { db } = await dbm();
-  if (key === 'boards' || key === 'cards') return (await overTotal(db, userId, key, limit)) ? err('quota_exceeded', key) : ok(null);
-  if (limit === 0) return err('quota_exceeded', key); // D-647: Free has no PDF maps; the upsert below would insert the first row unchecked
-  const { col, period } = COUNTER[key];
-  const cap = limit === null ? sql`` : sql`where usage_counters.${col} < ${limit}`;
-  const rows = await db.execute(sql`
-    insert into usage_counters (user_id, period, ${col}) values (${userId}, ${period(await localDay(userId, now))}, 1)
-    on conflict (user_id, period) do update set ${col} = usage_counters.${col} + 1, updated_at = now() ${cap}
-    returning 1`);
-  return rows.length ? ok(null) : err('quota_exceeded', key);
+  if (key === 'boards' || key === 'cards') {
+    const { db } = await dbm();
+    return (await overTotal(db, userId, key, await limitFor(userId, key, now))) ? err('quota_exceeded', key) : ok(null);
+  }
+  const r = await reserveAi(userId, key, now);
+  return r.ok ? ok(null) : { ok: false, error: r.error };
 };
 
 /** D-648: completed Anki imports of the account (lifetime); failed/canceled ones do not count. */
@@ -61,17 +113,3 @@ export async function overAnkiImports(userId: string, now = new Date()) {
   const [r] = await db.execute<{ n: number }>(sql`select count(*)::int as n from imports where user_id = ${userId} and kind = 'anki' and status = 'done'`);
   return r!.n >= cap;
 }
-
-/** Gives back the unit when the grader failed (timeout/error): the student got no correction. */
-export const refundQuota = async (userId: string, now = new Date()) => {
-  const period = await localDay(userId, now);
-  const { db } = await dbm();
-  await db.execute(sql`update usage_counters set ai_grades = ai_grades - 1 where user_id = ${userId} and period = ${period}::date and ai_grades > 0`);
-};
-
-/** Gives back the monthly generation when the PDF or the model produced no board. */
-export const refundGeneration = async (userId: string, now = new Date()) => {
-  const period = await localDay(userId, now);
-  const { db } = await dbm();
-  await db.execute(sql`update usage_counters set ai_generations = ai_generations - 1 where user_id = ${userId} and period = date_trunc('month', ${period}::date)::date and ai_generations > 0`);
-};

@@ -1,6 +1,7 @@
 // F18 Indicação de amigos (CCR-010, D-380–D-389). Enum arrays are the single source for zod here and pgEnum in @remoa/db.
 import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
+import { REFERRAL_LIMITS } from './constants';
 
 /** DB states (FR-17). The UI only ever sees `friendStatuses` (D-385). */
 export const referralStatuses = ['invited', 'signed_up', 'qualified', 'rejected', 'expired'] as const;
@@ -12,31 +13,13 @@ export const grantRevokeReasons = ['account_deleted', 'fraud', 'manual', 'conver
 /** What /app/indicar shows: rejected looks like signed_up, expired is hidden (D-385). */
 export const friendStatuses = ['invited', 'signed_up', 'qualified'] as const;
 export const referralSides = ['referrer', 'referee'] as const;
-/** `/app/indicar?de=` (FR-1); missing or unknown = 'direct'. */
-export const referralEntryPoints = ['navbar', 'home', 'plans', 'plan_panel', 'account', 'direct'] as const;
 export const referralShareChannels = ['whatsapp', 'telegram', 'email', 'more'] as const;
 
 export type ReferralStatus = (typeof referralStatuses)[number];
 export type FriendStatus = (typeof friendStatuses)[number];
 export type ReferralRejectReason = (typeof referralRejectReasons)[number];
 
-export const REFERRAL_LIMITS = {
-  invitesPerRequest: 5,
-  invitesPerDay: 20,
-  /** FR-17 (Q-040, provisional): the referee's first board needs this many live cards. */
-  qualifyMinCards: 3,
-  /** Q-041 (provisional): above this many qualified in 30 days, new ones go to manual review. */
-  qualifiedPer30Days: 10,
-  inviteExpiryDays: 30,
-  cookieDays: 30,
-  /** Attribution only for accounts created this recently (FR-16 "conta nova"). */
-  newAccountHours: 24,
-  /** Referee deletes the account within this many days of the grant: their grant is revoked (regras de negócio). */
-  revokeOnDeleteDays: 7,
-  messageMaxChars: 400,
-  /** Public GET /v1/public/referral/:code, per IP per minute. */
-  publicLookupsPerMinute: 30,
-} as const;
+export { REFERRAL_COOKIE, REFERRAL_LIMITS, referralEntryPoints, referralErrors } from './constants'; // CCR-058: zod-free in ./constants
 
 // --- code (FR-2) --------------------------------------------------------------
 /** 31 symbols: 2–9 and A–Z without I, L, O (no 0/O, 1/I/L ambiguity). */
@@ -154,17 +137,6 @@ export type AttributionInput = z.input<typeof attributionInputSchema>;
 export const attributionResultSchema = z.object({ attributed: z.boolean() });
 export type AttributionResult = z.infer<typeof attributionResultSchema>;
 
-/** `AppError.message` values for this lane (the `code` is the generic ErrorCode in parentheses). */
-export const referralErrors = {
-  /** rate_limited — 20 invites per local day */
-  dailyLimit: 'invite_daily_limit',
-  /** validation — malformed code (well-formed but unknown is `{ valid: false }`, not an error) */
-  invalidCode: 'invalid_code',
-  /** rate_limited — public lookup per IP */
-  lookupLimit: 'lookup_rate_limited',
-} as const;
 /** Attribution refusals; logged and sent as `referral_rejected.reason` where applicable, never returned to the client (D-383). */
 export const attributionSkips = ['self_referral', 'already_attributed', 'not_new_account', 'unknown_code'] as const;
 
-/** Cookie set by `/i/[code]` (FR-14). */
-export const REFERRAL_COOKIE = 'rf';

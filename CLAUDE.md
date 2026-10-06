@@ -10,7 +10,7 @@ Regras, vocabulário e DoD do produto: `../CLAUDE.md`, `../AGENTS.md`, `../docs/
 apps/api/            Hono: /health, /v1/* com Bearer do Supabase; rotas por lane em src/routes/<lane>.ts
 packages/contracts/  tipos + zod (a "API" entre repos; o frontend guarda uma cópia: depois de mudar, rode `pnpm contracts:sync` no remoa-frontend, D-699)
 packages/db/         schema Drizzle, migrations (0000 gerada, 0001_rls manual), seed, withUser()
-packages/fsrs/       agendador ts-fsrs        packages/ai/   grader e geração (Claude API)
+packages/fsrs/       agendador ts-fsrs        packages/ai/   única porta de IA (OpenRouter, .env)
 packages/anki/       parser .apkg             packages/log/  @remoa/log (JSON + requestId)
 supabase/            config do Supabase local
 .claude/agents/      backend, backend-deep, data-fsrs, ai-engineer, content

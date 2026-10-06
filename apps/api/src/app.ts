@@ -40,6 +40,7 @@ import { storeRoutes } from './routes/store';
 import { assetsRoutes, uploadsRoutes } from './routes/uploads';
 import { createLogger, newRequestId, type Logger } from '@remoa/log';
 import { emailHealth } from '@remoa/config';
+import { aiHealth } from '@remoa/ai';
 import { serve as serveInngest } from 'inngest/hono';
 import { inngest } from './inngest/client';
 import { generateBoard } from './inngest/generate-board';
@@ -117,7 +118,12 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     if (e) c.res = fail(e);
   });
 
-  app.get('/health', (c) => c.json({ ok: true, email: emailHealth() })); // G18: booleans only, no secret
+  // G18/G22: booleans, status and model id only. /health is public: the problem texts (key invalid, no credit) stay in the boot
+  // log and `pnpm ai:doctor` (G22 qa, P-619)
+  app.get('/health', (c) => {
+    const { status, model } = aiHealth();
+    return c.json({ ok: true, email: emailHealth(), ai: { status, model } });
+  });
   const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard, maintenanceHourly, maintenanceDaily, ...noticeFunctions] });
   app.on(['GET', 'POST', 'PUT'], '/api/inngest', (c) => asJob(() => inngestHandler(c))); // FR-25: job timeouts
   // Lane routes mount under /v1 with requireUser (F02 uploads, F05 ai, F08 stripe webhook is public + signature).

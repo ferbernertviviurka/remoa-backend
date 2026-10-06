@@ -143,6 +143,8 @@ export const cards = pgTable('cards', {
   payload: jsonb('payload').notNull().default({}),
   rubric: jsonb('rubric'),
   source: text('source'),
+  /** G22 (CCR-072): verbatim input passage behind an AI-generated card. */
+  sourceExcerpt: text('source_excerpt'),
   x: integer('x').notNull().default(0),
   y: integer('y').notNull().default(0),
   status: cardStatusEnum('status').notNull().default('draft'),
