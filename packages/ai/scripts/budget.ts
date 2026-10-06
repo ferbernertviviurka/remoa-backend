@@ -1,11 +1,12 @@
 // G22: live scripts (smoke, eval) share one day budget across runs: the in-memory counter resets per process, so the count of
 // today's real calls is kept in a git-ignored file. The OpenRouter free tier allows 50/day per account; scripts stop at 40.
+// AI_EVAL_DAY_BUDGET raises it for a paid-model round (paid calls do not touch the free 50/day; the cost is the cap there).
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { aiUsage, seedUsage } from '../src/client';
 
-export const DAY_BUDGET = 40;
+export const DAY_BUDGET = Number(process.env.AI_EVAL_DAY_BUDGET) || 40;
 const file = join(dirname(fileURLToPath(import.meta.url)), '../node_modules/.cache/remoa-ai-usage.json');
 
 /** Loads today's count into the client counter. */

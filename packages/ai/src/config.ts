@@ -15,6 +15,8 @@ export type AiConfig = {
   requireFree: boolean;
   allowFreeInProd: boolean;
   dataCollection: 'allow' | 'deny';
+  /** AI_ZDR=1: only endpoints with zero data retention (OpenRouter `provider.zdr`), on top of `data_collection`. */
+  zdr: boolean;
   timeoutMs: number;
   maxRetries: number;
   rpmLimit: number;
@@ -35,6 +37,7 @@ const schema = z.object({
   AI_DATA_COLLECTION: z.enum(['allow', 'deny']).optional().default('deny'),
   AI_REQUIRE_FREE: flag,
   AI_ALLOW_FREE_IN_PROD: flag,
+  AI_ZDR: flag,
   AI_TIMEOUT_MS: int(45_000, 1_000),
   AI_MAX_RETRIES: int(2, 0),
   AI_RPM_LIMIT: int(15, 1),
@@ -54,6 +57,7 @@ export function aiConfig(env: NodeJS.ProcessEnv = process.env): AiConfig {
     requireFree: p.AI_REQUIRE_FREE,
     allowFreeInProd: p.AI_ALLOW_FREE_IN_PROD,
     dataCollection: p.AI_DATA_COLLECTION,
+    zdr: p.AI_ZDR,
     timeoutMs: p.AI_TIMEOUT_MS,
     maxRetries: p.AI_MAX_RETRIES,
     rpmLimit: p.AI_RPM_LIMIT,

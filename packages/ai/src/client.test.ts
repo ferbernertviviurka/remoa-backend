@@ -104,11 +104,28 @@ describe('generateText: request', () => {
     expect(f.calls[0]!.body).toMatchObject({ model: 'test/model', max_tokens: 50, temperature: 0, provider: { data_collection: 'allow' } });
     expect(f.calls[0]!.body.response_format).toBeUndefined();
     expect(f.calls[0]!.body.reasoning).toBeUndefined();
+    expect((f.calls[0]!.body.provider as Record<string, unknown>).zdr).toBeUndefined();
+  });
+  it('asks for zero-retention endpoints with AI_ZDR=1 (production)', async () => {
+    process.env.AI_DATA_COLLECTION = 'deny';
+    process.env.AI_ZDR = '1';
+    const f = scripted(ok('oi'));
+    await generateText(opts({ fetchImpl: f.impl }));
+    delete process.env.AI_ZDR;
+    expect(f.calls[0]!.body).toMatchObject({ provider: { data_collection: 'deny', zdr: true } });
   });
   it('asks for no reasoning when told to (grader, rubric)', async () => {
     const f = scripted(Response.json({ choices: [{ message: { content: 'oi' } }] }));
     await generateText(opts({ fetchImpl: f.impl, reasoning: false }));
     expect(f.calls[0]!.body).toMatchObject({ reasoning: { enabled: false } });
+  });
+  it('drops the reasoning switch for a model that makes reasoning mandatory, and remembers it', async () => {
+    const mandatory = () => Response.json({ error: { code: 400, message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' } }, { status: 400 });
+    process.env.AI_MODEL = 'test/reasoning-mandatory'; // the remembered set lives for the whole file
+    const f = scripted(mandatory(), ok('oi'), ok('de novo'));
+    expect((await generateText(opts({ fetchImpl: f.impl, reasoning: false }))).text).toBe('oi');
+    expect((await generateText(opts({ fetchImpl: f.impl, reasoning: false }))).text).toBe('de novo');
+    expect(f.calls.map((c) => c.body.reasoning)).toEqual([{ enabled: false }, undefined, undefined]);
   });
   it('sends a forced tool and reads its arguments', async () => {
     const f = scripted(Response.json({ choices: [{ message: { tool_calls: [{ function: { arguments: '{"a":1}' } }] } }] }));
