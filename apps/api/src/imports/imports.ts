@@ -12,7 +12,7 @@ import { createLogger } from '@remoa/log';
 import { getBytes, headObject, presignPut, putBytes } from '../storage/storage';
 import { limitFor, overAnkiImports, overTotal } from '../billing/quota';
 import { planOf } from '../billing/plan';
-import { asJob, dbm, run } from '../db';
+import { asJob, dbm, run, uuids } from '../db';
 import { initialShareColumns } from '../share/crypto';
 import { notifyMapReady } from '../notifications/map-ready';
 import { layoutImport } from './layout';
@@ -163,7 +163,7 @@ export function createImports({ anki }: { anki: AnkiPort }) {
       if (itemIds.length) {
         const m = await dbm();
         const valid = await m.db.select({ id: m.matrixItems.id }).from(m.matrixItems).where(
-          and(inArray(m.matrixItems.id, itemIds), eq(m.matrixItems.area, boardInput.area),
+          and(sql`${m.matrixItems.id} = any(${uuids(itemIds)})`, eq(m.matrixItems.area, boardInput.area),
             sql`not exists (select 1 from matrix_items c where c.parent_id = ${m.matrixItems.id})`),
         );
         if (valid.length !== itemIds.length) return err('validation', 'matrixItemId is unknown, a group, or does not belong to the board area');
@@ -179,7 +179,7 @@ export function createImports({ anki }: { anki: AnkiPort }) {
       if (itemIds.length) {
         const m = await dbm();
         const valid = await m.db.select({ id: m.matrixItems.id }).from(m.matrixItems).where(
-          and(inArray(m.matrixItems.id, itemIds), eq(m.matrixItems.area, existing.area),
+          and(sql`${m.matrixItems.id} = any(${uuids(itemIds)})`, eq(m.matrixItems.area, existing.area),
             sql`not exists (select 1 from matrix_items c where c.parent_id = ${m.matrixItems.id})`),
         );
         if (valid.length !== itemIds.length) return err('validation', 'matrixItemId is unknown, a group, or does not belong to the board area');

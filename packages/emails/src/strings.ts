@@ -207,6 +207,17 @@ export const emails = {
     cta: 'Ver no painel',
     reason: 'Você recebeu este e-mail porque uma indicação sua foi qualificada. Desligue em Notificações quando quiser.',
   },
+  trialEnding: {
+    subjectD3: 'Seu teste do Pro termina em 3 dias',
+    subjectD0: 'Seu teste do Pro termina hoje',
+    preheaderD3: 'Depois disso, sua conta volta para o Grátis. Nada se perde.',
+    preheaderD0: 'Assine o Pro para continuar sem limites.',
+    titleD3: 'Seu teste do Pro termina em 3 dias.',
+    titleD0: 'Seu teste do Pro termina hoje.',
+    body: 'Seus 15 dias de Pro grátis terminam em {date}. Depois disso, sua conta volta para o Grátis: seus mapas, cards e revisões continuam lá, só voltam os limites do plano Grátis. Para seguir sem limites, assine o Pro.',
+    cta: 'Ver planos',
+    reason: 'Você recebeu este e-mail porque sua conta do Remoa está no teste grátis do Pro.',
+  },
   referralInvite: {
     subject: '{referrer} convidou você para o Remoa',
     preheader: 'Vocês dois ganham 1 mês de Pro grátis.',

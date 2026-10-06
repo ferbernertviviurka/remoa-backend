@@ -1,6 +1,7 @@
 // G22 (D-1411–D-1418): AI quotas, errors, jobs and the correction flag. Integration: needs TEST_DATABASE_URL; skipped otherwise.
 // No real AI call: "live" mode points AI_BASE_URL at a fake host and `fetch` is stubbed per test.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { sql } from 'drizzle-orm';
 import { createHash, randomUUID as uuid } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -60,6 +61,7 @@ describe.skipIf(!process.env.DATABASE_URL)('G22 AI quotas, errors, jobs and flag
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    await dropTrial(id);
     if (plan) await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan, status: 'active' });
     if (tz) await dbm.db.execute(sql`insert into profiles (user_id, timezone) values (${id}, ${tz}) on conflict (user_id) do update set timezone = ${tz}`);
     return id;

@@ -41,6 +41,8 @@ export const emailExamples: Example[] = [
   { template: 'admin-alert', version: 'export_payments', data: { version: 'export_payments', name: 'Carla', count: 1, at: iso(0), timezone: tz, auditUrl: `${MOCK_APP_URL}/admin/auditoria` } },
   { template: 'dispute-resolved', version: 'default', data: { name: 'Ana' } },
   { template: 'landing-waitlist', version: 'default', data: {} },
+  { template: 'trial-ending', version: 'd3', data: { version: 'd3', name: 'Ana', endsAt: iso(72), timezone: tz, plansUrl: `${MOCK_APP_URL}/app/planos` } },
+  { template: 'trial-ending', version: 'd0', data: { version: 'd0', name: null, endsAt: iso(10), timezone: tz, plansUrl: `${MOCK_APP_URL}/app/planos` } },
 ];
 
 export const emailLinksExample: Required<EmailLinks> = {

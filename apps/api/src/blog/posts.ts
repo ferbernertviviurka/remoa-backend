@@ -1,6 +1,6 @@
 // G19 F27 T2: blog post service (admin side). Every function takes the withAdmin transaction and returns a Result; the route
 // runs the side effects (revalidation, sitemap) from the returned `fx` AFTER the commit.
-import { and, asc, count, desc, eq, inArray, isNull, like, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull, like, ne, or, sql, type SQL } from 'drizzle-orm';
 import { pick } from '../pick';
 import {
   BLOG_LIMITS, blogErrors, err, ok, publishBlockers, slugify,
@@ -8,7 +8,7 @@ import {
   type BlogPostInput, type PublishBlocker, type Result, type SeoSubject,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { dbm } from '../db';
+import { dbm, uuids } from '../db';
 import { likeOf } from '../admin/users/util';
 import { ASSET_COLS, assetDto, blogImageResolver, loadAssets } from './images';
 import { renderPostSummary } from '@remoa/blog';
@@ -41,7 +41,7 @@ export function tagsFor(slugs: string[], categorySlugs: (string | null | undefin
 async function fxFor(q: Q, rows: { slug: string; categoryId: string | null }[], sitemap: boolean): Promise<Fx> {
   const { blogCategories } = await dbm();
   const ids = rows.map((r) => r.categoryId).filter((x): x is string => !!x);
-  const cats = ids.length ? await q.select({ slug: blogCategories.slug }).from(blogCategories).where(inArray(blogCategories.id, ids)) : [];
+  const cats = ids.length ? await q.select({ slug: blogCategories.slug }).from(blogCategories).where(sql`${blogCategories.id} = any(${uuids(ids)})`) : [];
   return { tags: tagsFor(rows.map((r) => r.slug), cats.map((c) => c.slug)), sitemap };
 }
 
@@ -53,8 +53,8 @@ export async function toItems(q: Q, rows: ListRow[]): Promise<BlogListItem[]> {
   const catIds = [...new Set(rows.map((r) => r.categoryId).filter((x): x is string => !!x))];
   const coverIds = [...new Set(rows.map((r) => r.coverAssetId).filter((x): x is string => !!x))];
   const [cats, assets] = await Promise.all([
-    catIds.length ? q.select(pick(blogCategories, 'id', 'slug', 'name')).from(blogCategories).where(inArray(blogCategories.id, catIds)) : [],
-    coverIds.length ? q.select(pick(blogAssets, ...ASSET_COLS)).from(blogAssets).where(inArray(blogAssets.id, coverIds)) : [],
+    catIds.length ? q.select(pick(blogCategories, 'id', 'slug', 'name')).from(blogCategories).where(sql`${blogCategories.id} = any(${uuids(catIds)})`) : [],
+    coverIds.length ? q.select(pick(blogAssets, ...ASSET_COLS)).from(blogAssets).where(sql`${blogAssets.id} = any(${uuids(coverIds)})`) : [],
   ]);
   const cat = new Map(cats.map((c) => [c.id, { id: c.id, slug: c.slug, name: c.name }]));
   const asset = new Map(assets.map((a) => [a.id, assetDto(a)]));

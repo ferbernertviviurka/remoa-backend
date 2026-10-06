@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const m = vi.hoisted(() => ({
   purge: vi.fn(async () => 2), expire: vi.fn(async () => 5), remind: vi.fn(async () => 1),
   referrals: vi.fn(async () => ({ expired: 0 })), support: vi.fn(async () => ({ purged: 0 })), metrics: vi.fn(async () => 2),
+  trial: vi.fn(async () => ({ d3: 0, d0: 0 })),
 }));
 vi.mock('./jobs', () => ({ purgeDeletedAccounts: m.purge, expireAnswerTexts: m.expire }));
 vi.mock('../cleanup/assets', () => ({ purgeDeletedCards: vi.fn(async () => 3), cleanOrphanAssets: vi.fn(async () => 4) }));
@@ -11,6 +12,7 @@ vi.mock('../referral/sweep', () => ({ sweepReferrals: m.referrals }));
 vi.mock('../support/retention', () => ({ sweepSupport: m.support }));
 vi.mock('../onboarding/emails', () => ({ sendOnboardingEmails: vi.fn(async () => ({ mapReady: 0, day3: 0 })) }));
 vi.mock('../admin/overview/metrics', () => ({ refreshRecentMetrics: m.metrics }));
+vi.mock('../billing/trial-notice', () => ({ sweepTrialNotices: m.trial }));
 vi.mock('../billing/stripe', () => ({ createStripe: vi.fn(), installStripe: vi.fn() }));
 
 import { runDaily, runHourly } from './maintenance';
@@ -32,6 +34,7 @@ describe('maintenance schedule (F08 FR-8)', () => {
     expect(out).not.toHaveProperty('reminded');
     expect(m.remind).not.toHaveBeenCalled();
     expect(m.referrals).toHaveBeenCalledWith(now);
+    expect(m.trial).toHaveBeenCalledWith(now);
     expect(m.purge).not.toHaveBeenCalled();
     expect(m.expire).not.toHaveBeenCalled();
   });

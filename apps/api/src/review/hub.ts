@@ -7,7 +7,7 @@ import { retrievability } from '@remoa/fsrs';
 import { run } from '../db';
 import { cached, type UserCacheDef } from '../cache';
 import { planOf } from '../billing/plan';
-import { budgetOf, dueByOffsetSql, dueFrom, queueRowsSql, recallSql, sortQueueRows, toWindow, windowSql, type QueueSqlRow, type WindowSqlRow } from './queue';
+import { budgetOf, budgetSql, newBoundSql, dueByOffsetSql, dueFrom, queueRowsSql, recallSql, sortQueueRows, toWindow, W, windowSql, type QueueSqlRow, type WindowSqlRow } from './queue';
 import { mapStatsFrom, mapStatsSql, scopeBoardsSql, type MapStatsData, type ScopeBoard } from './stats';
 
 const DAY_MS = 86_400_000;
@@ -15,7 +15,6 @@ const STREAK_LOOKBACK_DAYS = 400; // ponytail: streaks (and best streak) cap at 
 const addDays = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
 const ratio = (n: number, hits: number) => (n ? hits / n : null);
 const zeroStates = (): Record<MapState, number> => ({ review: 0, watch: 0, steady: 0, unknown: 0 });
-const at = (ms: number) => sql`${new Date(ms).toISOString()}::timestamptz`;
 
 /**
  * G15: everything the Revisar page shows. G21 FR-22/FR-23 (D-1027..D-1030): one transaction, no read of every card/state/attempt:
@@ -23,35 +22,33 @@ const at = (ms: number) => sql`${new Date(ms).toISOString()}::timestamptz`;
  * per board/area accuracy from 30 days of `attempts` (range on `attempts_user_created_idx`), hard cards by `order by ... limit`.
  */
 export async function computeReviewHub(userId: string, now: Date): Promise<ReviewHub> {
-  const plan = planOf(userId, now); // other connection, in parallel
-  // G21 P-482 (D-1049): 3 statements in the transaction (+1 upsert when a map_stats row is stale) and 1 for the plan; was 12-16.
-  //   1. claims (run); 2. study day + new-card budget inputs; 3. every read below as one json row (CTE `sb` = boards in scope).
+  // G21 D-1094: ONE statement in the transaction (+1 upsert when a map_stats row is stale) and the plan's, in the same flight (was 2
+  // sequential): the study day is the CTE `w`, the new-card budget inputs come back in the row, and new items are fetched up to the
+  // bound of the budget per board (newBoundSql) and cut to the plan's remaining budget per board here.
   const hub = await run(userId, async (tx) => {
-    const [w] = await tx.execute<WindowSqlRow & { pref: number | null; introduced: number }>(sql`
-      with w as (${windowSql(userId, now)})
-      select w.*, (select new_cards_per_day from user_preferences where user_id = ${userId}) as pref,
-        (select count(*)::int from fsrs_state where user_id = ${userId} and created_at >= to_timestamp(round(w.start_ms) / 1000)) as introduced
-      from w`);
-    const win = toWindow(w!);
-    const today = win.day;
-    const budget = budgetOf(w, (await plan).plan);
+    const plan = planOf(userId, now, tx); // same flight (D-1095)
+    plan.catch(() => undefined);
     const json = (q: SQL | null) => (q ? sql`(select coalesce(json_agg(t), '[]') from (${q}) t)` : sql`'[]'::json`);
-    const queue = queueRowsSql({ userId, boardId: null }, { now, endMs: win.endMs, due: null, weak: null, fresh: budget.limit === null ? { limit: null, perBoard: null } : budget.remaining > 0 ? { limit: null, perBoard: budget.remaining } : false });
+    const b = budgetSql(userId, W.startMs);
+    const perBoard = newBoundSql(userId, b, now);
+    const queue = queueRowsSql({ userId, boardId: null }, { now, endMs: W.endMs, due: null, weak: null, fresh: { limit: null, perBoard } });
     const forecastDays = Math.max(REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_AHEAD_DAYS + 1);
     const [r] = await tx.execute<{
+      w: WindowSqlRow; budget: { pref: number | null; introduced: number };
       boards: ScopeBoard[]; due: { k: number; n: number }[]; days: { day: string; n: number; hits: number }[]; recent: { board_id: string; area: Area; n: number; hits: number }[];
       hard: { card_id: string; board_id: string; board_title: string; title: string; lapses: number; stability: number; difficulty: number; due: string; reps: number; last_review: string | null; state: 'new' | 'learning' | 'review' | 'relearning'; learning_steps: number; scheduled_days: number }[];
       med: number | null; items: QueueSqlRow[]; stats: MapStatsData;
     }>(sql`
-      with sb as (${scopeBoardsSql(userId)})
-      select (select coalesce(json_agg(sb), '[]') from sb) as boards,
-        ${json(dueByOffsetSql(userId, win, forecastDays))} as due,
-        ${json(sql`select day::text, reviews as n, hits from user_daily_stats where user_id = ${userId} and day >= ${today}::date - ${STREAK_LOOKBACK_DAYS}::int`)} as days,
+      with w as (${windowSql(userId, now)}), sb as (${scopeBoardsSql(userId)})
+      select (select row_to_json(w) from w) as w, (select row_to_json(b) from (${b}) b) as budget,
+        (select coalesce(json_agg(sb), '[]') from sb) as boards,
+        ${json(dueByOffsetSql(userId, { endMs: W.endMs }, forecastDays))} as due,
+        ${json(sql`select day::text, reviews as n, hits from user_daily_stats where user_id = ${userId} and day >= (select day from w)::date - ${STREAK_LOOKBACK_DAYS}::int`)} as days,
         ${json(sql`
         select c.board_id, b.area::text as area, sum(a.n)::int as n, sum(a.hits)::int as hits
         from (
           select card_id, count(*) as n, count(*) filter (where grade >= 3) as hits from attempts
-          where user_id = ${userId} and created_at >= ${at(win.startMs - 29 * DAY_MS)} and created_at < ${at(win.endMs)} group by 1
+          where user_id = ${userId} and created_at >= to_timestamp((${W.startMs} - ${29 * DAY_MS}) / 1000) and created_at < to_timestamp(${W.endMs} / 1000) group by 1
         ) a -- grouped per card first (attempts_user_created_idx), then one PK probe per card (see queue.ts stateItemsSql)
         cross join lateral (select c.board_id from cards c where c.id = a.card_id offset 0) c
         cross join lateral (select b.area from boards b where b.id = c.board_id offset 0) b
@@ -66,10 +63,19 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
         (select percentile_cont(0.5) within group (order by duration_ms)::float8
           from (select duration_ms from attempts where user_id = ${userId} and duration_ms > 0 order by created_at desc limit 200) t) as med,
         ${json(queue)} as items,
-        ${mapStatsSql(userId, sql`array(select id from sb)`, now.getTime(), sql`${win.endMs}::float8`)} as stats`);
+        ${mapStatsSql(userId, sql`array(select id from sb)`, now.getTime(), W.endMs)} as stats`);
+    const win = toWindow(r!.w);
+    const budget = budgetOf(r!.budget, (await plan).plan);
     // new items: at most the day's remaining cap per board (any selection takes at most newRemaining, so more per board is dead weight)
-    const stats = await mapStatsFrom(tx, userId, [...new Set(r!.boards.map((b) => b.id))], r!.stats, now);
-    return { win, budget, boards: r!.boards, items: sortQueueRows(r!.items), stats, due: dueFrom(r!.due, forecastDays), days: r!.days, recent: r!.recent, hard: r!.hard, medianMs: r!.med };
+    const sorted = sortQueueRows(r!.items);
+    const seen = new Map<string, number>();
+    sorted.new = sorted.new.filter((i) => {
+      const n = (seen.get(i.boardId) ?? 0) + 1;
+      seen.set(i.boardId, n);
+      return n <= budget.remaining;
+    });
+    const stats = await mapStatsFrom(tx, userId, [...new Set(r!.boards.map((x) => x.id))], r!.stats, now);
+    return { win, budget, boards: r!.boards, items: sorted, stats, due: dueFrom(r!.due, forecastDays), days: r!.days, recent: r!.recent, hard: r!.hard, medianMs: r!.med };
   });
   const { win, budget, boards, items, stats, days, recent } = hub;
   const today = win.day;

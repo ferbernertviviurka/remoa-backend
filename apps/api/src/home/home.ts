@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { ok, type GetHomeSummary } from '@remoa/contracts';
-import { dayWindow, dueByOffset } from '../review/queue';
+import { dayWindow, dueByOffsetSql, dueFrom, W, withWindow } from '../review/queue';
 import { run } from '../db';
 
 const addDays = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
@@ -13,11 +13,12 @@ const STREAK_LOOKBACK_DAYS = 400; // ponytail: streaks cap at this
 export const getHomeSummary: GetHomeSummary = async (userId, now) =>
   ok(
     await run(userId, async (tx) => {
-      const win = await dayWindow(tx, userId, now);
-      const [due, rows] = await Promise.all([
-        dueByOffset(tx, userId, win, 7),
-        tx.execute<{ d: string; n: number }>(sql`
-          select day::text as d, reviews as n from user_daily_stats where user_id = ${userId} and day >= ${win.day}::date - ${STREAK_LOOKBACK_DAYS}::int and reviews > 0`),
+      // G21 D-1094: one flight; the counts read the study day as a CTE (W/withWindow), the window itself comes back beside them
+      const [win, due, rows] = await Promise.all([
+        dayWindow(tx, userId, now),
+        tx.execute<{ k: number; n: number }>(withWindow(userId, now, dueByOffsetSql(userId, { endMs: W.endMs }, 7))).then((r) => dueFrom(r, 7)),
+        tx.execute<{ d: string; n: number }>(withWindow(userId, now, sql`
+          select day::text as d, reviews as n from user_daily_stats where user_id = ${userId} and day >= (select day from w)::date - ${STREAK_LOOKBACK_DAYS}::int and reviews > 0`)),
       ]);
       const done = new Map(rows.map((r) => [r.d, r.n]));
       const today = win.day;

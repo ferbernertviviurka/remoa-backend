@@ -1,5 +1,6 @@
 // Integration: needs local Supabase (see matrix.test.ts); skipped otherwise. Stripe is faked at the port; webhook signatures are real (offline).
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import Stripe from 'stripe';
@@ -50,6 +51,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/billing + /v1/stripe', () => {
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    await dropTrial(id);
     return id;
   };
   const call = async (a: typeof app, user: string, path: string, body: unknown) => {

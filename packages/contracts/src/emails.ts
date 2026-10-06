@@ -27,6 +27,7 @@ export const emailTemplates = [
   'admin-alert',
   'dispute-resolved',
   'landing-waitlist',
+  'trial-ending',
 ] as const;
 export const emailTemplateSchema = z.enum(emailTemplates);
 export type EmailTemplate = z.infer<typeof emailTemplateSchema>;
@@ -40,6 +41,7 @@ export const EMAIL_VERSIONS = {
   'referral-reward': ['referrer', 'referee'],
   'onboarding-nudge': ['first_map', 'day3'],
   'admin-alert': ['export_users', 'export_payments'],
+  'trial-ending': ['d3', 'd0'],
 } as const satisfies Partial<Record<EmailTemplate, readonly string[]>>;
 
 /** transactional = always sent (map-ready still honours its preference); reminder and list = preferences, unsubscribe link and List-Unsubscribe. */
@@ -66,6 +68,7 @@ export const EMAIL_CLASS: Record<EmailTemplate, EmailClass> = {
   'admin-alert': 'transactional',
   'dispute-resolved': 'transactional',
   'landing-waitlist': 'list',
+  'trial-ending': 'transactional',
 };
 
 /** email_deliveries.status. queued → sent → delivered | delivery_delayed | bounced | complained; failed after the 3 tries; suppressed = never sent. */
@@ -174,6 +177,8 @@ export const adminAlertDataSchema = z.object({ version: z.enum(EMAIL_VERSIONS['a
 export const disputeResolvedDataSchema = z.object({ name });
 /** landing-waitlist · public landing waitlist (no account, notifyAddress). */
 export const landingWaitlistDataSchema = z.object({});
+/** trial-ending · d3 (TRIAL_NOTICE_DAYS before) | d0 (last day) of the free Pro trial (D-1213). {{nome}} {{dataFim}} {{planosUrl}} */
+export const trialEndingDataSchema = z.object({ version: z.enum(EMAIL_VERSIONS['trial-ending']), name, endsAt: iso, timezone: tz, plansUrl: url });
 
 export const emailDataSchemas = {
   'account-confirm': accountConfirmDataSchema,
@@ -194,6 +199,7 @@ export const emailDataSchemas = {
   'admin-alert': adminAlertDataSchema,
   'dispute-resolved': disputeResolvedDataSchema,
   'landing-waitlist': landingWaitlistDataSchema,
+  'trial-ending': trialEndingDataSchema,
 } as const satisfies Record<EmailTemplate, z.ZodTypeAny>;
 export type EmailDataMap = { [T in EmailTemplate]: z.infer<(typeof emailDataSchemas)[T]> };
 export type EmailData<T extends EmailTemplate> = EmailDataMap[T];

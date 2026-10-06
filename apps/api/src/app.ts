@@ -61,7 +61,8 @@ export type VerifyToken = (token: string, opts?: { defer?: boolean }) => Promise
  * touches no other connection and calls nothing external before its first run(): a rejected session throws there, the transaction
  * rolls back and nothing was written. `rate`: body parse, then `locked()` = run(); dispute link/invalidate only after that commit.
  */
-export const FUSED_WRITES = new Set(['POST /v1/challenge/rate']);
+// D-1093: start (only run()s; the plan read beside it has no effect) and answer (locked() awaits sessionChecked() before the AI grader).
+export const FUSED_WRITES = new Set(['POST /v1/challenge/rate', 'POST /v1/challenge/start', 'POST /v1/challenge/answer']);
 export { supabaseVerifier };
 
 export type Env = { Variables: { requestId: string; log: Logger; userId: string; sessionId: string | null } };

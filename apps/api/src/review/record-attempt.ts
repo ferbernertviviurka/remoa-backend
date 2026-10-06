@@ -1,10 +1,10 @@
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { pick } from '../pick';
 import type { Tx } from '@remoa/db';
 import { ok, type FsrsMemory, type FsrsState, type RecordAttempt } from '@remoa/contracts';
 import { grades } from '@remoa/contracts';
 import { schedule } from '@remoa/fsrs';
-import { Abort, guard, run } from '../db';
+import { Abort, final, guard, run } from '../db';
 import { invalidate } from '../cache';
 
 const bad = (message: string) => new Abort({ code: 'validation', message });
@@ -71,16 +71,23 @@ const iso = (d: Date | null) => (d ? d.toISOString() : null);
  *   2. one CTE: `insert attempts on conflict do nothing` + `update fsrs_state ... where exists(attempt inserted)` + the caller's
  *      `update sessions` (`persist`), so a retry never schedules twice and nothing is left half-written.
  */
+export type LockRow = { stability: number; difficulty: number; due: string; reps: number; lapses: number; last_review: string | null; state: FsrsMemory['state']; learning_steps: number; scheduled_days: number };
+/**
+ * Statement 1 of `rateInTx`: the no-op upsert that takes the `fsrs_state` row lock and returns the row. `src` yields (card_id uuid, sub text):
+ * a literal pair, or (D-1094) the item read from the session row in SQL, so it can leave in the same flight as the session lock.
+ */
+export const lockStateSql = (userId: string, src: SQL, createdAt: Date) => sql`
+    insert into fsrs_state (user_id, card_id, sub_id, due, created_at)
+    select ${userId}, c.id, x.sub, ${iso(createdAt)}::timestamptz, ${iso(createdAt)}::timestamptz
+    from (${src}) as x(card_id, sub) join cards c on c.id = x.card_id where c.deleted_at is null and c.type <> 'note'
+    on conflict (user_id, card_id, sub_id) do update set user_id = excluded.user_id
+    returning stability, difficulty, due, reps, lapses, last_review, state, learning_steps, scheduled_days`;
+
 export async function rateInTx(
-  tx: Tx, a: Attempt, persist: (due: Date) => { sessionId: string; items: unknown },
+  tx: Tx, a: Attempt, persist: (due: Date) => { sessionId: string; items: unknown }, lockedRow?: Promise<LockRow[]>,
 ): Promise<{ state: FsrsState; due: Date }> {
   const sub = a.subId ?? '';
-  const [row] = await tx.execute<{ stability: number; difficulty: number; due: string; reps: number; lapses: number; last_review: string | null; state: FsrsMemory['state']; learning_steps: number; scheduled_days: number }>(sql`
-    insert into fsrs_state (user_id, card_id, sub_id, due, created_at)
-    select ${a.userId}, c.id, ${sub}, ${iso(a.createdAt)}::timestamptz, ${iso(a.createdAt)}::timestamptz
-    from cards c where c.id = ${a.cardId} and c.deleted_at is null and c.type <> 'note'
-    on conflict (user_id, card_id, sub_id) do update set user_id = excluded.user_id
-    returning stability, difficulty, due, reps, lapses, last_review, state, learning_steps, scheduled_days`);
+  const [row] = await (lockedRow ?? tx.execute<LockRow>(lockStateSql(a.userId, sql`select ${a.cardId}::uuid, ${sub}::text`, a.createdAt)));
   if (!row) throw new Abort({ code: 'not_found', message: 'card not found' });
   const cur: FsrsMemory = {
     stability: row.stability, difficulty: row.difficulty, due: new Date(row.due), reps: row.reps, lapses: row.lapses,
@@ -91,7 +98,7 @@ export async function rateInTx(
   const next = schedule(prev, a.grade, now);
   const { sessionId, items } = persist(next.due);
   const verdict = a.verdict === null || a.verdict === undefined ? null : JSON.stringify(a.verdict);
-  await tx.execute(sql`
+  await final(tx.execute(sql`
     with a as (
       insert into attempts (id, user_id, card_id, sub_id, session_id, mode, input_kind, answer_text, verdict, grade, grade_overridden, duration_ms, created_at)
       values (${a.id}, ${a.userId}, ${a.cardId}, ${sub}, ${a.sessionId}, ${a.mode}::challenge_mode, ${a.inputKind}::input_kind, ${a.answerText}, ${verdict}::jsonb,
@@ -102,6 +109,6 @@ export async function rateInTx(
         last_review = ${iso(next.lastReview)}::timestamptz, state = ${next.state}::fsrs_card_state, learning_steps = ${next.learningSteps}, scheduled_days = ${next.scheduledDays}, updated_at = now()
       where user_id = ${a.userId} and card_id = ${a.cardId} and sub_id = ${sub} and exists (select 1 from a) returning 1
     )
-    update sessions set items = ${JSON.stringify(items)}::jsonb, updated_at = now() where id = ${sessionId}`);
+    update sessions set items = ${JSON.stringify(items)}::jsonb, updated_at = now() where id = ${sessionId}`)); // D-1092: with its COMMIT
   return { state: { ...next, userId: a.userId, cardId: a.cardId, subId: a.subId }, due: next.due };
 }

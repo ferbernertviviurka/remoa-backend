@@ -8,12 +8,12 @@ import {
   MAX_CARDS_PER_BOARD, PLAN_LIMITS, boardListQuerySchema, err, idSchema, ok, parseWith, type Result,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { Abort, guard, run } from '../db';
+import { Abort, guard, run, uuids } from '../db';
 import { assertQuota, overTotal } from '../billing/quota';
 import { planOf } from '../billing/plan';
 import { cardPreview, sizeOf } from '../cards/cards';
-import { boardListExtras } from '../review/queue';
-import { mapStatsFor } from '../review/stats';
+import { boardListExtras, W, withWindow } from '../review/queue';
+import { mapStatsFrom, mapStatsSql, type MapStatsData } from '../review/stats';
 import { initialShareColumns } from '../share/crypto';
 import { shareUrlOf } from '../share/url';
 import { turnOffShare } from './share';
@@ -74,24 +74,32 @@ export async function listBoardsPage(userId: string, query: BoardListPageQuery =
   if (parsed.data.cursor && !cur) return err('validation', 'cursor: invalid');
   return ok(
     await run(userId, async (tx, s) => {
-      const rows = await tx
-        .select({
-          id: s.boards.id, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, updatedAt: s.boards.updatedAt,
-          access: s.boards.access, archivedAt: s.boards.archivedAt, ts: sql<string>`${s.boards.updatedAt}::text`,
-          matrixItemIds: sql<string[]>`coalesce((select array_agg(bm.matrix_item_id order by bm.created_at, bm.matrix_item_id) from board_matrix_items bm where bm.board_id = boards.id), '{}')`,
-        })
-        .from(s.boards)
-        .where(and(
-          eq(s.boards.userId, userId),
-          status === 'active' ? isNull(s.boards.archivedAt) : status === 'archived' ? isNotNull(s.boards.archivedAt) : undefined,
-          cur ? sql`(${s.boards.updatedAt}, ${s.boards.id}) < (${cur.ts}::timestamptz, ${cur.id}::uuid)` : undefined,
-        ))
-        .orderBy(desc(s.boards.updatedAt), desc(s.boards.id))
-        .limit(limit + 1);
+      const where = and(
+        eq(s.boards.userId, userId),
+        status === 'active' ? isNull(s.boards.archivedAt) : status === 'archived' ? isNotNull(s.boards.archivedAt) : undefined,
+        cur ? sql`(${s.boards.updatedAt}, ${s.boards.id}) < (${cur.ts}::timestamptz, ${cur.id}::uuid)` : undefined,
+      );
+      const order = [desc(s.boards.updatedAt), desc(s.boards.id)] as const;
+      const now = new Date();
+      // G21 D-1094: one flight; the map_stats statement takes the page's ids as the same query (subquery), not from the rows
+      const pageIds = tx.select({ id: s.boards.id }).from(s.boards).where(where).orderBy(...order).limit(limit + 1);
+      const [rows, [st]] = await Promise.all([
+        tx
+          .select({
+            id: s.boards.id, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, updatedAt: s.boards.updatedAt,
+            access: s.boards.access, archivedAt: s.boards.archivedAt, ts: sql<string>`${s.boards.updatedAt}::text`,
+            matrixItemIds: sql<string[]>`coalesce((select array_agg(bm.matrix_item_id order by bm.created_at, bm.matrix_item_id) from board_matrix_items bm where bm.board_id = boards.id), '{}')`,
+          })
+          .from(s.boards)
+          .where(where)
+          .orderBy(...order)
+          .limit(limit + 1),
+        tx.execute<{ m: MapStatsData }>(withWindow(userId, now, sql`select ${mapStatsSql(userId, sql`array(${pageIds})`, now.getTime(), W.endMs)} as m`)),
+      ]);
       const more = rows.length > limit;
       const page = more ? rows.slice(0, limit) : rows;
       const ids = page.map((r) => r.id);
-      const stats = await mapStatsFor(tx, userId, ids); // G21 P-474 (D-1038): map_stats rollup, 0 per-board scans
+      const stats = await mapStatsFrom(tx, userId, ids, st!.m, now); // G21 P-474 (D-1038): map_stats rollup, 0 per-board scans (+1 upsert when one is stale)
       const extra = include === 'preview' ? await boardListExtras(tx, userId, new Date(), ids) : null; // legacy path (F03 FR-8 badge + G01 state bar/preview)
       const last = page[page.length - 1];
       const items = page.map((r) => {
@@ -135,7 +143,7 @@ export async function getBoardView(
   if (!isUuid(boardId)) return notFound();
   const view = o.view ?? 'full';
   return run(userId, async (tx, s) => {
-    const [board] = await tx
+    const boardQ = tx
       .select({
         id: s.boards.id, userId: s.boards.userId, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, version: s.boards.version,
         temporalMark: s.boards.temporalMark, reviewerId: s.boards.reviewerId, sourceBoardId: s.boards.sourceBoardId, copiedFromLinkAt: s.boards.copiedFromLinkAt,
@@ -145,44 +153,44 @@ export async function getBoardView(
       })
       .from(s.boards)
       .where(eq(s.boards.id, boardId));
-    if (!board) return notFound();
+    const text = (col: typeof s.cards.front | typeof s.cards.back) => (view === 'structure' ? sql<string | null>`left(${col}, ${SUMMARY_CHARS})` : sql<string | null>`${col}`);
+    const graph = () => Promise.all([
+      tx
+        .select({
+          id: s.cards.id, boardId: s.cards.boardId, type: s.cards.type, shape: s.cards.shape, title: s.cards.title, front: text(s.cards.front),
+          frontAssetId: s.cards.frontAssetId,
+          back: text(s.cards.back), backAssetId: s.cards.backAssetId, width: s.cards.width, height: s.cards.height,
+          tags: view === 'structure' ? sql<string[]>`'{}'::text[]` : s.cards.tags, source: view === 'structure' ? sql<string | null>`null` : s.cards.source,
+          sourceExcerpt: view === 'structure' ? sql<string | null>`null` : s.cards.sourceExcerpt,
+          x: s.cards.x, y: s.cards.y, status: s.cards.status,
+          order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt, payload: s.cards.payload, suspendedAt: s.cards.suspendedAt,
+        })
+        .from(s.cards)
+        .where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)))
+        .orderBy(asc(s.cards.order), asc(s.cards.createdAt)),
+      // the live-ends filter runs in memory with the card ids (was two joins on cards: 94 ms x 24 in pg_stat_statements)
+      tx
+        .select({ id: s.edges.id, boardId: s.edges.boardId, fromCardId: s.edges.fromCardId, toCardId: s.edges.toCardId, label: s.edges.label, question: s.edges.question })
+        .from(s.edges)
+        .where(eq(s.edges.boardId, boardId))
+        .orderBy(asc(s.edges.createdAt), asc(s.edges.id)),
+      // only seeds and copies of seeds have published versions (own private maps never do): the board row decides, in SQL
+      tx.execute<{ changelog: string | null }>(sql`select changelog from board_versions where board_id = (
+        select coalesce(b.source_board_id, b.id) from boards b where b.id = ${boardId} and (b.source_board_id is not null or b.status <> 'private'))
+        order by version desc limit 1`),
+    ]);
+    // G21 D-1095: one flight. With If-None-Match the board row goes first (a match answers 304 without reading the cards).
+    const pending = o.ifNoneMatch ? null : graph();
+    pending?.catch(() => undefined);
+    const [board] = await boardQ;
+    if (!board) return (await pending?.catch(() => undefined), notFound());
     const etag = boardEtag(view, { ...board, matrix: board.matrixItemIds });
     if (etagMatches(o.ifNoneMatch, etag)) return ok({ etag, notModified: true as const });
-
-    const text = (col: typeof s.cards.front | typeof s.cards.back) => (view === 'structure' ? sql<string | null>`left(${col}, ${SUMMARY_CHARS})` : sql<string | null>`${col}`);
-    const cardRows = await tx
-      .select({
-        id: s.cards.id, boardId: s.cards.boardId, type: s.cards.type, shape: s.cards.shape, title: s.cards.title, front: text(s.cards.front),
-        frontAssetId: s.cards.frontAssetId,
-        back: text(s.cards.back), backAssetId: s.cards.backAssetId, width: s.cards.width, height: s.cards.height,
-        tags: view === 'structure' ? sql<string[]>`'{}'::text[]` : s.cards.tags, source: view === 'structure' ? sql<string | null>`null` : s.cards.source,
-        sourceExcerpt: view === 'structure' ? sql<string | null>`null` : s.cards.sourceExcerpt,
-        x: s.cards.x, y: s.cards.y, status: s.cards.status,
-        order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt, payload: s.cards.payload, suspendedAt: s.cards.suspendedAt,
-      })
-      .from(s.cards)
-      .where(and(eq(s.cards.boardId, boardId), isNull(s.cards.deletedAt)))
-      .orderBy(asc(s.cards.order), asc(s.cards.createdAt));
+    const [cardRows, edgeRows, [published]] = await (pending ?? graph());
     const live = new Set(cardRows.map((c) => c.id));
     const cards = cardRows.map(({ x, y, payload, width, height, ...c }) => ({ ...c, position: { x, y }, size: sizeOf({ width, height }), preview: cardPreview(c.type, payload) }));
-    // the live-ends filter runs in memory with the ids above (was two joins on cards: 94 ms x 24 in pg_stat_statements)
-    const edgeRows = await tx
-      .select({ id: s.edges.id, boardId: s.edges.boardId, fromCardId: s.edges.fromCardId, toCardId: s.edges.toCardId, label: s.edges.label, question: s.edges.question })
-      .from(s.edges)
-      .where(eq(s.edges.boardId, boardId))
-      .orderBy(asc(s.edges.createdAt), asc(s.edges.id));
     const edges = edgeRows.filter((e) => live.has(e.fromCardId) && live.has(e.toCardId));
-    // only seeds and copies of seeds have published versions (own private maps never do): skip the query for them
-    let changelog: string | null = null;
-    if (board.sourceBoardId || board.status !== 'private') {
-      const [published] = await tx
-        .select({ changelog: s.boardVersions.changelog })
-        .from(s.boardVersions)
-        .where(eq(s.boardVersions.boardId, board.sourceBoardId ?? board.id))
-        .orderBy(desc(s.boardVersions.version))
-        .limit(1);
-      changelog = published?.changelog ?? null;
-    }
+    const changelog = published?.changelog ?? null;
     return ok({ etag, notModified: false as const, data: { board: { ...toBoard(board), changelog, matrixItemIds: board.matrixItemIds }, cards, edges } as unknown as BoardGraph });
   });
 }
@@ -401,10 +409,10 @@ export async function applyOp(tx: Tx, s: typeof import('@remoa/db'), o: MapOp, q
         .where(and(eq(edges.id, o.edgeId), eq(edges.boardId, o.boardId), liveEnds(edges)));
       return;
     case 'deleteCards': // soft delete; edges stay and are hidden because an end is dead (undo = createCard again)
-      await tx.update(cards).set({ deletedAt: new Date() }).where(and(inArray(cards.id, o.cardIds), eq(cards.boardId, o.boardId), isNull(cards.deletedAt)));
+      await tx.update(cards).set({ deletedAt: new Date() }).where(and(sql`${cards.id} = any(${uuids(o.cardIds)})`, eq(cards.boardId, o.boardId), isNull(cards.deletedAt)));
       return;
     case 'deleteEdges':
-      await tx.delete(edges).where(and(inArray(edges.id, o.edgeIds), eq(edges.boardId, o.boardId)));
+      await tx.delete(edges).where(and(sql`${edges.id} = any(${uuids(o.edgeIds)})`, eq(edges.boardId, o.boardId)));
       return;
   }
 }
@@ -416,17 +424,18 @@ export const applyMapOps: ApplyMapOps = async (userId, ops) => {
       const boardIds = [...new Set(ops.map((o) => o.boardId))];
       // INSERT ops would hit the RLS WITH CHECK (a 500) on a foreign board, so they keep the explicit 404 up front; UPDATE/DELETE-only batches (drag, resize, label) rely on the touch below.
       if (ops.some((o) => o.op === 'createCard' || o.op === 'createEdge')) {
-        const owned = await tx.select({ id: s.boards.id }).from(s.boards).where(and(inArray(s.boards.id, boardIds), eq(s.boards.userId, userId)));
+        const owned = await tx.select({ id: s.boards.id }).from(s.boards).where(and(sql`${s.boards.id} = any(${uuids(boardIds)})`, eq(s.boards.userId, userId)));
         if (owned.length !== boardIds.length) throw new Abort({ code: 'not_found', message: 'board not found' });
       }
       for (const o of ops) await applyOp(tx, s, o, { userId, cardLimit });
       // G21 FR-21: ownership rides on the touch (RLS on UPDATE silently matches 0 rows, so the count is the check; a mismatch rolls the batch back).
-      const touched = await tx.update(s.boards).set({ updatedAt: new Date() }).where(and(inArray(s.boards.id, boardIds), eq(s.boards.userId, userId))).returning({ id: s.boards.id });
+      const touched = await tx.update(s.boards).set({ updatedAt: new Date() }).where(and(sql`${s.boards.id} = any(${uuids(boardIds)})`, eq(s.boards.userId, userId))).returning({ id: s.boards.id });
       if (touched.length !== boardIds.length) throw new Abort({ code: 'not_found', message: 'board not found' });
       return { applied: ops.map((o) => o.opId) };
     }),
   );
   if (r.ok) for (const mapId of new Set(ops.map((o) => o.boardId))) await invalidate('card.changed', { userId, mapId }); // after COMMIT
-  if (r.ok && cardLimit !== null) await maybeQualifyReferral(userId); // F18 (D-384): after the commit; never throws
+  // F18 (D-384): qualify after any batch that created a card. Not `cardLimit !== null`: that is null for Pro (and the F30 trial), so referees never qualified.
+  if (r.ok && ops.some((o) => o.op === 'createCard')) await maybeQualifyReferral(userId); // after the commit; never throws
   return r;
 };

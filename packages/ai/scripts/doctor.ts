@@ -49,8 +49,6 @@ if (c.baseUrl) {
     const free = freeTextModels(catalog.data).sort((a, b) => (byCtx.get(b) ?? 0) - (byCtx.get(a) ?? 0));
     console.log(`\nModelos :free só-texto com JSON no catálogo agora (${free.length}):`);
     for (const id of free.slice(0, 12)) console.log(`  ${id}  (${byCtx.get(id)} tokens)`);
-    const tools = new Set(freeTextModels(catalog.data, ['tools', 'tool_choice']));
-    console.log(`  com tools (correção): ${free.filter((id) => tools.has(id)).slice(0, 6).join(', ') || 'nenhum'}`);
   } else console.log('\nCatálogo indisponível.');
 }
 process.exit(problems ? 1 : 0);

@@ -1,21 +1,32 @@
 // G21 D-978/D-990/D-993, no database: @remoa/db is faked, so these count statements and check what each one carries.
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { SQL } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type Row = Record<string, unknown>;
 const executed: string[] = [];
+const ends: string[] = []; // BEGIN / COMMIT / ROLLBACK of the pipelined run() (D-1091), kept apart from the statements
 let sessionRow: Row | undefined;
 const dialect = new PgDialect();
-const execute = async (q: SQL) => {
-  const text = dialect.sqlToQuery(q).sql;
+const respond = (text: string) => {
   executed.push(text);
   if (!text.includes('auth.sessions')) return [{}];
   // run(): (select 1) left join → always one row; standalone liveSession → zero or one row
   return text.includes('left join (') ? [sessionRow ?? { live: null, deleted_at: null, suspended_at: null, has_profile: null }] : sessionRow ? [sessionRow] : [];
 };
+const execute = async (q: SQL) => respond(dialect.sqlToQuery(q).sql);
+// run() reserves a connection and sends text + params through it; the answer is computed when the statement is sent (wire order)
+const reserved = {
+  unsafe: (text: string) => {
+    const rows = /^(begin|commit|rollback)$/.test(text) ? (ends.push(text), []) : respond(text);
+    const p = Promise.resolve(rows);
+    return Object.assign(p, { values: () => p });
+  },
+  release: () => undefined,
+};
 vi.mock('@remoa/db', () => ({
-  db: { execute, transaction: async <T>(fn: (tx: { execute: typeof execute }) => Promise<T>) => fn({ execute }) },
+  db: { execute, transaction: async <T>(fn: (tx: { execute: typeof execute }) => Promise<T>) => fn({ execute }), $client: { reserve: async () => reserved }, _: { fullSchema: {}, schema: {}, tableNamesMap: {} } },
+  prepared: <T>(c: T) => c,
 }));
 
 const { createApp } = await import('./app');
@@ -38,6 +49,7 @@ const quiet = async <T>(fn: () => T | Promise<T>) => {
 
 beforeEach(() => {
   executed.length = 0;
+  ends.length = 0;
   sessionRow = live();
 });
 
@@ -75,12 +87,14 @@ describe('fused session check on reads (D-990)', () => {
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('unauthorized');
   });
 
-  it('a GET whose handler opens run(): session columns ride in the first statement; dead session = 401 and the handler body never runs', async () => {
+  it('a GET whose handler opens run(): session columns ride in the first statement; dead session = 401 and the transaction rolls back', async () => {
     sessionRow = undefined;
     const res = await get('/v1/boards');
     expect(res.status).toBe(401);
-    expect(executed).toHaveLength(1);
+    // D-1091: the handler's first statements leave in the same flight (pipelined) and are rolled back; the answer is the 401
     expect(executed[0]).toMatch(/set_config\('request\.jwt\.claims'.*auth\.sessions/s);
+    expect(executed.filter((q) => q.includes('auth.sessions'))).toHaveLength(1);
+    expect(ends).toEqual(['begin', 'rollback']);
   });
 
   it('deleted account on a GET: 403 account_deleted, except GET /v1/account/me (D-123); suspended likewise (D-430)', async () => {
@@ -106,8 +120,9 @@ describe('fused session check on reads (D-990)', () => {
     const body = JSON.stringify({ sessionId: SID, itemId: 'i1', grade: 'good', overridden: false });
     const res = await quiet(() => app.request('/v1/challenge/rate', { method: 'POST', headers: { authorization: 'Bearer t', 'content-type': 'application/json' }, body }));
     expect(res.status).toBe(401);
-    expect(executed).toHaveLength(1);
     expect(executed[0]).toMatch(/set_config\('request\.jwt\.claims'.*auth\.sessions/s);
+    // D-1091/D-1093: the session lock (and the FSRS lock beside it) were pipelined behind it and rolled back; nothing committed
+    expect(ends).toEqual(['begin', 'rollback']);
   });
 });
 
@@ -125,14 +140,27 @@ describe('run(): one fixed statement (D-991) with timeouts (D-993)', () => {
     expect(executed).toHaveLength(3);
   });
 
-  it('dead session: run rejects with SessionRejected before fn, and so does every later run of the request', async () => {
+  it('dead session: run rejects with SessionRejected and rolls back; every later run of the request rejects without a round trip', async () => {
     sessionRow = undefined;
     const fn = vi.fn(async () => 1);
     await sessionGate.run(gate() as never, async () => {
-      await expect(run(USER, fn)).rejects.toBeInstanceOf(SessionRejected);
+      await expect(run(USER, fn)).rejects.toBeInstanceOf(SessionRejected); // fn starts in the same flight (D-1091), its work rolls back
       await expect(run(USER, fn)).rejects.toBeInstanceOf(SessionRejected);
     });
-    expect(fn).not.toHaveBeenCalled();
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(ends).toEqual(['begin', 'rollback']);
+  });
+
+  it('D-1091: BEGIN, the first statement and fn\'s first statement are sent before any answer; a read does not wait for COMMIT', async () => {
+    const order: string[] = [];
+    const orig = reserved.unsafe;
+    reserved.unsafe = (text: string) => (order.push(text.split(/\s+/)[0] === 'select' && text.includes('set_config') ? 'first' : text.trim().split(/\s+/).slice(0, 2).join(' ')), orig(text));
+    try {
+      await run(USER, async (tx) => tx.execute(sql`select 42`));
+    } finally {
+      reserved.unsafe = orig;
+    }
+    expect(order).toEqual(['begin', 'first', 'select 42', 'commit']);
   });
 
   it('a run for another user id (admin acting on someone) is not taken as the check', async () => {

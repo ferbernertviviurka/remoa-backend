@@ -29,9 +29,13 @@ const toPrefs = (r: Row | undefined, cap: number | null, reminder: boolean): Pre
 });
 
 export async function getPreferences(userId: string, planCap: number | null): Promise<Preferences> {
+  return (await loadPreferences(userId))(planCap);
+}
+/** The two reads in parallel; the plan cap is applied after (D-1094: /me reads it beside the entitlements). */
+export async function loadPreferences(userId: string): Promise<(planCap: number | null) => Preferences> {
   const { db, userPreferences: t } = await dbm();
-  const [r] = await db.select(pick(t, 'theme', 'reduceMotion', 'reminderHour', 'newCardsPerDay', 'emailProductNews')).from(t).where(eq(t.userId, userId));
-  return toPrefs(r, planCap, await reminderEmail(userId));
+  const [[r], reminder] = await Promise.all([db.select(pick(t, 'theme', 'reduceMotion', 'reminderHour', 'newCardsPerDay', 'emailProductNews')).from(t).where(eq(t.userId, userId)), reminderEmail(userId)]);
+  return (planCap) => toPrefs(r, planCap, reminder);
 }
 
 /** FR-13 / D-122: upsert; the Free plan above its cap is `forbidden` 'pro_required' (the UI shows the Pro notice). */

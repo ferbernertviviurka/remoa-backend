@@ -1,42 +1,72 @@
 {
-  "recorded": false,
-  "note": "Escrita à mão (G22 Fase 2), no formato de resposta do OpenRouter; NÃO é resposta gravada de modelo. Regravar com AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report.",
+  "recorded": true,
+  "note": "Gravado ao vivo com entrada sintética (G22). Tempo removido: a rodada de 2026-10-06 mediu só até os cabeçalhos, não até o fim da resposta (D-1440).",
+  "model": "nvidia/nemotron-3-super-120b-a12b:free",
+  "recordedAt": "2026-10-06T17:11:09.933Z",
   "replies": [
     {
-      "id": "gen-1759700000-synthetic007",
-      "provider": "Nvidia",
-      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "id": "gen-1791306663-K3kwibrvzwhELWicKVFm",
       "object": "chat.completion",
-      "created": 1759700000,
+      "created": 1791306663,
+      "model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "provider": "Nvidia",
+      "system_fingerprint": null,
+      "service_tier": null,
       "choices": [
         {
+          "index": 0,
           "logprobs": null,
           "finish_reason": "tool_calls",
           "native_finish_reason": "tool_calls",
-          "index": 0,
           "message": {
             "role": "assistant",
-            "content": "",
+            "content": null,
             "refusal": null,
-            "reasoning": null,
+            "reasoning": "We need to evaluate the student's answer against the rubric.\n\nRubric essential points:\n- \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\"\n- \"Medir a glicemia de novo em 15 minutos\"\n\nComplementary: \"Investigar a causa do episódio\"\n\nStudent answer: \"Aplicar insulina regular por via intravenosa.\"\n\nThat is opposite of what is needed: giving insulin will lower glucose further, a critical error (drug dose contraindicated). This is a critical error: giving insulin for hypoglycemia.\n\nThus verdict: incorrect, criticalError = true. Matched: none (none of the essential points are covered). Missing: both essential points (we list them exactly as in rubric). sourceQuote: we need to copy literally the point that fundamentals the verdict. Since the verdict is incorrect due to critical error, we can pick one essential point as sourceQuote. Probably the first essential point: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\". Or we could choose whichever. We'll choose that.\n\nFeedback: in Portuguese, up to 3 sentences: what they got right (nothing), what they missed (they should give oral carbs and recheck glucose), and citing source (the source is the rubric or the fonte? It says citando a fonte bloco FONTE. So we reference the fonte: \"Texto sintético de avaliação: Hipoglicemia no adulto\". We'll mention that.\n\nThus feedback: \"O estudante não ofereceu carboidrato de absorção rápida nem repete a glicemia após 15 minutos, conforme a rubrica de hipoglicemia no adulto. Aplicou insulina IV, que agrava a hipoglicemia e é um erro crítico.\"\n\nThat's 2 sentences. Good.\n\nNow we need to call the grade tool with those parameters.\n\nLet's prepare.\n\nMatched: [] (empty array)\nMissing: [\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\", \"Medir a glicemia de novo em 15 minutos\"]\ncriticalError: true\nsourceQuote: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\"\nfeedback: \"O estudante não ofereceu carboidrato de absorção rápida nem repete a glicemia após 15 minutos, conforme a rubrica de hipoglicemia no adulto. Aplicou insulina IV, que agrava a hipoglicemia e é um erro crítico.\"\n\nWe need to ensure no extra text besides the tool call. We'll output only the function call.",
             "tool_calls": [
               {
-                "id": "call_7",
-                "index": 0,
                 "type": "function",
+                "index": 0,
+                "id": "call-596fe53b-df90-478e-b708-e5936f42120f",
                 "function": {
                   "name": "grade",
-                  "arguments": "{\"verdict\":\"incorrect\",\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\",\"Investigar a causa do episódio\"],\"criticalError\":true,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"Insulina numa hipoglicemia é uma conduta contrária à rubrica e piora o quadro. O certo é carboidrato por via oral e nova glicemia em 15 minutos. Fonte: Hipoglicemia no adulto.\"}"
+                  "arguments": "{\"matched\":[],\"missing\":[\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"Medir a glicemia de novo em 15 minutos\"],\"verdict\":\"incorrect\",\"criticalError\":true,\"sourceQuote\":\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\",\"feedback\":\"O estudante não ofereceu carboidrato de absorção rápida nem repete a glicemia após 15 minutos, conforme a rubrica de hipoglicemia no adulto. Aplicou insulina IV, que agrava a hipoglicemia e é um erro crítico.\"}"
                 }
+              }
+            ],
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "We need to evaluate the student's answer against the rubric.\n\nRubric essential points:\n- \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\"\n- \"Medir a glicemia de novo em 15 minutos\"\n\nComplementary: \"Investigar a causa do episódio\"\n\nStudent answer: \"Aplicar insulina regular por via intravenosa.\"\n\nThat is opposite of what is needed: giving insulin will lower glucose further, a critical error (drug dose contraindicated). This is a critical error: giving insulin for hypoglycemia.\n\nThus verdict: incorrect, criticalError = true. Matched: none (none of the essential points are covered). Missing: both essential points (we list them exactly as in rubric). sourceQuote: we need to copy literally the point that fundamentals the verdict. Since the verdict is incorrect due to critical error, we can pick one essential point as sourceQuote. Probably the first essential point: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\". Or we could choose whichever. We'll choose that.\n\nFeedback: in Portuguese, up to 3 sentences: what they got right (nothing), what they missed (they should give oral carbs and recheck glucose), and citing source (the source is the rubric or the fonte? It says citando a fonte bloco FONTE. So we reference the fonte: \"Texto sintético de avaliação: Hipoglicemia no adulto\". We'll mention that.\n\nThus feedback: \"O estudante não ofereceu carboidrato de absorção rápida nem repete a glicemia após 15 minutos, conforme a rubrica de hipoglicemia no adulto. Aplicou insulina IV, que agrava a hipoglicemia e é um erro crítico.\"\n\nThat's 2 sentences. Good.\n\nNow we need to call the grade tool with those parameters.\n\nLet's prepare.\n\nMatched: [] (empty array)\nMissing: [\"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\", \"Medir a glicemia de novo em 15 minutos\"]\ncriticalError: true\nsourceQuote: \"Oferecer 15 gramas de carboidrato de absorção rápida por via oral\"\nfeedback: \"O estudante não ofereceu carboidrato de absorção rápida nem repete a glicemia após 15 minutos, conforme a rubrica de hipoglicemia no adulto. Aplicou insulina IV, que agrava a hipoglicemia e é um erro crítico.\"\n\nWe need to ensure no extra text besides the tool call. We'll output only the function call.",
+                "format": "unknown",
+                "index": 0
               }
             ]
           }
         }
       ],
       "usage": {
-        "prompt_tokens": 610,
-        "completion_tokens": 120,
-        "total_tokens": 730
+        "prompt_tokens": 1162,
+        "completion_tokens": 761,
+        "total_tokens": 1923,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0,
+          "upstream_inference_prompt_cost": 0,
+          "upstream_inference_completions_cost": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 573,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
       }
     }
   ]

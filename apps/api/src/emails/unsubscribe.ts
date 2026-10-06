@@ -3,7 +3,7 @@
 import { sql } from 'drizzle-orm';
 import { NOTIFICATION_PREFS, effectivePref, type NotificationPrefKey } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
-import { dbm } from '../db';
+import { dbm, uuids } from '../db';
 import { recordEvent } from '../account/events';
 import { emailHash } from '../referral/email-normalize';
 import { suppress } from './webhook';
@@ -24,7 +24,7 @@ export async function applyUnsubscribe(c: UnsubscribeClaim): Promise<void> {
       // ponytail: the landing waitlist keeps the plain address (F16), so the hash is matched in JS; fine for thousands of rows, add a hash column past that.
       const rows = await db.execute<{ id: string; email: string }>(sql`select id, email from waitlist`);
       const ids = rows.filter((r) => emailHash(r.email) === subject.emailHash).map((r) => r.id);
-      if (ids.length) await db.execute(sql`delete from waitlist where id in (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})`);
+      if (ids.length) await db.execute(sql`delete from waitlist where id = any(${uuids(ids)})`);
     }
   } else {
     const { userId } = subject;

@@ -1,10 +1,10 @@
-import { and, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, eq, isNull, notInArray, sql } from 'drizzle-orm';
 import { pick } from '../pick';
 import {
   type CardDetail, type CardPreview, type GetCard, type SaveCard,
   caseStages, err, idSchema, ok,
 } from '@remoa/contracts';
-import { Abort, guard, run } from '../db';
+import { Abort, guard, run, uuids } from '../db';
 import { invalidate } from '../cache';
 
 const isUuid = (v: string) => idSchema.safeParse(v).success;
@@ -71,7 +71,7 @@ export const saveCard: SaveCard = async (userId, cardId, input) => {
       const backAssetId = note ? null : input.backAssetId;
       const assetIds = assetIdsOf({ ...input, backAssetId });
       if (assetIds.length) {
-        const found = await tx.select({ id: s.assets.id }).from(s.assets).where(inArray(s.assets.id, assetIds));
+        const found = await tx.select({ id: s.assets.id }).from(s.assets).where(sql`${s.assets.id} = any(${uuids(assetIds)})`);
         if (found.length !== assetIds.length) throw new Abort({ code: 'validation', message: 'an asset of this card is not one you can read' });
       }
 

@@ -1,12 +1,11 @@
-import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { pick } from '../pick';
 import {
   challengeItemSchema, ok, type CardType, type CaseStage, type QueueFilter, type ChallengeItem, type ChallengeMode, type FsrsMemory, type QueueItem, type Result,
 } from '@remoa/contracts';
 import { retrievability } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
-import { getBoardQueue, getDailyQueue, getFilteredQueue } from '../review/queue';
-import { run } from '../db';
+import { queueIn, uuids } from '../review/queue';
 
 // --- stored shape ---------------------------------------------------------------------------------------------------
 
@@ -170,32 +169,36 @@ export function buildItem(q: QueueItem, ctx: Ctx): StoredItem | null {
 
 // --- loading ---------------------------------------------------------------------------------------------------------
 
+/** D-1094: one flight (5 statements pipelined): states and attempts are scoped by subquery/ids, not by the card rows read here. */
 export async function loadCtx(tx: Tx, userId: string, queue: QueueItem[]): Promise<Ctx> {
   const boardIds = [...new Set(queue.map((q) => q.boardId))];
   const cardIds = [...new Set(queue.map((q) => q.cardId))];
   const ctx: Ctx = { userId, cards: new Map(), edges: [], boards: new Map(), retr: new Map(), lastMode: new Map(), attempts: new Map() };
   if (!boardIds.length) return ctx;
   const s = await import('@remoa/db');
-  const [cards, edges, boards] = await Promise.all([
-    tx.select(pick(s.cards, 'id', 'boardId', 'type', 'title', 'front', 'back', 'payload', 'rubric', 'order')).from(s.cards).where(and(inArray(s.cards.boardId, boardIds), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note'))), // D-522: suspended = out of challenges
-    tx.select(pick(s.edges, 'id', 'boardId', 'fromCardId', 'toCardId', 'label')).from(s.edges).where(inArray(s.edges.boardId, boardIds)),
-    tx.select({ id: s.boards.id, status: s.boards.status, userId: s.boards.userId }).from(s.boards).where(inArray(s.boards.id, boardIds)),
+  // one array parameter, not one per id: a stable statement text stays prepared (D-1090; `in ($1..$n)` was a new statement per list length)
+  const inBoards = (col: typeof s.cards.boardId | typeof s.edges.boardId | typeof s.boards.id) => sql`${col} = any(${uuids(boardIds)})`;
+  const live = and(inBoards(s.cards.boardId), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note')); // D-522: suspended = out of challenges
+  const [cards, edges, boards, states, last] = await Promise.all([
+    tx.select(pick(s.cards, 'id', 'boardId', 'type', 'title', 'front', 'back', 'payload', 'rubric', 'order')).from(s.cards).where(live),
+    tx.select(pick(s.edges, 'id', 'boardId', 'fromCardId', 'toCardId', 'label')).from(s.edges).where(inBoards(s.edges.boardId)),
+    tx.select({ id: s.boards.id, status: s.boards.status, userId: s.boards.userId }).from(s.boards).where(inBoards(s.boards.id)),
+    // retrievability of every card in these boards (edge target choice); `= any(array(...))` keeps it a PK probe per card
+    tx.select(pick(s.fsrsState, 'cardId', 'stability', 'difficulty', 'due', 'reps', 'lapses', 'lastReview', 'state', 'learningSteps', 'scheduledDays')).from(s.fsrsState)
+      .where(and(eq(s.fsrsState.userId, userId), sql`${s.fsrsState.cardId} = any(array(${tx.select({ id: s.cards.id }).from(s.cards).where(live)}))`)),
+    // last mode and attempt counts of the queued cards
+    tx.execute<{ card_id: string; mode: ChallengeMode; n: number }>(sql`
+      select distinct on (card_id) card_id, mode, count(*) over (partition by card_id)::int as n
+      from attempts where user_id = ${userId} and card_id = any(${uuids(cardIds)})
+      order by card_id, created_at desc`),
   ]);
   for (const c of cards) ctx.cards.set(c.id, { id: c.id, boardId: c.boardId, type: c.type, title: c.title, front: c.front, back: c.back, payload: c.payload, rubric: c.rubric as CardData['rubric'], order: c.order });
   ctx.edges = edges.map((e) => ({ id: e.id, boardId: e.boardId, from: e.fromCardId, to: e.toCardId, label: e.label }));
   for (const b of boards) ctx.boards.set(b.id, { status: b.status, userId: b.userId });
-
-  // retrievability of every card in these boards (edge target choice), last mode and attempt counts of the queued cards
-  const allIds = [...ctx.cards.keys()];
   const now = new Date();
-  const states = allIds.length ? await tx.select(pick(s.fsrsState, 'cardId', 'stability', 'difficulty', 'due', 'reps', 'lapses', 'lastReview', 'state', 'learningSteps', 'scheduledDays')).from(s.fsrsState).where(and(eq(s.fsrsState.userId, userId), inArray(s.fsrsState.cardId, allIds))) : [];
   const acc = new Map<string, number[]>();
   for (const st of states) acc.set(st.cardId, [...(acc.get(st.cardId) ?? []), retrievability(st as FsrsMemory, now)]);
   for (const [k, v] of acc) ctx.retr.set(k, v.reduce((a, b) => a + b, 0) / v.length);
-  const last = await tx.execute<{ card_id: string; mode: ChallengeMode; n: number }>(sql`
-    select distinct on (card_id) card_id, mode, count(*) over (partition by card_id)::int as n
-    from attempts where user_id = ${userId} and card_id in (${sql.join(cardIds.map((i) => sql`${i}`), sql`, `)})
-    order by card_id, created_at desc`);
   for (const r of last) {
     ctx.lastMode.set(r.card_id, r.mode);
     ctx.attempts.set(r.card_id, r.n);
@@ -229,12 +232,11 @@ export function flowOrder(cardIds: string[], edges: { from: string; to: string }
   return out;
 }
 
-/** FR-1: queue (F03) -> frozen items. Board sessions respect the daily new limit (FRD open question, provisional yes). */
-export async function buildSession(userId: string, kind: 'daily' | 'board', boardId: string | undefined, limit: number, now: Date, order: 'random' | 'flow' = 'random', filter?: QueueFilter): Promise<Result<StoredItem[]>> {
-  const opts = { now, limit };
-  const q = kind === 'board' ? await getBoardQueue(userId, boardId!, opts) : filter ? await getFilteredQueue(userId, filter, opts) : await getDailyQueue(userId, opts);
+/** FR-1: queue (F03) -> frozen items, in the caller's transaction (D-1094: 2 flights). Board sessions respect the daily new limit (FRD open question, provisional yes). */
+export async function buildSession(tx: Tx, userId: string, kind: 'daily' | 'board', boardId: string | undefined, limit: number, now: Date, order: 'random' | 'flow' = 'random', filter?: QueueFilter): Promise<Result<StoredItem[]>> {
+  const q = await queueIn(tx, userId, kind === 'board' ? { boardId: boardId! } : { filter }, { now, limit });
   if (!q.ok) return q;
-  const ctx = await run(userId, (tx) => loadCtx(tx, userId, q.data));
+  const ctx = await loadCtx(tx, userId, q.data);
   const items = q.data.map((i) => buildItem(i, ctx)).filter((x): x is StoredItem => x !== null);
   if (kind === 'board' && order === 'flow') {
     const rank = new Map(flowOrder([...ctx.cards.values()].sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : 1)).map((c) => c.id), ctx.edges).map((id, i) => [id, i]));

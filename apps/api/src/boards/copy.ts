@@ -1,10 +1,10 @@
 // F17 T4: "Copiar para os meus mapas". The original is read by the server connection (it belongs to someone else);
 // the copy is written through withUser, so RLS applies to every row the copier gets.
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { pick } from '../pick';
 import { createLogger } from '@remoa/log';
 import { err, ok, type CopySharedBoard } from '@remoa/contracts';
-import { Abort, dbm, guard, run } from '../db';
+import { Abort, dbm, guard, run, uuids } from '../db';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
 import { copyObject, deletePrefix } from '../storage/storage';
 import { resolveShared, cardAssetIds } from '../public/shared';
@@ -35,7 +35,7 @@ export const copySharedBoard: CopySharedBoard = async (userId, input, { grant })
   // LGPD: the copy owns independent objects, so deleting the original or the owner's account does not break it.
   const srcAssetIds = [...new Set(cards.flatMap(cardAssetIds))];
   const srcAssets = srcAssetIds.length
-    ? await db.select({ id: a.id, key: a.key, mime: a.mime, width: a.width, height: a.height, license: a.license, attribution: a.attribution }).from(a).where(inArray(a.id, srcAssetIds))
+    ? await db.select({ id: a.id, key: a.key, mime: a.mime, width: a.width, height: a.height, license: a.license, attribution: a.attribution }).from(a).where(sql`${a.id} = any(${uuids(srcAssetIds)})`)
     : [];
   const newId = new Map(srcAssets.map((x) => [x.id, crypto.randomUUID()]));
   const keyOf = (id: string) => `assets/${userId}/${id}`;
@@ -53,7 +53,7 @@ export const copySharedBoard: CopySharedBoard = async (userId, input, { grant })
   const res = await guard(() =>
     run(userId, async (tx, s) => {
       // re-checked inside the tx: the pre-checks above ran before the (slow) storage copy
-      if (await overTotal(tx, userId, 'boards', await limitFor(userId, 'boards'))) throw new Abort({ code: 'quota_exceeded', message: 'boards' });
+      if (await overTotal(tx, userId, 'boards', await limitFor(userId, 'boards', undefined, tx))) throw new Abort({ code: 'quota_exceeded', message: 'boards' });
       if (await overTotal(tx, userId, 'cards', cardLimit, cards.length)) throw new Abort({ code: 'quota_exceeded', message: 'cards' });
       if (srcAssets.length)
         await tx.insert(s.assets).values(srcAssets.map((x) => ({ id: newId.get(x.id)!, userId, key: keyOf(newId.get(x.id)!), mime: x.mime, width: x.width, height: x.height, license: x.license, attribution: x.attribution })));

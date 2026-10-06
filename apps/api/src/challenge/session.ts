@@ -8,8 +8,8 @@ import {
 import { preview, verdictToGrade } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
 import { allowGrade } from '../ai/service';
-import { Abort, dbm, guard, run } from '../db';
-import { rateInTx } from '../review/record-attempt';
+import { Abort, dbm, final, guard, onWire, run, sessionChecked } from '../db';
+import { lockStateSql, rateInTx, type LockRow } from '../review/record-attempt';
 import { buildSession, type Answered, type StoredItem } from './build';
 import { reserveAi } from './quota';
 import type { Reservation } from '../billing/quota';
@@ -18,41 +18,38 @@ import { invalidate } from '../cache';
 export const GRADER_TIMEOUT_MS = 8000;
 
 /** G22 (D-1411/D-1413): only a model verdict keeps the ai_grades unit; a local-grader fallback is shown (marked) and the unit goes back. */
-async function keepIfAi(verdict: GraderVerdict, held: Reservation): Promise<GraderVerdict> {
+async function keepIfAi(verdict: GraderVerdict, held: Reservation, tx?: Tx): Promise<GraderVerdict> {
   if (!verdict.ai) return verdict; // a grader port without AI status (tests, GRADER=mock) counts as a model answer
-  const quota = verdict.ai.status === 'ok' ? held.quota : await held.refund();
+  const quota = verdict.ai.status === 'ok' ? held.quota : await held.refund(tx);
   return { ...verdict, ai: { ...verdict.ai, quota } };
 }
 
-/**
- * G22 qa (P-618): the unit is taken on the server connection (`authenticated` cannot write usage_counters), outside the RLS
- * transaction, so a rollback after it (error in `save`/`previewOf`, commit failure) would keep it spent. `keep` registers it;
- * any failed or thrown result gives it back (refund runs at most once, so a unit already returned is not returned twice).
- */
-async function refundOnRollback<T>(work: (keep: (held: Reservation) => void) => Promise<Result<T>>): Promise<Result<T>> {
-  let held: Reservation | undefined;
-  try {
-    const r = await work((h) => (held = h));
-    if (!r.ok) await held?.refund().catch(() => undefined);
-    return r;
-  } catch (e) {
-    await held?.refund().catch(() => undefined);
-    throw e;
-  }
-}
+// G22 qa (P-618) + D-1104 (P-532): the ai_grades unit is taken (and given back) INSIDE the session's run() (`reserveAi(..., tx)`,
+// `refund(tx)`): no second pool connection while the session lock is held, and a rollback (error in `save`/`previewOf`, commit
+// failure) gives the unit back by itself. A unit that outlives its transaction (claimStream → commitStream) is refunded outside one.
 
 const fail = (code: Parameters<typeof err>[0], message: string) => new Abort({ code, message });
 type SessionRow = { id: string; userId: string; boardId: string | null; startedAt: Date; endedAt: Date | null; items: unknown; options?: unknown };
 const selfGraded = (row: SessionRow) => challengeOptionsSchema.parse(row.options ?? {}).gradingMode === 'self';
 
 /** Loads and locks the session (`for no key update`: the attempt insert's FK check must not wait on this lock). RLS: other users' sessions do not exist. */
-async function locked<T>(userId: string, sessionId: string, fn: (tx: Tx, s: typeof import('@remoa/db'), row: SessionRow, items: StoredItem[]) => Promise<T>): Promise<Result<T>> {
+async function locked<T, U = undefined>(
+  userId: string, sessionId: string, fn: (tx: Tx, s: typeof import('@remoa/db'), row: SessionRow, items: StoredItem[], alongside: Promise<U>) => Promise<T>,
+  alongside?: (tx: Tx) => PromiseLike<U>,
+): Promise<Result<T>> {
   return guard(() =>
     run(userId, async (tx, s) => {
       if (!idSchema.safeParse(sessionId).success) throw fail('not_found', 'session not found');
-      const [row] = await tx.select(pick(s.sessions, 'id', 'userId', 'boardId', 'startedAt', 'endedAt', 'items', 'options')).from(s.sessions).where(eq(s.sessions.id, sessionId)).for('no key update');
+      const rowP = Promise.resolve(tx.select(pick(s.sessions, 'id', 'userId', 'boardId', 'startedAt', 'endedAt', 'items', 'options')).from(s.sessions).where(eq(s.sessions.id, sessionId)).for('no key update'));
+      rowP.catch(() => undefined);
+      // D-1094: `alongside` leaves in the same flight, right behind the session lock (lock order: sessions, then what it touches)
+      if (alongside) await onWire();
+      const extra = alongside ? Promise.resolve(alongside(tx)) : Promise.resolve(undefined as U);
+      extra.catch(() => undefined);
+      const [row] = await rowP;
       if (!row) throw fail('not_found', 'session not found');
-      return fn(tx, s, row, row.items as StoredItem[]);
+      await sessionChecked(); // FUSED_WRITES (D-1093): answer may call the AI grader (an outside service) next
+      return fn(tx, s, row, row.items as StoredItem[], extra);
     }),
   );
 }
@@ -78,26 +75,30 @@ export const attemptIdFor = (sessionId: string, itemId: string) => {
 
 // --- start -------------------------------------------------------------------------------------------------------------
 
+/**
+ * G21 D-1094: one transaction, 3 round trips (was 3 transactions, 32 with the API ~124 ms away): (1) BEGIN + claims + queue + budget
+ * (+ the board's card count), (2) the item context, (3) the insert with its COMMIT. Fused session check (FUSED_WRITES): nothing outside
+ * this transaction happens before it settles.
+ */
 export const startSession: StartSession = async (userId, input) => {
   const limit = input.limit ?? 12;
   const opts = challengeOptionsSchema.safeParse(input.options ?? {});
   if (!opts.success) return err('validation', 'options: invalid');
   const unavailable = unavailableChallengeOption(opts.data); // CCR-019: ai grading and voice are "Em breve"
   if (unavailable) return err('validation', unavailable);
-  const items = await buildSession(userId, input.kind, input.boardId, limit, new Date(), opts.data.order, input.filter);
-  if (!items.ok) return items; // unknown/foreign board: 404 before the count
-  if (input.kind === 'board') {
-    // D-575: the cards a challenge can draw from (live, not a note, not suspended)
-    const [n] = await run(userId, (tx, s) =>
-      tx.select({ n: count() }).from(s.cards).where(and(eq(s.cards.boardId, input.boardId!), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note'))),
-    );
-    if (n!.n < CHALLENGE_MIN_CARDS) return err('validation', challengeErrors.minCards);
-  }
-  const sessionId = await run(userId, async (tx, s) => {
-    const [r] = await tx.insert(s.sessions).values({ userId, boardId: input.boardId ?? null, kind: input.kind, items: items.data, options: opts.data }).returning({ id: s.sessions.id });
-    return r!.id;
+  return run(userId, async (tx, s) => {
+    const [items, drawable] = await Promise.all([
+      buildSession(tx, userId, input.kind, input.boardId, limit, new Date(), opts.data.order, input.filter),
+      // D-575: the cards a challenge can draw from (live, not a note, not suspended); same flight as the queue
+      input.kind === 'board' && idSchema.safeParse(input.boardId).success
+        ? tx.select({ n: count() }).from(s.cards).where(and(eq(s.cards.boardId, input.boardId!), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note')))
+        : undefined,
+    ]);
+    if (!items.ok) return items; // unknown/foreign board: 404 before the count
+    if (drawable && drawable[0]!.n < CHALLENGE_MIN_CARDS) return err('validation', challengeErrors.minCards);
+    const [r] = await final(tx.insert(s.sessions).values({ userId, boardId: input.boardId ?? null, kind: input.kind, items: items.data, options: opts.data }).returning({ id: s.sessions.id }));
+    return ok({ sessionId: r!.id, items: items.data.map((i) => challengeItemPublicSchema.parse(i)), options: opts.data });
   });
-  return ok({ sessionId, items: items.data.map((i) => challengeItemPublicSchema.parse(i)), options: opts.data });
 };
 
 // --- answer ------------------------------------------------------------------------------------------------------------
@@ -127,7 +128,7 @@ const outputOf = (item: StoredItem, a: Answered, pv: AnswerOutput['preview']): A
 });
 
 export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, input) =>
-  refundOnRollback((keep) => locked(userId, input.sessionId, async (tx, s, row, items) => {
+  locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (item.x.answered) return outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)); // idempotent: no regrade, no quota
@@ -148,12 +149,11 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
       else if (item.grading === 'none' || !rubric.success) a.fallback = 'no_rubric';
       else if (!grade) a.fallback = 'grader_error'; // no grader wired (prod before F05): do not burn quota
       else {
-        const held = await reserveAi(userId, 'ai_grades');
-        if (held.ok) keep(held);
+        const held = await reserveAi(userId, 'ai_grades', undefined, tx);
         if (!held.ok) a.fallback = 'quota';
         else if (!allowGrade(userId)) {
           a.fallback = 'grader_error';
-          await held.refund();
+          await held.refund(tx);
         } else {
           const g = await withTimeout(
             Promise.resolve().then(() => grade({ prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text })),
@@ -161,9 +161,9 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
           ).catch(() => null);
           if (!g || !g.ok) {
             a.fallback = 'grader_error';
-            await held.refund(); // no correction delivered, no unit spent
+            await held.refund(tx); // no correction delivered, no unit spent
           } else {
-            a.verdict = await keepIfAi(g.data, held);
+            a.verdict = await keepIfAi(g.data, held, tx);
             a.gradeLocked = g.data.criticalError;
             a.suggestedGrade = verdictToGrade(g.data, { durationMs: input.durationMs, medianMs: await medianMs(tx, userId, item.mode) });
           }
@@ -171,9 +171,10 @@ export const createAnswer = (grade?: GradeAnswer): Answer => async (userId, inpu
       }
     }
     items[idx] = { ...item, x: { ...item.x, answered: a } };
-    await save(tx, s, row.id, items);
-    return outputOf(item, a, await previewOf(tx, s, userId, item));
-  }));
+    const pv = previewOf(tx, s, userId, item);
+    await Promise.all([pv, final(save(tx, s, row.id, items))]); // D-1092: preview read, save and COMMIT in one flight
+    return outputOf(item, a, await pv);
+  });
 
 // --- streamed answer (F05: feedback reaches the student while the model writes) -------------------------------------
 
@@ -204,7 +205,7 @@ async function* limitStream(source: AsyncIterable<GradeStreamEvent>, ms: number)
 
 /** Reserves the quota and the row, then returns the grader input. The model call happens after the lock is released. */
 async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>> {
-  return refundOnRollback((keep) => locked(userId, input.sessionId, async (tx, s, row, items) => {
+  return locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     if (item.x.answered) return { type: 'done' as const, output: outputOf(item, item.x.answered, await previewOf(tx, s, userId, item)) };
@@ -213,11 +214,10 @@ async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>
     const [card] = await tx.select({ rubric: s.cards.rubric }).from(s.cards).where(eq(s.cards.id, item.cardId));
     const rubric = rubricSchema.safeParse(card?.rubric);
     if (selfGraded(row) || item.grading === 'none' || !rubric.success) return { type: 'delegate' as const };
-    const held = await reserveAi(userId, 'ai_grades');
+    const held = await reserveAi(userId, 'ai_grades', undefined, tx);
     if (!held.ok) return { type: 'delegate' as const };
-    keep(held);
     if (!allowGrade(userId)) {
-      await held.refund();
+      await held.refund(tx);
       const a: Answered = { inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.text, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: 'grader_error' };
       items[idx] = { ...item, x: { ...item.x, answered: a } };
       await save(tx, s, row.id, items);
@@ -226,10 +226,13 @@ async function claimStream(userId: string, input: Spoken): Promise<Result<Claim>
     items[idx] = { ...item, x: { ...item.x, grading: true } };
     await save(tx, s, row.id, items);
     return { type: 'live' as const, held, input: { prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text } };
-  }));
+  });
 }
 
 async function commitStream(userId: string, input: Spoken, verdict: GraderVerdict | null, held: Reservation): Promise<Result<AnswerOutput>> {
+  // The unit was taken by claimStream's (committed) transaction: give it back on the server connection BEFORE taking the session lock
+  // (D-1104, P-532); the refunds below are then no-ops (refund runs once), and a failed commit cannot refund it twice.
+  if (!verdict || (verdict.ai && verdict.ai.status !== 'ok')) await held.refund();
   return locked(userId, input.sessionId, async (tx, s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
@@ -316,7 +319,8 @@ const linkDispute = async (reviewItemId: string, attemptId: string) => {
  */
 export const rate: Rate = async (userId, input) => {
   const link: { reviewItemId?: string; attemptId?: string } = {};
-  const r = await locked(userId, input.sessionId, async (tx, _s, row, items) => {
+  const createdAt = new Date();
+  const r = await locked<{ due: Date; fresh: boolean }, LockRow[]>(userId, input.sessionId, async (tx, _s, row, items, lockedRow) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     const a = item.x.answered;
@@ -329,15 +333,17 @@ export const rate: Rate = async (userId, input) => {
     const done = await rateInTx(tx, {
       id: attemptId, userId, cardId: item.cardId, subId: item.subId, sessionId: row.id, mode: item.mode, inputKind: a.inputKind,
       answerText: a.answerText, verdict: a.verdict ? { ...a.verdict, disputed: !!item.x.disputed } : null, grade: input.grade, gradeOverridden: overridden,
-      durationMs: a.durationMs, createdAt: new Date(),
+      durationMs: a.durationMs, createdAt,
     }, (due) => {
       const next = [...items];
       next[idx] = { ...item, x: { ...item.x, rated: { grade: input.grade, due: due.toISOString(), overridden } } };
       return { sessionId: row.id, items: next };
-    });
+    }, lockedRow);
     if (item.x.reviewItemId) Object.assign(link, { reviewItemId: item.x.reviewItemId, attemptId }); // disputed before rating
     return { due: done.due, fresh: true };
-  });
+  }, (tx): Promise<LockRow[]> => Promise.resolve(tx.execute<LockRow>(lockStateSql(userId, sql`
+    select (i->>'cardId')::uuid, coalesce(i->>'subId', '') from sessions s cross join lateral jsonb_array_elements(s.items) i
+    where s.id = ${input.sessionId} and i->>'id' = ${input.itemId}`, createdAt))));
   if (!r.ok) return r;
   if (r.data.fresh) await invalidate('review.answered', { userId }); // after COMMIT (was inside recordAttempt)
   if (link.reviewItemId && link.attemptId) await linkDispute(link.reviewItemId, link.attemptId);

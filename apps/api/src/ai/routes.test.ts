@@ -1,5 +1,6 @@
 // Integration: needs local Supabase (see account.test.ts); skipped otherwise. D-499: /v1/ai hardening + Free 2-map cap.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,6 +17,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/ai abuse limits', () => {
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    await dropTrial(id);
     if (plan) await dbm.db.insert(dbm.subscriptions).values({ userId: id, plan, status: 'active' }); // D-647: Free has no PDF maps
     return id;
   };

@@ -55,5 +55,8 @@
   },
   "support/admin-inbox.ts": {
     "reason": "funções que recebem a tx do withAdmin; admin/tickets/routes.ts invalida support.changed depois do COMMIT (e withAdmin solta admin.action)"
+  },
+  "test-trial.ts": {
+    "reason": "só testes de integração (tira o teste grátis do usuário recém-criado); não roda em produção"
   }
 }

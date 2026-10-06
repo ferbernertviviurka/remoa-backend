@@ -3,7 +3,7 @@ import { err, ok, REFERRAL_LIMITS, referralErrors, referralLink, type InviteResu
 import type { Logger } from '@remoa/log';
 import { env } from '@remoa/config';
 import { notifyAddress } from '../notifications/notify';
-import { dbm } from '../db';
+import { dbm, pgArray } from '../db';
 import { emailHash, maskEmail } from './email-normalize';
 import { ensureCode, invitesLeftToday } from './summary';
 import { invalidate } from '../cache';
@@ -17,11 +17,11 @@ export async function sendInvites(userId: string, emails: string[], log: Logger)
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${'invite:' + userId}))`); // concurrent requests cannot both pass the limit
     if ((await invitesLeftToday(userId, tx)) < emails.length) return null;
     const existing = new Set(
-      (await tx.execute<{ email: string }>(sql`select lower(email) as email from auth.users where lower(email) in (${sql.join(emails.map((e) => sql`${e}`), sql`, `)})`)).map((r) => r.email),
+      (await tx.execute<{ email: string }>(sql`select lower(email) as email from auth.users where lower(email) = any(${pgArray(emails, 'text')})`)).map((r) => r.email),
     );
     const hashes = emails.map(emailHash);
     const suppressed = new Set(
-      (await tx.execute<{ email_hash: string }>(sql`select email_hash from email_suppressions where email_hash in (${sql.join(hashes.map((h) => sql`${h}`), sql`, `)})`)).map((r) => r.email_hash),
+      (await tx.execute<{ email_hash: string }>(sql`select email_hash from email_suppressions where email_hash = any(${pgArray(hashes, 'text')})`)).map((r) => r.email_hash),
     );
     const fresh: { to: string; referralId: string }[] = [];
     for (const e of emails) {

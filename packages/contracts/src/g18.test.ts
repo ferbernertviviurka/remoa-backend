@@ -112,7 +112,7 @@ describe('notifications', () => {
 
 describe('emails', () => {
   it('every example matches its data schema, and every template/version has one', () => {
-    expect(emailExamples).toHaveLength(27); // 11 HTML references + the account-confirm email_change title variant + 14 (CCR-035) + magiclink (CCR-037)
+    expect(emailExamples).toHaveLength(29); // 11 HTML references + the account-confirm email_change title variant + 14 (CCR-035) + magiclink (CCR-037) + trial-ending d3/d0 (D-1213)
     for (const t of emailTemplates) {
       const versions: readonly string[] = (EMAIL_VERSIONS as Partial<Record<string, readonly string[]>>)[t] ?? ['default'];
       for (const v of versions) expect(emailExamples.some((e) => e.template === t && e.version === v), `${t}/${v}`).toBe(true);

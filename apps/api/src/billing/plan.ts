@@ -43,37 +43,47 @@ function paidFrom(s: Pick<Sub, 'plan' | 'status' | 'stripeSubscriptionId' | 'ren
   };
 }
 
-/** Last instant of the user's non-revoked grant chain still ahead of `now`, and whether one is running now (D-381). Pass `tx` to read it under `lockGrants`. */
-export async function grantChain(userId: string, now = new Date(), tx?: Tx) {
+/**
+ * Last instant of the user's non-revoked grant chain still ahead of `now`, and whether one is running now (D-381). Pass `tx` to read it under `lockGrants`.
+ * `exceptTrial` (D-1214): leave the free trial out, so a paid period does not wait for it to end.
+ */
+export async function grantChain(userId: string, now = new Date(), tx?: Tx, { exceptTrial = false } = {}) {
   const db = tx ?? (await dbm()).db;
   const at = now.toISOString();
   const [r] = await db.execute<{ until: string | null; active: boolean | null }>(sql`
     select max(ends_at) as until, bool_or(starts_at <= ${at}::timestamptz) as active
-    from entitlement_grants where user_id = ${userId} and revoked_at is null and ends_at > ${at}::timestamptz`);
+    from entitlement_grants where user_id = ${userId} and revoked_at is null and ends_at > ${at}::timestamptz
+      ${exceptTrial ? sql`and source <> 'trial'` : sql``}`);
   return { until: r?.until ? new Date(r.until) : null, active: !!r?.active };
 }
 
 /**
  * F08 FR-6 + F18 (D-381): the plan in force. Pro when the subscription gives Pro, or else a non-revoked grant with
  * starts_at <= now < ends_at. `grantUntil` = end of the chain, only when the Pro comes from grants. Server connection.
+ * `trialUntil` (D-1213) = end of the free trial when that is the grant running now (null once a referral/support month took over).
  * Grants end on their own: past ends_at the user is back on Free, nothing is deleted (FR-22).
  */
-export async function planOf(userId: string, now = new Date()) {
+export async function planOf(userId: string, now = new Date(), tx?: Tx) {
   // G21 P-482 (D-1046): the subscriptions row and the grant chain (same SQL as grantChain) in ONE statement; was two round trips for Free
-  const { db } = await dbm();
+  // D-1095: `tx` = the caller's run() (RLS lets the user read their own rows; the statement filters by user anyway): same flight, and no
+  // second connection held while a transaction waits for it (10 such waits at once would exhaust the pool).
+  const db = tx ?? (await dbm()).db;
   const at = now.toISOString();
   const [r] = await db.execute<{
     plan: Sub['plan'] | null; status: Sub['status'] | null; stripe_subscription_id: string | null; renews_at: string | null; cancel_at_period_end: boolean | null;
-    until: string | null; active: boolean | null;
+    until: string | null; active: boolean | null; trial_until: string | null;
   }>(sql`
-    select s.plan, s.status, s.stripe_subscription_id, s.renews_at, s.cancel_at_period_end, g.until, g.active
-    from (select max(ends_at) as until, bool_or(starts_at <= ${at}::timestamptz) as active
+    select s.plan, s.status, s.stripe_subscription_id, s.renews_at, s.cancel_at_period_end, g.until, g.active, g.trial_until
+    from (select max(ends_at) as until, bool_or(starts_at <= ${at}::timestamptz) as active,
+        max(ends_at) filter (where source = 'trial' and starts_at <= ${at}::timestamptz) as trial_until
       from entitlement_grants where user_id = ${userId} and revoked_at is null and ends_at > ${at}::timestamptz) g
     left join subscriptions s on s.user_id = ${userId}`);
   const sub = r?.plan && r.status
     ? { plan: r.plan, status: r.status, stripeSubscriptionId: r.stripe_subscription_id, renewsAt: r.renews_at ? new Date(r.renews_at) : null, cancelAtPeriodEnd: !!r.cancel_at_period_end }
     : undefined;
   const paid = paidFrom(sub, now);
-  if (paid.plan !== 'free') return { ...paid, grantUntil: null };
-  return r?.active ? { ...paid, plan: 'pro' as const, grantUntil: r.until ? new Date(r.until) : null } : { ...paid, grantUntil: null };
+  const none = { grantUntil: null, trialUntil: null };
+  if (paid.plan !== 'free') return { ...paid, ...none };
+  if (!r?.active) return { ...paid, ...none };
+  return { ...paid, plan: 'pro' as const, grantUntil: r.until ? new Date(r.until) : null, trialUntil: r.trial_until ? new Date(r.trial_until) : null };
 }

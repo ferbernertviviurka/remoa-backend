@@ -1,5 +1,6 @@
 // Integration: needs local Supabase (`pnpm db:up && pnpm db:migrate`, DATABASE_URL from the repo-root .env); skipped otherwise.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -21,6 +22,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
     users.push(id);
     tokens[id] = id;
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    await dropTrial(id);
     return id;
   };
   const sub = (userId: string, v: Partial<typeof dbm.subscriptions.$inferInsert>) => dbm.db.insert(dbm.subscriptions).values({ userId, plan: 'pro', status: 'active', ...v });

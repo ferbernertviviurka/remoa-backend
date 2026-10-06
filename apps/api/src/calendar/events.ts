@@ -1,12 +1,12 @@
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql, type SQLWrapper } from 'drizzle-orm';
 import {
   CALENDAR_LIMITS, calendarErrors, calendarEventInputSchema, calendarEventPatchSchema, err, eventTimeIssues, idSchema, ok,
   type CalendarEvent, type CalendarEventList, type CalendarRangeQuery, type DuplicateEventInput, type EventRemindersInput, type Result, type UpcomingEvents,
 } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { run } from '../db';
+import { run, uuids } from '../db';
 import { presignGet } from '../storage/storage';
-import { localCols, profileTz } from './common';
+import { DEFAULT_TZ, localCols, profileTz } from './common';
 import { replanEventReminders } from './reminders/schedule';
 import { invalidate } from '../cache';
 import { pick } from '../pick';
@@ -24,14 +24,16 @@ const select = (tx: Tx, s: S) =>
 
 type Row = Awaited<ReturnType<ReturnType<typeof select>['where']>>[number];
 
-async function present(tx: Tx, s: S, rows: Row[]): Promise<CalendarEvent[]> {
+/** Reminders and cover assets of the events `ids` selects (a list, or D-1094 the events' own query as a subquery: same flight). */
+const list = (x: string[] | SQLWrapper) => (Array.isArray(x) ? uuids(x) : sql`array(${x})`);
+const extras = (tx: Tx, s: S, ids: string[] | SQLWrapper, assetIds: string[] | SQLWrapper) => Promise.all([
+  tx.select(pick(s.calendarReminders, 'eventId', 'kind', 'occurrenceDate', 'sendAt', 'status')).from(s.calendarReminders).where(sql`${s.calendarReminders.eventId} = any(${list(ids)})`).orderBy(asc(s.calendarReminders.sendAt)),
+  Array.isArray(assetIds) && !assetIds.length ? [] : tx.select({ id: s.assets.id, key: s.assets.key }).from(s.assets).where(sql`${s.assets.id} = any(${list(assetIds)})`),
+]);
+
+async function present(tx: Tx, s: S, rows: Row[], pre?: Awaited<ReturnType<typeof extras>>): Promise<CalendarEvent[]> {
   if (!rows.length) return [];
-  const ids = rows.map((r) => r.e.id);
-  const assetIds = rows.flatMap((r) => (r.e.coverAssetId ? [r.e.coverAssetId] : []));
-  const [plans, assets] = await Promise.all([
-    tx.select(pick(s.calendarReminders, 'eventId', 'kind', 'occurrenceDate', 'sendAt', 'status')).from(s.calendarReminders).where(inArray(s.calendarReminders.eventId, ids)).orderBy(asc(s.calendarReminders.sendAt)),
-    assetIds.length ? tx.select({ id: s.assets.id, key: s.assets.key }).from(s.assets).where(inArray(s.assets.id, assetIds)) : [],
-  ]);
+  const [plans, assets] = pre ?? await extras(tx, s, rows.map((r) => r.e.id), rows.flatMap((r) => (r.e.coverAssetId ? [r.e.coverAssetId] : [])));
   const covers = new Map(await Promise.all(assets.map(async (a) => [a.id, { assetId: a.id, urls: { w800: await presignGet(`${a.key}/w800.webp`), w1600: await presignGet(`${a.key}/w1600.webp`) } }] as const)));
   return rows.map(({ e, date, st, et }) => ({
     id: e.id, title: e.title, labelId: e.labelId, date, allDay: e.allDay, startTime: st, endTime: et, startsAt: e.startsAt, endsAt: e.endsAt, timezone: e.timezone,
@@ -51,12 +53,17 @@ export async function listEvents(userId: string, q: CalendarRangeQuery): Promise
     events: await run(userId, async (tx, s) => {
       const e = s.calendarEvents;
       // the starts_at bounds (±2 days) only exist to use the index; the exact filter is the local date
-      const rows = await select(tx, s).where(and(
+      const where = and(
         eq(e.userId, userId), isNull(e.deletedAt),
         sql`${e.startsAt} >= (${q.from}::date - 2)::timestamptz and ${e.startsAt} < (${q.to}::date + 3)::timestamptz`,
         sql`${localCols(s).date} between ${q.from} and ${q.to}`,
-      )).orderBy(asc(e.startsAt), asc(e.createdAt));
-      return present(tx, s, rows);
+      );
+      // G21 D-1094: one flight; reminders and covers select the same events in SQL
+      const [rows, pre] = await Promise.all([
+        select(tx, s).where(where).orderBy(asc(e.startsAt), asc(e.createdAt)),
+        extras(tx, s, tx.select({ id: e.id }).from(e).where(where), tx.select({ id: e.coverAssetId }).from(e).where(where)),
+      ]);
+      return present(tx, s, rows, pre);
     }),
   });
 }
@@ -168,18 +175,18 @@ const dayNumber = (d: string) => Date.parse(`${d}T00:00:00Z`) / 86_400_000;
 export async function upcoming(userId: string, limit: number, now: Date): Promise<Result<UpcomingEvents>> {
   return ok(await run(userId, async (tx, s) => {
     const e = s.calendarEvents;
-    const tz = await profileTz(tx, userId);
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now);
-    const rows = await tx
+    // G21 D-1094: one flight; the SQL reads the profile's day itself (tz validated on write, as windowSql)
+    const [tz, rows] = await Promise.all([profileTz(tx, userId), tx
       .select({ e, ...localCols(s), labelName: s.calendarLabels.name, color: s.calendarLabels.color })
       .from(e).innerJoin(s.calendarLabels, eq(s.calendarLabels.id, e.labelId))
       .where(and(
         eq(e.userId, userId), isNull(e.deletedAt),
-        sql`${localCols(s).date} >= ${today}`,
+        sql`${localCols(s).date} >= to_char(${now.toISOString()}::timestamptz at time zone coalesce((select timezone from profiles where user_id = ${userId}), ${DEFAULT_TZ}::text), 'YYYY-MM-DD')`,
         sql`(${e.allDay} or coalesce(${e.endsAt}, ${e.startsAt}) >= ${now.toISOString()}::timestamptz)`,
       ))
       .orderBy(asc(e.startsAt), asc(e.createdAt))
-      .limit(Math.min(limit, CALENDAR_LIMITS.upcomingMax));
+      .limit(Math.min(limit, CALENDAR_LIMITS.upcomingMax))]);
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now);
     return {
       events: rows.map((r) => ({
         id: r.e.id, title: r.e.title, labelId: r.e.labelId, labelName: r.labelName, color: r.color, date: r.date, allDay: r.e.allDay, startTime: r.st, endTime: r.et,

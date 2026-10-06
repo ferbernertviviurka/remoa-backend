@@ -1,5 +1,6 @@
 // F18 T4 integration (D-381, D-408–D-411): needs local Supabase; skipped otherwise. Stripe is faked at the port.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -34,6 +35,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 grants + credits', () => {
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql.raw(`insert into auth.users (id, email, instance_id, aud, role) values ('${id}', '${id}@test.local', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')`));
+    await dropTrial(id);
     return id;
   };
   /** A referral row whose referrer is `referrerId` (a fresh referee each time). */

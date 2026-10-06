@@ -71,11 +71,23 @@ export const entitlementGrants = pgTable('entitlement_grants', {
 }, (t) => [
   // Idempotency of the double grant (FR-18): one grant per (referral, user); re-running the job conflicts.
   uniqueIndex('entitlement_grants_referral_user_idx').on(t.referralId, t.userId),
+  // D-1213: one free trial per account (referral_id is null there, so the index above never conflicts).
+  uniqueIndex('entitlement_grants_trial_user_idx').on(t.userId).where(sql`${t.source} = 'trial'`),
   index('entitlement_grants_user_idx').on(t.userId, t.endsAt),
   check('entitlement_grants_range', sql`${t.endsAt} > ${t.startsAt}`),
   check('entitlement_grants_revoked', sql`(${t.revokedAt} is null) = (${t.revokedReason} is null)`),
   check('entitlement_grants_plan', sql`${t.plan} = 'pro'`),
 ]);
+
+/**
+ * D-1213: one free trial per address, ever. Keyed by the D-386 hash (sha256 hex of the normalized e-mail, never the plaintext) and
+ * kept when the account is deleted, so deleting and signing up again with the same e-mail gives no second trial.
+ * Written only by handle_new_user() (0039). Server only (RLS on, no policy, no grant).
+ */
+export const trialClaims = pgTable('trial_claims', {
+  emailHash: text('email_hash').primaryKey(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`now()`),
+}, (t) => [check('trial_claims_hash', sql`${t.emailHash} ~ '^[0-9a-f]{64}$'`)]);
 
 /** Pro subscriber's month as Stripe customer balance credit (FR-19, Q-042). Row first, Stripe call after commit (D-384). */
 export const billingCredits = pgTable('billing_credits', {

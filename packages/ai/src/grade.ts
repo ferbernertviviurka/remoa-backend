@@ -4,47 +4,30 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { rubricSchema, verdicts, type GraderInput, type GraderVerdict, type Rubric } from '@remoa/contracts';
 import { gradeOffline } from './offline';
-import { AiError, generateJson, streamText, type Tool } from './client';
+import { AiError, generateJson, parseJsonText, streamText } from './client';
 import { aiMode } from './config';
 import { GRADER_PROMPT_VERSION, feedbackSoFar, graderUser, rubricUser } from './openrouter';
 
 const dir = dirname(fileURLToPath(import.meta.url));
-const graderPrompt = readFileSync(join(dir, '../prompts/grader/v3.md'), 'utf8');
+const graderPrompt = readFileSync(join(dir, '../prompts/grader/v4.md'), 'utf8');
 const rubricPrompt = readFileSync(join(dir, '../prompts/rubric/v2.md'), 'utf8');
 
 /** Whole budget of one grade or rubric call (all retries and fallbacks); the challenge also cuts at 8 s (GRADER_TIMEOUT_MS). */
 const GRADE_BUDGET_MS = 8_000;
 
-const gradeTool: Tool = {
-  type: 'function',
-  function: {
-    name: 'grade',
-    description: 'Veredito da resposta somente contra a rubrica.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        verdict: { type: 'string', enum: ['correct', 'partial', 'incorrect'] },
-        matched: { type: 'array', items: { type: 'string' } },
-        missing: { type: 'array', items: { type: 'string' } },
-        criticalError: { type: 'boolean' },
-        sourceQuote: { type: 'string', description: 'Ponto da rubrica copiado literalmente que fundamenta o veredito.' },
-        feedback: { type: 'string', description: 'Em português do Brasil, até 3 frases, citando a fonte.' },
-      },
-      required: ['verdict', 'matched', 'missing', 'criticalError', 'sourceQuote', 'feedback'],
-    },
-  },
-};
-
 const fold = (t: string) => t.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /** The model's reply (tool arguments). Its `costCents` is never read; `model` defaults to the one that answered. */
+/**
+ * G22 live round (D-1438): a missing `matched`/`missing` is an empty list (only stricter: `correct` then needs the essentials),
+ * and a missing or null `sourceQuote` keeps the verdict with no quote instead of failing it. `criticalError` stays required.
+ */
 export const gradeReplySchema = z.object({
   verdict: z.enum(verdicts),
-  matched: z.array(z.string()),
-  missing: z.array(z.string()),
+  matched: z.array(z.string()).default([]),
+  missing: z.array(z.string()).default([]),
   criticalError: z.boolean(),
-  sourceQuote: z.string().max(1_000),
+  sourceQuote: z.string().max(1_000).nullish(),
   feedback: z.string().min(1).max(2_000),
   model: z.string().min(1).optional(),
 });
@@ -68,7 +51,7 @@ export function toVerdict(reply: GradeReply, input: GraderInput, model: string):
   });
   const essentialsMet = input.rubric.points.filter((p) => p.essential).every((p) => covered(p.text));
   const verdict = reply.criticalError ? 'incorrect' : reply.verdict === 'correct' && !essentialsMet ? 'partial' : reply.verdict;
-  const quote = reply.sourceQuote.trim();
+  const quote = reply.sourceQuote?.trim() ?? '';
   const rubricText = fold(input.rubric.points.map((p) => p.text).join(' \n '));
   return {
     verdict,
@@ -91,8 +74,9 @@ const offlineVerdict = (input: GraderInput): GradedVerdict => {
   return { ...v, ...(blankAnswer(input.answer) ? { verdict: 'incorrect' as const, matched: [] } : {}), source: input.rubric.source, sourceQuote: null };
 };
 
+/** JSON mode, not a forced `grade` tool call: the free provider failed the forced call with a non-fallback error (D-1438). Temperature 0: the same answer gets the same verdict (D-1441). No reasoning: it cost ~8 s per grade on the free model (D-1442). */
 const graderCall = (input: GraderInput, fetchImpl?: typeof fetch) => ({
-  fn: 'grader', system: graderPrompt, user: graderUser(input), tool: gradeTool, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
+  fn: 'grader', system: graderPrompt, user: graderUser(input), json: true, temperature: 0, reasoning: false as const, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
 });
 
 /** `error` (G22, D-1413): the provider failed and the local grader answered; the API marks it `fallback` and gives the quota back. */
@@ -132,7 +116,7 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
         shown = feedback;
       }
     }
-    const verdict = toVerdict(gradeReplySchema.parse(JSON.parse(acc)), input, model);
+    const verdict = toVerdict(gradeReplySchema.parse(parseJsonText(acc)), input, model);
     yield { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn, tokensOut, latencyMs: Date.now() - started } };
   } catch (e) {
     const error = asAiError(e);
@@ -189,7 +173,7 @@ export async function rubricWithMeta(title: string, back: string | null, source:
   if (aiMode() !== 'live') return offline();
   try {
     const done = await generateJson(rubricReply(source), {
-      fn: 'rubric', system: rubricPrompt, user: rubricUser(title, back, source), fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
+      fn: 'rubric', system: rubricPrompt, user: rubricUser(title, back, source), temperature: 0, reasoning: false, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
     });
     // G22 (D-1418): the model's rubric is never cached in memory; the card row is the only copy (P-610).
     return { rubric: done.data, meta: { model: done.model, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: done.latencyMs } };

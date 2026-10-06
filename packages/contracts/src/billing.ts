@@ -5,7 +5,7 @@ import { supportAuthorTypes } from './support';
 import { paywallReasons, quotaKeys } from './constants';
 
 // CCR-058: zod-free in ./constants
-export { annualDiscountPercent, annualSavings, formatBRL, monthlyEquivalent, paywallReasons, PLAN_LIMITS, planDefinition, planFeatureKeys, quotaKeys } from './constants';
+export { annualDiscountPercent, annualSavings, formatBRL, monthlyEquivalent, paywallReasons, PLAN_LIMITS, planDefinition, planFeatureKeys, quotaKeys, TRIAL_DAYS, TRIAL_NOTICE_DAYS } from './constants';
 export type { PlanDefinition, PlanFeatureKey } from './constants';
 
 export const planSchema = z.enum(plans);
@@ -50,6 +50,8 @@ export const entitlementsSchema = z.object({
   graceUntil: timestampSchema.nullable(),
   /** F18 (D-381): Pro comes from referral grants (no paying subscription); end of the grant chain. Absent/null otherwise. */
   grantUntil: timestampSchema.nullable().optional(),
+  /** D-1213: the Pro in force is the free trial (TRIAL_DAYS once per account); end of the trial grant. Absent/null otherwise. */
+  trialUntil: timestampSchema.nullable().optional(),
   /**
    * F18 P-194 (D-494): the user (as referrer) has a referral still `invited` or `signed_up`, so a reward may land soon.
    * The shell polls the referral summary only while this is true (replaces the browser-local `remoa:referral-pending`, D-413).

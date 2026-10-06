@@ -58,14 +58,14 @@ describe('validateAi', () => {
     expect(aiHealth()).toEqual(h);
     expect(JSON.stringify(h)).not.toContain(KEY);
   });
-  it('degraded: missing fallback, multimodal main, unsupported tools, invalid key; never throws', async () => {
-    const f = api([model('v/main:free', { architecture: { input_modalities: ['text', 'image'] }, supported_parameters: ['response_format'] })], new Response('{}', { status: 401 }));
+  it('degraded: missing fallback, multimodal main, unsupported JSON mode, invalid key; never throws', async () => {
+    const f = api([model('v/main:free', { architecture: { input_modalities: ['text', 'image'] }, supported_parameters: ['max_tokens'] })], new Response('{}', { status: 401 }));
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const h = await validateAi(f.impl);
     expect(h.status).toBe('degraded');
     expect(h.problems).toEqual(expect.arrayContaining([
       'v/main:free: accepts text+image, not text only',
-      'v/main:free: does not support tools, tool_choice',
+      'v/main:free: does not support response_format',
       'v/backup:free: not in the catalog',
       'key is invalid (401)',
     ]));

@@ -1,13 +1,13 @@
 // F17 T3: the page behind `/m/<token>` (no login). Every query lists its columns; the response goes through the
 // contracts' allowlist (`sharedBoardSchema.parse` strips unknown keys). Unknown, rotated, owner-only and archived links
 // are the same 404.
-import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
   SHARE_LIMITS, assetVariants, err, idSchema, ok, sharedBoardSchema, sharedCardSchema, shareTokenSchema,
   type GetSharedBoard, type Result, type SharedAsset, type SharedCard, type UnlockShared,
 } from '@remoa/contracts';
 import { isIP } from 'node:net';
-import { dbm } from '../db';
+import { dbm, uuids } from '../db';
 import { getBytes } from '../storage/storage';
 import { assetSig, limiterHash, signGrant, verifyAssetSig, verifyGrant, verifySharePassword } from '../share/crypto';
 import { sharedAssetUrl } from '../share/url';
@@ -79,7 +79,7 @@ export const getSharedBoard: GetSharedBoard = async (token, ctx) => {
 
   const assetIds = [...new Set(rows.flatMap(cardAssetIds))];
   const assetRows = assetIds.length
-    ? await db.select({ id: a.id, width: a.width, height: a.height, attribution: a.attribution }).from(a).where(inArray(a.id, assetIds))
+    ? await db.select({ id: a.id, width: a.width, height: a.height, attribution: a.attribution }).from(a).where(sql`${a.id} = any(${uuids(assetIds)})`)
     : [];
   const exp = Math.floor(Date.now() / 1000) + SHARED_ASSET_TTL_SECONDS;
   const url = (id: string, v: (typeof assetVariants)[number]) => sharedAssetUrl(token, id, v, exp, assetSig(token, board.version, id, v, exp));

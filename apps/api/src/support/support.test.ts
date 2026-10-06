@@ -1,5 +1,6 @@
 // Integration (F19 T2): user tickets, attachments, limits, unread, reopen, admin inbox domain, retention, export. Needs local Supabase + storage; skipped otherwise.
 import { config } from 'dotenv';
+import { dropTrial } from '../test-trial';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import sharp from 'sharp';
@@ -19,6 +20,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 support (user side + admin inbox
     const id = uuid();
     users.push(id);
     await dbm.db.execute(sql`insert into auth.users (id, email, instance_id, aud, role, raw_user_meta_data) values (${id}, ${id + '@test.local'}, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', ${JSON.stringify({ name })}::jsonb)`);
+    await dropTrial(id);
     return id;
   };
   type J = { ok?: true; data?: any; error?: { code: string; message: string } }; // eslint-disable-line @typescript-eslint/no-explicit-any

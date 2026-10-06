@@ -23,7 +23,7 @@ export const QUERY_BUDGETS: Record<string, number> = {
   'GET /v1/review/queue': 6, // Revisar (fila)
   'GET /v1/boards/:id': 5, // abrir mapa
   'POST /v1/challenge/rate': 4, // responder card (uma transação)
-  'GET /v1/calendar/events': 3, // Calendário (mês)
+  'GET /v1/calendar/events': 4, // Calendário (mês); D-1094: reminders + covers always pipelined with the rows (1 round trip, +1 query)
   'GET /v1/notifications': 3, // Notificações
   'GET /v1/admin/overview': 6, // Admin (visão geral)
 };

@@ -41,25 +41,21 @@ describe('feedback stream', () => {
     }
   });
 
-  it('asks the model to call the grade tool and reads that payload', async () => {
+  it('asks for JSON mode (grader/v4, no forced tool) and reads a fenced reply with no sourceQuote', async () => {
     process.env.OPENROUTER_API_KEY = 'test-key';
-    let sent: { messages?: { role: string; content: string }[]; tools?: { function: { name: string } }[]; tool_choice?: { function: { name: string } } } | undefined;
-    const argumentsJson = JSON.stringify({ verdict: 'partial', matched: ['cultura'], missing: ['reavaliar'], criticalError: false, sourceQuote: 'cultura', feedback: 'Faltou reavaliar.' });
+    let sent: { messages?: { role: string; content: string }[]; tools?: unknown; response_format?: { type: string } } | undefined;
+    const replyJson = JSON.stringify({ verdict: 'partial', matched: ['cultura'], missing: ['reavaliar'], criticalError: false, feedback: 'Faltou reavaliar.' });
     const fetchImpl = (async (_url: string, init?: RequestInit) => {
       sent = JSON.parse(String(init?.body));
-      return Response.json({
-        model: 'test/model',
-        choices: [{ message: { tool_calls: [{ function: { name: 'grade', arguments: argumentsJson } }] } }],
-        usage: { prompt_tokens: 20, completion_tokens: 12 },
-      });
+      return Response.json({ model: 'test/model', choices: [{ message: { content: `\`\`\`json\n${replyJson}\n\`\`\`` } }], usage: { prompt_tokens: 20, completion_tokens: 12 } });
     }) as typeof fetch;
     try {
       const graded = await gradeWithMeta(input, fetchImpl);
-      expect(sent?.tools?.[0]?.function.name).toBe('grade');
-      expect(sent?.tool_choice?.function.name).toBe('grade');
-      expect(sent?.messages?.find((m) => m.role === 'system')?.content).toContain('Chame a ferramenta grade');
-      expect(graded.verdict.verdict).toBe('partial');
-      expect(graded.verdict.missing).toEqual(['reavaliar']);
+      expect(sent?.tools).toBeUndefined();
+      expect(sent?.response_format).toEqual({ type: 'json_object' });
+      expect(sent?.messages?.find((m) => m.role === 'system')?.content).toContain('Responda só com um objeto JSON');
+      expect(graded.meta.error).toBeUndefined();
+      expect(graded.verdict).toMatchObject({ verdict: 'partial', missing: ['reavaliar'], sourceQuote: null, model: 'test/model' });
     } finally {
       delete process.env.OPENROUTER_API_KEY;
     }

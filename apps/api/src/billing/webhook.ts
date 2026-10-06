@@ -78,7 +78,8 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
       const userId = s.client_reference_id;
       write = async (tx) => {
         if (!info) await lockGrants(tx, userId);
-        const row = { ...base, renewsAt: info?.renewsAt ?? addPeriod(pixLeft((await grantChain(userId, new Date(), tx)).until), period) };
+        // D-1214: the free trial is not something paid for, so a Pix bought during it starts now (only referral/support months are waited for).
+        const row = { ...base, renewsAt: info?.renewsAt ?? addPeriod(pixLeft((await grantChain(userId, new Date(), tx, { exceptTrial: true })).until), period) };
         await tx.insert(subscriptions).values({ userId, ...row }).onConflictDoUpdate({ target: subscriptions.userId, set: { ...row, updatedAt: new Date() } });
         if (perMonth) await convertGrantsToCredits(tx, userId, perMonth);
       };
