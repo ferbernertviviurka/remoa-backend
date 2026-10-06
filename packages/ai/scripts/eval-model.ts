@@ -42,6 +42,8 @@ export type Row = {
   skipped?: string;
   /** Replay only: the fixture's `knownIssue` (a recorded model finding, not a code regression). */
   known?: string;
+  /** Replay of a hand-written fixture (`recorded: false`): proves the checks, not the model. */
+  handWritten?: boolean;
 };
 
 export type EvalResult = {
@@ -374,8 +376,9 @@ export async function runModelEval(all: ModelCase[] = modelCases): Promise<EvalR
     const s = session(c.id, live);
     const before = statsNow();
     const result = c.fn === 'grader' ? await runGrader(c, s, reps) : await runExtract(c, s, reps);
-    const known = live ? undefined : readFixture(c.id).knownIssue;
-    rows.push({ ...base, ...result, calls: s.calls(), ...jsonCols(before), latencies: s.latencies, ...(known && !result.pass ? { known } : {}) });
+    const fx = live ? undefined : readFixture(c.id);
+    const known = fx?.knownIssue;
+    rows.push({ ...base, ...result, calls: s.calls(), ...jsonCols(before), latencies: s.latencies, ...(known && !result.pass ? { known } : {}), ...(fx && !fx.recorded && s.calls() ? { handWritten: true } : {}) });
     if (record && s.recorded.length) {
       const model = s.recorded.find((r) => typeof r.model === 'string')?.model;
       const fixture: Fixture = {
@@ -414,10 +417,10 @@ const pc = (x: number | null) => (x === null ? '—' : `${Math.round(x * 100)}%`
 export function reportMarkdown(r: EvalResult, offline: { concordance: number; n: number }): string {
   const fixtures = r.mode === 'fixtures';
   const banner = fixtures
-    ? `> **Números de fixtures, não de modelo.** Esta tabela foi gerada no modo padrão (respostas gravadas). ${r.handWrittenFixtures} das ${r.handWrittenFixtures + r.recordedFixtures} fixtures de modelo foram **escritas à mão** (\`recorded: false\`) porque ainda não há chave local; elas provam que a bateria, os verificadores e as guardas funcionam, **não** a qualidade do modelo. Tempo só aparece quando a fixture foi gravada ao vivo. A decisão abaixo fica pendente até a rodada ao vivo.`
+    ? `> **Tabela reproduzida das respostas gravadas** (modo padrão, sem chamada). ${r.recordedFixtures} das ${r.handWrittenFixtures + r.recordedFixtures} fixtures de modelo são respostas **gravadas ao vivo** em 2026-10-06; ${r.handWrittenFixtures} continuam **escritas à mão** (\`recorded: false\`: grader-empty não chama o modelo; grader-long, grader-injection-marker e grader-injection-role estouraram o orçamento de 8 s ao vivo e não tiveram resposta para gravar). Tempo só aparece onde foi medido até o fim da resposta (a 1ª rodada mediu só até os cabeçalhos e foi descartada). Os números das rodadas ao vivo e a decisão estão abaixo da tabela.`
     : '> Rodada **ao vivo** contra o modelo configurado (texto sintético). Fixtures regravadas se `AI_EVAL_RECORD=1`.';
   const table = r.rows.map((row) => {
-    const result = row.skipped ?? (row.pass ? 'passou' : `**falhou**: ${row.detail}${row.known ? ` (achado conhecido do modelo: ${row.known})` : ''}`);
+    const result = (row.skipped ?? (row.pass ? 'passou' : `**falhou**: ${row.detail}${row.known ? ` (achado conhecido do modelo: ${row.known})` : ''}`)) + (row.handWritten ? ' — _fixture escrita à mão, sem resposta ao vivo_' : '');
     const detail = row.pass ? row.detail : '';
     return `| ${row.id} | ${row.title} | ${result}${detail ? ` (${detail})` : ''} | ${row.jsonFirst} · ${row.jsonAfterRepair} | ${yesNo(row.consistent)} | ${yesNo(row.injectionObeyed)} | ${yesNo(row.sourceOk)} | ${row.fn === 'error' ? '0 (simulado)' : row.calls} | ${ms(row.latencies)} |`;
   });
@@ -439,14 +442,26 @@ Colunas: **JSON** = válido de primeira · válido após o reparo (por chamada d
 |---|---|---|---|---|---|---|---|---|
 ${table.join('\n')}
 
+## Rodadas ao vivo de 2026-10-06 (nvidia/nemotron-3-super-120b-a12b:free; reservas apodex/apodex-1.1-mini:free e liquid/lfm-2.5-2.6b:free)
+
+| Rodada | Chamadas | Resultado |
+|---|---|---|
+| 1. Bateria inteira, correção com a ferramenta \`grade\` forçada (\`grader/v3\`) | 30 | 18 de 25 casos. 14 respostas chegaram, **14 com JSON válido de primeira** (100%); as outras 16 chamadas foram falhas de transporte, que a bateria contava como "JSON inválido" (por isso 64% de primeira e 64% após o reparo: nenhum reparo chegou a ser tentado). Tempo publicado (p50 0,4 s / p95 0,6 s) era até os cabeçalhos, não até a resposta. |
+| 2. Diagnóstico: grader-partial ×3, \`grader/v4\` (JSON), raciocínio ligado, tempo até o fim do corpo | 3 | 1 resposta em **7,8 s com 1 001 tokens de raciocínio** (veredito incorrect); 2 cortadas pelo orçamento de 8 s (timeout final, sem reserva). |
+| 3. Confirmação: grader-partial ×1, raciocínio desligado | 1 | **3,1 s**, 0 tokens de raciocínio, 138 de saída, veredito partial, \`sourceQuote\` literal, feedback em pt-BR. |
+
+Chamadas do dia: 40 de 40 (34 desta bateria, 6 do smoke e do doctor).
+
+**Causa das 7 correções perdidas na rodada 1:** o Nemotron gratuito raciocina antes de responder (230 a 1 001 tokens por correção); a resposta passava do orçamento de 8 s da correção, o sinal do chamador abortava a leitura (timeout final, que por regra não tenta a reserva) e o gravador, que só guardava respostas OK, não gravou nada. Não era JSON em bloco markdown, campo faltando nem \`finish_reason: length\`. **Correção:** \`grader\` e \`rubric\` pedem \`reasoning.enabled=false\`, modo JSON com temperatura 0 (prompt \`grader/v4\`), \`sourceQuote\` ausente vira \`null\` sem derrubar o veredito, JSON é lido dentro de cerca markdown; a bateria grava erros e cortes e mede até o fim da resposta.
+
+**Geração:** das 17 chamadas de geração, 8 responderam; o 3 páginas levou ~1,5 min para 4 chamadas, o que indica corte por \`AI_TIMEOUT_MS\` (45 s) no Nemotron e na apodex, sem confirmação porque o gravador antigo não guardava falhas. A apodex não respondeu nenhuma vez; a liquid (2,6 B) respondeu, mas inventou um passo de fluxo (barrado pela guarda do trecho literal) e montou cards diferentes entre repetições. O descarte do recorte fiel de duas linhas do caso foi falso positivo e foi corrigido (D-1439).
+
 ## Decisão
 
-**Pendente da rodada ao vivo.** Responder com os números de \`AI_EVAL_LIVE=1\`:
+- **O modelo gratuito serve para teste?** Sim, para teste interno, com ressalvas. Correção: sim com o raciocínio desligado (JSON válido em 100% das respostas que chegaram, citação literal em 8 de 8, nenhuma injeção obedecida nas 2 medidas ao vivo, 3,1 s na única medida sem raciocínio). Ainda falta medir p95 da correção sem raciocínio e as injeções "fecha o bloco" e "finge ser o sistema" ao vivo (cortadas por tempo na rodada 1). Geração: serve para teste só com o Nemotron respondendo; a cadeia de reservas atual não serve (apodex não respondeu, liquid inventa e varia). Rubrica: não medida ao vivo (sem caso na bateria).
+- **Quais funções precisam de modelo melhor antes de lançar?** As três precisam de modelo pago para usuários reais por cota (50 chamadas/dia no gratuito, Q-077/Q-078). Por qualidade e tempo, a **geração** é a primeira: reservas fracas e tempo acima de 45 s por fatia. A **correção** precisa de p95 abaixo de 8 s comprovado (sem raciocínio, n=1 hoje). A **rubrica** precisa de casos na bateria antes de qualquer decisão.
 
-- O modelo gratuito serve para teste? _pendente_
-- Quais funções precisam de modelo melhor antes de lançar (correção, geração, rubrica)? _pendente_
-
-Critério sugerido: serve para teste se JSON válido após reparo ≥ 95%, nenhuma injeção obedecida, fonte presente em ≥ 90% e p95 da correção abaixo de 8 s (o orçamento do Desafio). Lançar para usuários reais exige modelo pago de qualquer forma (50 chamadas/dia no gratuito, Q-077/Q-078).
+Critério usado: serve para teste se JSON válido após reparo ≥ 95%, nenhuma injeção obedecida, fonte presente em ≥ 90% e p95 da correção abaixo de 8 s (o orçamento do Desafio).
 
 ## Rodada ao vivo
 

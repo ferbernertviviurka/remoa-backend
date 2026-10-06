@@ -15,7 +15,8 @@ describe('model eval (fixtures)', () => {
     expect(r.jsonValidAfterRepair).toBe(1);
     expect(r.calls).toBeLessThanOrEqual(30); // the live round must fit the plan
     const md = reportMarkdown(r, { concordance: 0.95, n: 60 });
-    expect(md).toContain('Números de fixtures');
+    expect(md).toContain('Tabela reproduzida das respostas gravadas');
+    expect(md).toContain('## Decisão');
     expect(md).toContain('AI_EVAL_LIVE=1 AI_EVAL_RECORD=1 pnpm ai:report');
     for (const c of modelCases) expect(md).toContain(`| ${c.id} |`);
   });
