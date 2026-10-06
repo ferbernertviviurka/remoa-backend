@@ -47,7 +47,7 @@ const S: Scenario[] = [
   { group: 'Hoje', name: 'Hoje: GET /v1/coverage', as: 'typical', path: () => '/v1/coverage' },
   { group: 'Hoje', name: 'Hoje: GET /v1/onboarding', as: 'typical', path: () => '/v1/onboarding' },
   { group: 'Hoje', name: 'Hoje: GET /v1/calendar/upcoming?limit=4', as: 'typical', path: () => '/v1/calendar/upcoming?limit=4', qBudget: 3 },
-  { group: 'Hoje', name: 'Hoje: GET /v1/account/me', as: 'typical', path: () => '/v1/account/me' },
+  // /v1/account/me asks the Auth server (loadAuthUser) and the perf users do not exist there: left out on purpose (404)
   { group: 'Hoje', name: 'Hoje: GET /v1/review/queue?limit=1', as: 'typical', path: () => '/v1/review/queue?limit=1', qBudget: 6 },
   { group: 'Hoje', name: 'Hoje: GET /v1/review/retrievability?boardId', as: 'typical', path: (c) => `/v1/review/retrievability?boardId=${bid(c.user, 1)}` },
   { group: 'Hoje (usuário pesado, 10 mil cards)', name: 'Hoje (pesado): GET /v1/home', as: HEAVY, path: () => '/v1/home', qBudget: 8 },
@@ -69,7 +69,7 @@ const S: Scenario[] = [
   { group: 'Revisar', name: 'Responder card: POST /v1/challenge/answer (self)', method: 'POST', as: 'typical', serial: true, path: () => '/v1/challenge/answer',
     body: (c) => { const s = pick(c); return s && { inputKind: 'self', sessionId: s.sessionId, itemId: s.itemId, durationMs: 4000 }; } },
   { group: 'Revisar', name: 'Responder card: POST /v1/challenge/rate', method: 'POST', as: 'typical', serial: true, qBudget: 4, path: () => '/v1/challenge/rate',
-    body: (c) => { const s = pick(c); return s && { sessionId: s.sessionId, itemId: s.itemId, grade: 3, overridden: false }; } },
+    body: (c) => { const s = pick(c); return s && { sessionId: s.sessionId, itemId: s.itemId, grade: 'good', overridden: false }; } },
   // --- calendário, notificações ---
   { group: 'Calendário', name: 'Calendário (mês): GET /v1/calendar/events', as: 'typical', path: () => `/v1/calendar/events?${range()}`, qBudget: 3 },
   { group: 'Calendário', name: 'Calendário (mês, pesado, 400 eventos)', as: HEAVY, path: () => `/v1/calendar/events?${range()}`, qBudget: 3 },
