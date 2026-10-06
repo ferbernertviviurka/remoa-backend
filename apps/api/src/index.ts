@@ -47,6 +47,8 @@ const app = createApp({
 });
 
 // P-430: the DB trigger records a sign-up acceptance only for the versions in legal_versions; publish the configured ones.
+// D-1446: a stray rejected promise (e.g. a fire-and-forget job write) must not take the API down; log it and keep serving.
+process.on('unhandledRejection', (e) => createLogger({ requestId: 'process' }).error('unhandled rejection', { error: e instanceof Error ? e.message : String(e) }));
 syncLegalVersions().catch((e) => createLogger({ requestId: 'boot' }).error('legal versions not synced', { error: String(e) }));
 ensureBucket().catch((e) => createLogger({ requestId: 'boot' }).error('storage bucket unavailable', { error: String(e) }));
 warmPool().catch((e) => createLogger({ requestId: 'boot' }).error('db pool warm-up failed', { error: String(e) })); // D-1096
