@@ -422,6 +422,74 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     expect((row!.items as { id: string; x: { answered?: unknown } }[]).find((x) => x.id === it.id)!.x.answered).toBeUndefined();
   });
 
+  it('P-543: the grader runs with no connection held: pool + 2 slow (2 s) corrections at once all run together and finish', async () => {
+    const pool = dbm.db.$client.options.max;
+    const n = pool + 2;
+    const targets: { u: string; sessionId: string; itemId: string }[] = [];
+    while (targets.length < n) {
+      const u = await newUser();
+      const w = await prancheta(u, RUBRIC('approved'));
+      const s = await start(u, { kind: 'board', boardId: w.b }, true);
+      for (const it of s.items.filter((i) => i.grading !== 'none').slice(0, 4)) targets.push({ u, sessionId: s.sessionId, itemId: it.id });
+    }
+    const batch = targets.slice(0, n);
+    let inFlight = 0;
+    let allIn!: () => void;
+    const together = new Promise<void>((r) => (allIn = r));
+    const busy: number[] = [];
+    const slow = mk(async (i) => {
+      if (++inFlight === n) allIn();
+      // if each call held its transaction, at most `pool` graders could ever be running at once: this would time out
+      await Promise.race([together, new Promise((_, rej) => setTimeout(() => rej(new Error('graders serialized by the pool')), 5000))]);
+      // the app's own pool still answers while every grader waits; idle-in-transaction backends stay below the pool size
+      const [r] = await dbm.db.execute<{ n: number }>(sql`select count(*)::int as n from pg_stat_activity where state = 'idle in transaction' and pid <> pg_backend_pid()`);
+      busy.push(r!.n);
+      await new Promise((r) => setTimeout(r, 2000));
+      return mockGrader(i);
+    });
+    const t0 = Date.now();
+    const rs = await Promise.all(batch.map((b) => answer(b.u, b.sessionId, b.itemId, { inputKind: 'text', text: 'hemocultura' }, slow)));
+    expect(rs.map((r) => r.status)).toEqual(batch.map(() => 200));
+    expect(rs.every((r) => r.json.data.fallback === null && r.json.data.verdict)).toBe(true);
+    expect(Math.max(...busy)).toBeLessThan(pool);
+    expect(Date.now() - t0).toBeLessThan(2000 * 2 + 3000); // one 2 s wave, not two
+  }, 30_000);
+
+  it('P-543: two answers to the same item at once -> one grade, one unit; the other gets 409', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
+    const it = s.items.find((i) => i.subId === 's1')!;
+    let calls = 0;
+    const slow = mk(async (i) => (calls++, await new Promise((r) => setTimeout(r, 500)), mockGrader(i)));
+    const [a, b] = await Promise.all([1, 2].map(() => answer(u, s.sessionId, it.id, { inputKind: 'text', text: 'hemocultura' }, slow)));
+    expect([a!.status, b!.status].sort()).toEqual([200, 409]);
+    expect(calls).toBe(1);
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c!.aiGrades).toBe(1);
+    expect((await answer(u, s.sessionId, it.id, { inputKind: 'text', text: 'outra' }, slow)).json.data.verdict.verdict).toBe('correct'); // stored
+  });
+
+  it('P-543: the claim was taken over while the model wrote -> the late verdict is dropped and its unit goes back', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
+    const it = s.items.find((i) => i.subId === 's1')!;
+    const other = { inputKind: 'text', durationMs: 1, answerText: 'outra aba', verdict: null, suggestedGrade: null, gradeLocked: false, fallback: 'grader_error' };
+    const racing = mk(async (i) => {
+      // another tab took the (stale) claim over and answered first
+      const [row] = await dbm.db.select({ items: dbm.sessions.items }).from(dbm.sessions).where(eq(dbm.sessions.id, s.sessionId));
+      const items = (row!.items as { id: string; x: Record<string, unknown> }[]).map((x) => (x.id === it.id ? { ...x, x: { ...x.x, grading: undefined, answered: other } } : x));
+      await dbm.db.update(dbm.sessions).set({ items }).where(eq(dbm.sessions.id, s.sessionId));
+      return mockGrader(i);
+    });
+    const r = await answer(u, s.sessionId, it.id, { inputKind: 'text', text: 'hemocultura' }, racing);
+    expect(r.status).toBe(200);
+    expect(r.json.data).toMatchObject({ verdict: null, fallback: 'grader_error' }); // the stored answer, not ours
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c?.aiGrades ?? 0).toBe(0);
+  });
+
   it('dispute: needs a graded answer; inserts review_queue with attempt_id; idempotent; works before or after rate', async () => {
     const u = await newUser();
     const w = await prancheta(u, RUBRIC('approved'));

@@ -22,8 +22,8 @@ export type Answered = {
 export type Internal = {
   nb: string[]; // "A —label→ B" strings for the grader
   skips: number;
-  /** Set while a streamed grade is in flight, so a second request does not charge again. */
-  grading?: boolean;
+  /** P-543 (D-1444): claim of an AI grade in flight (claimSpoken → settle), so a second request does not charge again; `true` = legacy. */
+  grading?: { id: string; at: string } | boolean;
   answered?: Answered;
   rated?: { grade: import('@remoa/contracts').Grade; due: string; overridden: boolean };
   disputed?: boolean;
