@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EnvError, addressOf, emailHealth, parseEnv } from './env';
+import { EnvError, addressOf, emailHealth, parseEnv, perfEnv } from './env';
 
 const S32 = 'x'.repeat(32);
 const prod = {
@@ -131,5 +131,13 @@ describe('addressOf', () => {
   });
   it('refuses the public blog bucket equal to the private one (P-431)', () => {
     expect(problems({ ...prod, S3_BUCKET: 'assets', S3_PUBLIC_BUCKET: 'assets' })).toContain('S3_PUBLIC_BUCKET must differ from S3_BUCKET (blog images would land in the private bucket)');
+  });
+});
+
+describe('perfEnv (G21/F29 FR-3)', () => {
+  it('defaults to 150 ms and quiet; reads PERF_SLOW_QUERY_MS and PERF_LOG_QUERIES=1; ignores bad values', () => {
+    expect(perfEnv({})).toEqual({ slowQueryMs: 150, logQueries: false });
+    expect(perfEnv({ PERF_SLOW_QUERY_MS: '0', PERF_LOG_QUERIES: '1' })).toEqual({ slowQueryMs: 0, logQueries: true });
+    expect(perfEnv({ PERF_SLOW_QUERY_MS: 'abc', PERF_LOG_QUERIES: 'true' })).toEqual({ slowQueryMs: 150, logQueries: false });
   });
 });

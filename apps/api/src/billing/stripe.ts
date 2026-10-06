@@ -1,5 +1,6 @@
 import Stripe from 'stripe';
 import { randomBytes } from 'node:crypto';
+import { addExternal } from '../perf';
 import { FOUNDER_PRICE_CENTS, PRICES_BRL, type BillingPeriod, type PaymentMethod, type SwitchToAnnualResult } from '@remoa/contracts';
 
 /** F15: `period`/`amount`/`itemId` only come from F15 lookups (`plan`), the webhook reads the first three fields. */
@@ -67,6 +68,7 @@ const offOf = (c: Stripe.Coupon | null | undefined) => {
 
 export const createStripe = ({ secret, webOrigin }: { secret: string; webOrigin: string }): StripePort => {
   const s = new Stripe(secret);
+  s.on('response', (e: Stripe.ResponseEvent) => addExternal('stripe', e.elapsed)); // G21/F29 FR-3: Stripe time in Server-Timing `ext` (the SDK uses node http, not fetch)
   const missing = (e: { code?: string }) => (e?.code === 'resource_missing' ? null : Promise.reject(e));
   const subDetail = async (sub: Stripe.Subscription) => {
     const item = sub.items.data[0]!;

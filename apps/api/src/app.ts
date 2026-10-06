@@ -46,6 +46,7 @@ import { noticeFunctions } from './inngest/notices';
 import { cronRoutes } from './routes/cron';
 import { authHookRoutes, devEmailsRoutes, emailsRoutes } from './emails/routes';
 import { invalidateReviewHub } from './review/hub';
+import { perfMiddleware } from './perf';
 
 /** Resolves a Supabase access token to a user id (+ JWT `session_id`, D-124; + account flags, D-565), or null if invalid. A bare id = no session (tests). */
 export type VerifyToken = (token: string) => Promise<string | Verified | null>;
@@ -73,14 +74,15 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     // ponytail: async jobs that add cards later (Anki import, PDF generation) still show up within the 60 s TTL; invalidate at job end if that matters.
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.get('userId')) invalidateReviewHub(c.get('userId'));
     // F17: the share token is a credential; it never reaches the logs (F27: nor the blog preview token)
-    const line = { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/(?:shared|referral|calendar(?:\/cover)?|blog\/preview)\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start };
+    const line = { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/(?:shared|referral|calendar(?:\/cover)?|blog\/preview)\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start, queries: Number(c.res.headers.get('x-remoa-queries') ?? 0) };
     if (c.res.status < 400) return log.info('request', line);
     // D-582: 4xx/5xx carry the typed error (`{ error: { code, message } }`, written by the API itself: no token, password or body echo).
     // The message only outside production: a zod message can quote a received value.
     const error = (await c.res.clone().json().catch(() => null) as HttpErrorBody | null)?.error;
     log[c.res.status >= 500 ? 'error' : 'warn']('request', { ...line, code: error?.code, ...(process.env.NODE_ENV === 'production' ? {} : { message: error?.message }) });
   });
-  app.use('/v1/*', cors({ origin: webOrigin, credentials: true }));
+  app.use('*', perfMiddleware); // G21/F29 FR-3: Server-Timing + X-Remoa-Queries on every response
+  app.use('/v1/*', cors({ origin: webOrigin, credentials: true, exposeHeaders: ['server-timing', 'x-remoa-queries'] }));
 
   const requireUser = createMiddleware<Env>(async (c, next) => {
     const token = c.req.header('authorization')?.replace(/^Bearer /, '');

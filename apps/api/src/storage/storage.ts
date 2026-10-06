@@ -3,6 +3,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { env as configEnv } from '@remoa/config';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { timeExternal } from '../perf';
 
 // D-047: one S3 client. Production = Cloudflare R2, local = Supabase Storage's S3 endpoint.
 const env = (k: string) => {
@@ -13,12 +14,17 @@ const env = (k: string) => {
 
 let cached: S3Client | undefined;
 const client = () =>
-  (cached ??= new S3Client({
+  (cached ??= timed(new S3Client({
     endpoint: env('S3_ENDPOINT'),
     region: env('S3_REGION'),
     credentials: { accessKeyId: env('S3_ACCESS_KEY_ID'), secretAccessKey: env('S3_SECRET_ACCESS_KEY') },
     forcePathStyle: true,
-  }));
+  })));
+// G21/F29 FR-3: R2/S3 time in Server-Timing `ext` (the SDK uses node http, not fetch).
+const timed = (c: S3Client) => {
+  c.middlewareStack.add((next) => (args) => timeExternal('r2', () => next(args)), { step: 'finalizeRequest', name: 'remoaPerf' });
+  return c;
+};
 const Bucket = () => env('S3_BUCKET');
 
 /** Idempotent. Buckets are private by default on both R2 and Supabase Storage. */

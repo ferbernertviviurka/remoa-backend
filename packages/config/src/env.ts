@@ -228,3 +228,11 @@ export const emailHealth = (e: Env = env()): EmailHealth => ({
   webhook: !!e.resendWebhookSecret,
   authHook: !!e.sendEmailHookSecret,
 });
+
+export type PerfEnv = { slowQueryMs: number; logQueries: boolean };
+
+/** G21/F29 FR-3: read per query (two lookups) so tests and `PERF_*` changes apply without a restart. Bad values fall back to the default. */
+export const perfEnv = (source: Source = process.env): PerfEnv => {
+  const n = Number(source.PERF_SLOW_QUERY_MS);
+  return { slowQueryMs: source.PERF_SLOW_QUERY_MS && Number.isFinite(n) && n >= 0 ? n : 150, logQueries: source.PERF_LOG_QUERIES === '1' };
+};
