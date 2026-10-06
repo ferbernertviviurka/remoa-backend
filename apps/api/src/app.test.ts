@@ -13,7 +13,7 @@ describe('api', () => {
     expect(res.headers.get('x-request-id')).toBe('r-1');
     const body = await res.json();
     expect(body.email).toMatchObject({ configured: expect.any(Boolean), provider: expect.stringMatching(/^(console|resend)$/) }); // G18, no secrets
-    expect(Object.keys(body.ai).sort()).toEqual(['model', 'problems', 'status']); // G22: no key, no account usage
+    expect(Object.keys(body.ai).sort()).toEqual(['model', 'status']); // G22: no key, no account usage, no problem texts (P-619)
     expect(body.ai.status).toMatch(/^(ok|degraded|off|mock|pending)$/);
   });
 

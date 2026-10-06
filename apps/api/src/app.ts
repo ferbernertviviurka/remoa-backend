@@ -118,10 +118,11 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     if (e) c.res = fail(e);
   });
 
-  // G18/G22: booleans, model id and problem texts only (no secret, no account usage: /health is public)
+  // G18/G22: booleans, status and model id only. /health is public: the problem texts (key invalid, no credit) stay in the boot
+  // log and `pnpm ai:doctor` (G22 qa, P-619)
   app.get('/health', (c) => {
-    const { status, model, problems } = aiHealth();
-    return c.json({ ok: true, email: emailHealth(), ai: { status, model, problems } });
+    const { status, model } = aiHealth();
+    return c.json({ ok: true, email: emailHealth(), ai: { status, model } });
   });
   const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard, maintenanceHourly, maintenanceDaily, ...noticeFunctions] });
   app.on(['GET', 'POST', 'PUT'], '/api/inngest', (c) => asJob(() => inngestHandler(c))); // FR-25: job timeouts
