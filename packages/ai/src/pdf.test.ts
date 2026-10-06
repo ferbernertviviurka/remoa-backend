@@ -16,4 +16,10 @@ describe('readPdfText (D-581)', () => {
   it('falls back to the literal strings when pdf.js cannot open the file', async () => {
     expect(await readPdfText(new TextEncoder().encode('%PDF-1.4 (Sepse e choque septico exige noradrenalina) Tj'))).toContain('noradrenalina');
   });
+
+  it('D-1446: NUL and C0 controls inside the text never leave (Postgres refuses 0x00)', async () => {
+    const text = await readPdfText(new TextEncoder().encode('%PDF-1.4 (Sep\u0000se e cho\u0001que septico exige noradrenalina) Tj'));
+    expect(text).toContain('Sepse e choque septico');
+    expect(text).not.toMatch(/[\u0000-\u0008]/);
+  });
 });

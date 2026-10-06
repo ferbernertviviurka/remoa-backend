@@ -1,3 +1,5 @@
+import { cleanText } from './text';
+
 /** Page objects in the file. `/Pages` (the tree) is not a page. At least 1 so a file without a catalog still counts. */
 export function pdfPageCount(bytes: Uint8Array): number {
   const raw = new TextDecoder('latin1').decode(bytes);
@@ -13,7 +15,7 @@ export function pdfText(bytes: Uint8Array): string {
     const inner = match[0].slice(1, -1).replace(/\\n/g, '\n').replace(/\\(.)/g, '$1');
     if (/[A-Za-zÀ-ÿ]{4}/.test(inner)) parts.push(inner);
   }
-  return parts.join('\n').replace(/[ \t]+/g, ' ').trim();
+  return cleanText(parts.join('\n')).replace(/[ \t]+/g, ' ').trim();
 }
 
 /**
@@ -26,7 +28,7 @@ export async function readPdfText(bytes: Uint8Array): Promise<string> {
     const { extractText, getDocumentProxy } = await import('unpdf');
     const doc = await getDocumentProxy(bytes.slice(), { verbosity: 0 }); // copy: pdf.js may take the buffer
     const { text } = await extractText(doc, { mergePages: true });
-    const clean = text.replace(/[ \t]+/g, ' ').trim();
+    const clean = cleanText(text).replace(/[ \t]+/g, ' ').trim();
     const raw = pdfText(bytes);
     return clean.length >= raw.length ? clean : raw;
   } catch {

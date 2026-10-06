@@ -6,6 +6,7 @@ export { gradeOffline } from './offline';
 export { gradeWithMeta, streamGrade, cachedRubric, rubricFromCard, rubricWithMeta, type GradeEvent } from './grade';
 export { chunkText, mergeDrafts, layout, extractOffline, extractWithMeta } from './extract';
 export { pdfPageCount, pdfText, readPdfText } from './pdf';
+export { cleanDeep, cleanText } from './text';
 export { ocrPdf } from './ocr';
 export { runOfflineEval } from './eval';
 export { graderCases } from './eval-cases';

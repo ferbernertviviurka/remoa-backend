@@ -298,6 +298,52 @@ describe.skipIf(!process.env.DATABASE_URL)('G22 AI quotas, errors, jobs and flag
       expect(await used(pro, 'ai_generations')).toBe(0);
     });
 
+    it('D-1446: pasted text and model output with NUL and C0 controls become a map; nothing reaches Postgres with 0x00', async () => {
+      const u = await newUser('founder');
+      live();
+      stubAi(() => extractReply([
+        { ref: 'c1', title: 'Sep\u0000se', excerpt: 'disfunção\u0000 orgânica ameaçadora à vida' },
+        { ref: 'c2', title: 'Choque\u0001 séptico', excerpt: 'hipotensão que exige vasopressor' },
+      ]));
+      const res = await post(u, '/generate-board', { kind: 'text', title: 'Sep\u0000se', area: 'CM', text: TEXT.replace('sepse', 'sep\u0000se\u0007') });
+      expect(res.status).toBe(200);
+      const j = await settle(u, ((await res.json()) as { data: { jobId: string } }).data.jobId);
+      expect(j).toMatchObject({ status: 'done', cards: 2, ai: { status: 'ok' } });
+      const cards = await dbm.db.execute<{ title: string; source_excerpt: string }>(sql`select title, source_excerpt from cards where board_id = ${j.boardId as string} order by "order"`);
+      expect(cards.map((c) => c.title)).toEqual(['Sepse', 'Choque séptico']);
+      expect(cards[0]!.source_excerpt).toBe('disfunção orgânica ameaçadora à vida');
+      const [b] = await dbm.db.execute<{ title: string }>(sql`select title from boards where id = ${j.boardId as string}`);
+      expect(b!.title).toBe('Sepse');
+    });
+
+    it('D-1446: a PDF whose text carries NUL becomes a map (it was an unhandled rejection that took the API down)', async () => {
+      const u = await newUser('pro');
+      const f = new FormData();
+      const pdf = new TextEncoder().encode('%PDF-1.4 (A sep\u0000se e uma disfun\u0001cao organica ameacadora a vida causada por infeccao) Tj');
+      f.set('file', new Blob([pdf as BlobPart], { type: 'application/pdf' }), 'a.pdf');
+      f.set('board', JSON.stringify({ title: 'Sepse', area: 'CM', access: 'owner', matrixItemIds: [] }));
+      const res = await app.request('/v1/ai/generate-pdf', { method: 'POST', headers: { authorization: `Bearer ${u}` }, body: f });
+      expect(res.status).toBe(200);
+      const j = await settle(u, ((await res.json()) as { data: { jobId: string } }).data.jobId);
+      expect(j).toMatchObject({ status: 'done' });
+      const cards = await dbm.db.execute<{ back: string | null }>(sql`select back from cards where board_id = ${j.boardId as string}`);
+      expect(cards.map((c) => c.back ?? '').join(' ')).toContain('sepse');
+    });
+
+    it('D-1446: a write Postgres refuses fails the job as invalid_input with the unit back; GET answers 200, no raw text', async () => {
+      const u = await newUser('pro');
+      live();
+      stubAi(() => extractReply([{ ref: 'c1', title: 'Sepse', excerpt: 'disfunção orgânica ameaçadora à vida' }]));
+      const pg = Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0x00'), { code: '22021' });
+      vi.spyOn(dbm.db, 'transaction').mockRejectedValueOnce(new Error('Failed query', { cause: pg }));
+      const { data } = (await (await post(u, '/generate-board', { kind: 'text', title: 'Sepse', area: 'CM', text: TEXT })).json()) as { data: { jobId: string } };
+      const j = await settle(u, data.jobId);
+      expect(j).toMatchObject({ status: 'failed', error: 'invalid_input', boardId: null, ai: { status: 'error', code: 'invalid_input' } });
+      expect(JSON.stringify(j)).not.toContain('0x00');
+      expect((await app.request(`/v1/ai/jobs/${data.jobId}`, { headers: { authorization: `Bearer ${u}` } })).status).toBe(200);
+      expect(await used(u, 'ai_generations')).toBe(0);
+    });
+
     it('AI=mock: the paragraph split is labelled as not AI (source + ai.status fallback)', async () => {
       const u = await newUser('pro');
       const { data } = (await (await post(u, '/generate-board', { kind: 'text', title: 'Sepse', area: 'CM', text: TEXT })).json()) as { data: { jobId: string } };

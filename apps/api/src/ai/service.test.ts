@@ -56,5 +56,8 @@ describe('jobErrorCode (G22 qa, P-614)', () => {
     expect(jobErrorCode(new Error('generate_timeout'))).toBe('generate_timeout');
     expect(jobErrorCode(new Error('duplicate key value violates unique constraint "cards_pkey"'))).toBe('failed');
     expect(jobErrorCode('boom')).toBe('failed');
+    // D-1446: text Postgres cannot store (NUL, bad encoding), also wrapped by drizzle in `cause`
+    expect(jobErrorCode(Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0x00'), { code: '22021' }))).toBe('invalid_input');
+    expect(jobErrorCode(new Error('Failed query', { cause: Object.assign(new Error('unsupported Unicode escape sequence'), { code: '22P05' }) }))).toBe('invalid_input');
   });
 });
