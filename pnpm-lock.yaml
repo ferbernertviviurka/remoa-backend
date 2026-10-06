@@ -53,6 +53,9 @@ importers:
       '@remoa/anki':
         specifier: workspace:*
         version: link:../../packages/anki
+      '@remoa/blog':
+        specifier: workspace:*
+        version: link:../../packages/blog
       '@remoa/config':
         specifier: workspace:*
         version: link:../../packages/config

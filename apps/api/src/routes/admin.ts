@@ -16,6 +16,7 @@ import { referralsRoutes } from '../admin/referrals/routes';
 import { waitlistRoutes } from '../admin/waitlist/routes';
 import { storeWaitlistRoutes } from '../admin/store-waitlist/routes';
 import { ticketsRoutes } from '../admin/tickets/routes';
+import { blogAdminRoutes } from '../blog/routes';
 
 // ponytail: one CSV in memory, capped; stream it if exports ever need more rows.
 const EXPORT_MAX_ROWS = 10_000;
@@ -80,5 +81,6 @@ export function adminRoutes({ verifyToken }: { verifyToken: VerifyToken }) {
     .route('/tickets', ticketsRoutes)
     .route('/waitlist', waitlistRoutes)
     .route('/store-waitlist', storeWaitlistRoutes)
+    .route('/blog', blogAdminRoutes)
     .all('*', () => notFound());
 }

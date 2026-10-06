@@ -8,6 +8,8 @@ import { accountRoutes } from './routes/account';
 import { accountSecurityRoutes } from './routes/account-security';
 import { accountProfileRoutes } from './routes/account-profile';
 import { publicRoutes } from './routes/public';
+import { publicBlogRoutes } from './blog/public';
+import { accountLegalRoutes } from './account/legal';
 import { notificationsRoutes } from './notifications/routes';
 import { calendarRoutes, publicCalendarRoutes } from './calendar/routes';
 import { accountAvatarRoutes } from './routes/account-avatar';
@@ -104,6 +106,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.get('/v1/me', requireUser, (c) => c.json({ ok: true, data: { userId: c.get('userId') } }));
 
   app.use('/v1/account', requireUser).use('/v1/account/*', requireUser).route('/v1/account', accountRoutes({ stripe })).route('/v1/account', accountSecurityRoutes).route('/v1/account', accountAvatarRoutes);
+  app.route('/v1/account', accountLegalRoutes); // G19 F27 P-401
   app.route('/v1/account', accountProfileRoutes()); // F13 profile/email/identities/preferences (requireUser applied above)
   const viewer = async (authorization: string | undefined) => {
     const token = authorization?.replace(/^Bearer /, '');
@@ -116,6 +119,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.route('/v1/auth', authHookRoutes); // G18 F24: Supabase Auth Send Email hook (Standard Webhooks signature)
   app.route('/v1/dev/emails', devEmailsRoutes); // G18 F24 FR-19: preview for the web's /dev/emails; 404 in production
   app.route('/v1/public/calendar', publicCalendarRoutes); // G18 F25: .ics from the e-mail, HMAC token
+  app.route('/v1/public/blog', publicBlogRoutes); // G19 F27: no auth, published posts only
   app.route('/v1/public', publicRoutes({ stripe, viewer })); // F13 unsubscribe: no auth, signed token; F17 shared links: optional session
   app.use('/v1/boards', requireUser).use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 
