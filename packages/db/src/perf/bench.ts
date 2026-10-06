@@ -102,7 +102,7 @@ async function main() {
   let port = 0;
   if (!base) {
     port = await freePort(4300);
-    child = spawn('pnpm', ['--filter', '@remoa/api', 'exec', 'tsx', '--env-file=../../.env', 'src/perf/server.ts'], { cwd: root, detached: true, stdio: ['ignore', 'ignore', 'inherit'],
+    child = spawn('pnpm', ['--filter', '@remoa/api', 'exec', 'tsx', `--env-file=${join(root, '.env')}`, 'src/perf/server.ts'], { cwd: root, detached: true, stdio: ['ignore', 'ignore', 'inherit'],
       env: { ...process.env, NODE_ENV: 'development', STRIPE: 'mock', GRADER: 'mock', AI: 'mock', PORT: String(port), DATABASE_URL: t.url, LOG_LEVEL: 'error', WEB_ORIGIN: 'http://localhost:3000' } });
     base = `http://localhost:${port}`;
   }
