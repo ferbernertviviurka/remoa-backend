@@ -38,6 +38,10 @@ export const profiles = pgTable('profiles', {
   /** F19: set by the admin (withAdmin 'user.suspend'); blocks every /v1/* call. Server-owned (no column GRANT). */
   suspendedAt: timestamp('suspended_at', { withTimezone: true }),
   suspendedReason: text('suspended_reason'),
+  /** G19 FR-45 (D-913): versions accepted at sign-up (handle_new_user) or later (POST /v1/account/legal/accept). Server-owned. */
+  termsAcceptedVersion: text('terms_accepted_version'),
+  privacyAcceptedVersion: text('privacy_accepted_version'),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }),
   ...timestamps,
 }, (t) => [
   check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`),
