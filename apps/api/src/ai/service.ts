@@ -1,4 +1,5 @@
 import { notifyMapReady } from '../notifications/map-ready';
+import { pick } from '../pick';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { AI_DRAFT_SOURCE, generatePdfBoardInputSchema, graderInputSchema, rubricSchema, err, ok, parseWith, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput } from '@remoa/contracts';
@@ -169,9 +170,9 @@ async function* recordGradeStream(userId: string, input: Parameters<typeof strea
 export async function attachRubric(userId: string, cardId: string) {
   if (!allow('rubric', userId, RUBRIC_PER_MINUTE)) return err('rate_limited', 'rate_limited');
   const { db, cards, boards, aiCalls } = await dbm();
-  const [card] = await db.select().from(cards).where(eq(cards.id, cardId));
+  const [card] = await db.select(pick(cards, 'id', 'boardId', 'deletedAt', 'rubric', 'source', 'title', 'back')).from(cards).where(eq(cards.id, cardId));
   if (!card || card.deletedAt) return err('not_found', 'not found');
-  const [board] = await db.select().from(boards).where(eq(boards.id, card.boardId));
+  const [board] = await db.select({ userId: boards.userId }).from(boards).where(eq(boards.id, card.boardId));
   if (!board || board.userId !== userId) return err('not_found', 'not found');
   const existing = card.rubric && typeof card.rubric === 'object' ? card.rubric as { status?: string; inputHash?: string } : null;
   if (existing?.status === 'approved') return err('conflict', 'approved rubric');
@@ -217,32 +218,24 @@ async function saveBoard(userId: string, input: GenerateBoardInput, cards: CardD
   const itemIds = extras?.matrixItemIds ?? [];
   const [board] = await db.insert(boards).values({ userId, title: input.title, area: input.area, status: 'private', matrixItemId: itemIds[0] ?? null, ...extras?.share }).returning();
   if (itemIds.length) await db.insert(boardMatrixItems).values(itemIds.map((matrixItemId) => ({ boardId: board!.id, matrixItemId })));
+  // G21 FR-21 (D-1036): one insert of all cards (ids generated here, no `returning` round trip) and one of the edges (was ~1 per card/edge)
   const ids = new Map<string, string>();
-  let order = 0;
-  for (const card of cards) {
-    if (card.type === 'image') continue;
+  const rows = cards.filter((c) => c.type !== 'image').map((card, order) => {
     const place = places.get(card.ref);
-    const [row] = await db.insert(cardTable).values({
-      boardId: board!.id,
-      type: card.type,
-      title: card.title,
-      front: card.front,
-      back: card.back,
-      source: card.source ?? AI_DRAFT_SOURCE,
-      payload: card.payload,
-      status: 'draft',
-      order,
-      x: place?.x ?? 80,
-      y: place?.y ?? 80,
-    }).returning();
-    ids.set(card.ref, row!.id);
-    order += 1;
-  }
-  for (const edge of edges) {
+    const id = crypto.randomUUID();
+    ids.set(card.ref, id);
+    return {
+      id, boardId: board!.id, type: card.type, title: card.title, front: card.front, back: card.back, source: card.source ?? AI_DRAFT_SOURCE,
+      payload: card.payload, status: 'draft' as const, order, x: place?.x ?? 80, y: place?.y ?? 80,
+    };
+  });
+  if (rows.length) await db.insert(cardTable).values(rows);
+  const edgeRows = edges.flatMap((edge) => {
     const fromCardId = ids.get(edge.fromRef);
     const toCardId = ids.get(edge.toRef);
-    if (fromCardId && toCardId) await db.insert(edgeTable).values({ boardId: board!.id, fromCardId, toCardId, label: edge.label });
-  }
+    return fromCardId && toCardId ? [{ boardId: board!.id, fromCardId, toCardId, label: edge.label }] : [];
+  });
+  if (edgeRows.length) await db.insert(edgeTable).values(edgeRows);
   return board!.id;
 }
 
@@ -253,7 +246,7 @@ async function readableText(bytes: Uint8Array): Promise<string> {
 
 async function pdfSource(userId: string, assetId: string): Promise<string> {
   const { db, assets } = await dbm();
-  const [asset] = await db.select().from(assets).where(eq(assets.id, assetId));
+  const [asset] = await db.select({ userId: assets.userId, key: assets.key }).from(assets).where(eq(assets.id, assetId));
   if (!asset || asset.userId !== userId) throw new Error('pdf_not_found');
   const text = await readableText(await getBytes(asset.key));
   if (text.length < 40) throw new Error('pdf_unreadable');

@@ -6,7 +6,10 @@ import { run } from '../db';
 const addDays = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 const STREAK_LOOKBACK_DAYS = 400; // ponytail: streaks cap at this
 
-/** G01 "Hoje". Study day = profile tz, rolls over at 04:00 (dayWindow); attempts are bucketed by that same rule. */
+/**
+ * G01 "Hoje". Study day = profile tz, rolls over at 04:00 (dayWindow); attempts are bucketed by that same rule.
+ * G21 FR-22/FR-23: due counts by the `fsrs_state(user_id, due)` range, done per day from `user_daily_stats` (no scan of cards or attempts).
+ */
 export const getHomeSummary: GetHomeSummary = async (userId, now) =>
   ok(
     await run(userId, async (tx) => {
@@ -14,9 +17,7 @@ export const getHomeSummary: GetHomeSummary = async (userId, now) =>
       const [due, rows] = await Promise.all([
         dueByOffset(tx, userId, win, 7),
         tx.execute<{ d: string; n: number }>(sql`
-          select ((created_at at time zone ${win.tz}::text) - interval '4 hours')::date::text as d, count(*)::int as n
-          from attempts where user_id = ${userId} and created_at >= ${new Date(win.startMs).toISOString()}::timestamptz - make_interval(days => ${STREAK_LOOKBACK_DAYS})
-          group by 1`),
+          select day::text as d, reviews as n from user_daily_stats where user_id = ${userId} and day >= ${win.day}::date - ${STREAK_LOOKBACK_DAYS}::int and reviews > 0`),
       ]);
       const done = new Map(rows.map((r) => [r.d, r.n]));
       const today = win.day;

@@ -1,4 +1,5 @@
 import { and, eq, isNotNull, lt, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
 import { deletePrefix } from '../storage/storage';
@@ -16,7 +17,7 @@ export async function purgeDeletedAccounts(now: Date, stripe?: StripePort) {
     .where(and(isNotNull(profiles.deletedAt), lt(profiles.deletedAt, new Date(now.getTime() - GRACE_DAYS * DAY))));
   for (const { id } of due) {
     // Safety net: a delete that skipped the API (or a subscription made later) must not keep charging after the purge.
-    const [sub] = await db.select().from(subscriptions).where(eq(subscriptions.userId, id));
+    const [sub] = await db.select(pick(subscriptions, 'stripeSubscriptionId', 'status')).from(subscriptions).where(eq(subscriptions.userId, id));
     if (sub?.stripeSubscriptionId && sub.status !== 'canceled') {
       try {
         if (!stripe) throw new Error('billing unavailable');

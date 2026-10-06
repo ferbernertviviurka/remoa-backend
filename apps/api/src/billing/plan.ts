@@ -1,4 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import { PRO_GRACE_DAYS } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { dbm } from '../db';
@@ -24,7 +25,12 @@ export function subscriptionPro(s: SubRow | undefined, now: Date) {
 /** F08: the plan the subscriptions row alone gives (what Stripe is charging for). F15 summary/switch use this. */
 export async function paidPlanOf(userId: string, now = new Date()) {
   const { db, subscriptions: t } = await dbm();
-  const [s] = await db.select().from(t).where(eq(t.userId, userId));
+  const [s] = await db.select(pick(t, 'plan', 'status', 'stripeSubscriptionId', 'renewsAt', 'cancelAtPeriodEnd')).from(t).where(eq(t.userId, userId));
+  return paidFrom(s, now);
+}
+
+type Sub = typeof import('@remoa/db').subscriptions.$inferSelect;
+function paidFrom(s: Pick<Sub, 'plan' | 'status' | 'stripeSubscriptionId' | 'renewsAt' | 'cancelAtPeriodEnd'> | undefined, now: Date) {
   // D-375: Founder is lifetime: no renewal, grace or lapse; only a manual change of the row takes it away.
   if (s?.plan === 'founder') return { plan: 'founder' as const, status: s.status, renewsAt: null, cancelAtPeriodEnd: false, graceUntil: null };
   const { pro, graceUntil } = subscriptionPro(s, now);
@@ -53,8 +59,21 @@ export async function grantChain(userId: string, now = new Date(), tx?: Tx) {
  * Grants end on their own: past ends_at the user is back on Free, nothing is deleted (FR-22).
  */
 export async function planOf(userId: string, now = new Date()) {
-  const paid = await paidPlanOf(userId, now);
+  // G21 P-482 (D-1046): the subscriptions row and the grant chain (same SQL as grantChain) in ONE statement; was two round trips for Free
+  const { db } = await dbm();
+  const at = now.toISOString();
+  const [r] = await db.execute<{
+    plan: Sub['plan'] | null; status: Sub['status'] | null; stripe_subscription_id: string | null; renews_at: string | null; cancel_at_period_end: boolean | null;
+    until: string | null; active: boolean | null;
+  }>(sql`
+    select s.plan, s.status, s.stripe_subscription_id, s.renews_at, s.cancel_at_period_end, g.until, g.active
+    from (select max(ends_at) as until, bool_or(starts_at <= ${at}::timestamptz) as active
+      from entitlement_grants where user_id = ${userId} and revoked_at is null and ends_at > ${at}::timestamptz) g
+    left join subscriptions s on s.user_id = ${userId}`);
+  const sub = r?.plan && r.status
+    ? { plan: r.plan, status: r.status, stripeSubscriptionId: r.stripe_subscription_id, renewsAt: r.renews_at ? new Date(r.renews_at) : null, cancelAtPeriodEnd: !!r.cancel_at_period_end }
+    : undefined;
+  const paid = paidFrom(sub, now);
   if (paid.plan !== 'free') return { ...paid, grantUntil: null };
-  const g = await grantChain(userId, now);
-  return g.active ? { ...paid, plan: 'pro' as const, grantUntil: g.until } : { ...paid, grantUntil: null };
+  return r?.active ? { ...paid, plan: 'pro' as const, grantUntil: r.until ? new Date(r.until) : null } : { ...paid, grantUntil: null };
 }

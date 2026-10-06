@@ -20,7 +20,7 @@
     },
     "lint": {},
     "typecheck": {},
-    "test": {},
-    "test:coverage": {}
+    "test": { "passThroughEnv": ["TEST_DATABASE_URL"] },
+    "test:coverage": { "passThroughEnv": ["TEST_DATABASE_URL"] }
   }
 }

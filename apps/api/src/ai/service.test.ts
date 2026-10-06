@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allowGrade, generationOf, startGeneration, startPdfGeneration } from './service';
 
@@ -55,7 +56,8 @@ describe('AI not configured (D-580)', () => {
 
 describe('pdf generation job', () => {
   it('fails an unreadable PDF without leaving the job running', async () => {
-    const user = 'pdf-unreadable-user';
+    delete process.env.DATABASE_URL; // pure in-memory job: with a database the quota/charge path needs a real auth.users row (this user has none)
+    const user = randomUUID();
     const started = await startPdfGeneration(user, pdfBoard, new TextEncoder().encode('curto'));
     expect(started.ok).toBe(true);
     if (!started.ok) return;

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pick } from '../pick';
 import { and, count, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
   CHALLENGE_MIN_CARDS, MAX_SKIPS_PER_ITEM, challengeErrors, challengeItemPublicSchema, challengeOptionsSchema, err, unavailableChallengeOption, idSchema, ok, rubricSchema, type Answer, type AnswerInput, type AnswerOutput, type Dispute, type FinishSession,
@@ -8,7 +9,7 @@ import { preview, verdictToGrade } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
 import { allowGrade } from '../ai/service';
 import { Abort, dbm, guard, run } from '../db';
-import { recordAttempt } from '../review/record-attempt';
+import { rateInTx } from '../review/record-attempt';
 import { buildSession, type Answered, type StoredItem } from './build';
 import { assertQuota, refundQuota } from './quota';
 import { invalidate } from '../cache';
@@ -24,7 +25,7 @@ async function locked<T>(userId: string, sessionId: string, fn: (tx: Tx, s: type
   return guard(() =>
     run(userId, async (tx, s) => {
       if (!idSchema.safeParse(sessionId).success) throw fail('not_found', 'session not found');
-      const [row] = await tx.select().from(s.sessions).where(eq(s.sessions.id, sessionId)).for('no key update');
+      const [row] = await tx.select(pick(s.sessions, 'id', 'userId', 'boardId', 'startedAt', 'endedAt', 'items', 'options')).from(s.sessions).where(eq(s.sessions.id, sessionId)).for('no key update');
       if (!row) throw fail('not_found', 'session not found');
       return fn(tx, s, row, row.items as StoredItem[]);
     }),
@@ -93,7 +94,7 @@ const medianMs = async (tx: Tx, userId: string, mode: string): Promise<number | 
 };
 
 const previewOf = async (tx: Tx, s: typeof import('@remoa/db'), userId: string, item: StoredItem) => {
-  const [st] = await tx.select().from(s.fsrsState).where(and(eq(s.fsrsState.userId, userId), eq(s.fsrsState.cardId, item.cardId), eq(s.fsrsState.subId, item.subId ?? '')));
+  const [st] = await tx.select(pick(s.fsrsState, 'reps', 'stability', 'difficulty', 'due', 'lapses', 'lastReview', 'state', 'learningSteps', 'scheduledDays')).from(s.fsrsState).where(and(eq(s.fsrsState.userId, userId), eq(s.fsrsState.cardId, item.cardId), eq(s.fsrsState.subId, item.subId ?? '')));
   return preview(st && st.reps > 0 ? (st as FsrsMemory) : null, new Date());
 };
 const outputOf = (item: StoredItem, a: Answered, pv: AnswerOutput['preview']): AnswerOutput => ({
@@ -270,27 +271,41 @@ const linkDispute = async (reviewItemId: string, attemptId: string) => {
 
 // --- rate --------------------------------------------------------------------------------------------------------------
 
-export const rate: Rate = async (userId, input) =>
-  locked(userId, input.sessionId, async (tx, s, row, items) => {
+/**
+ * G21 FR-22 (D-1035): one transaction, one connection: the session lock, the FSRS lock + read, and one CTE that writes the attempt,
+ * the card state and the session (`rateInTx`). The old path nested a second transaction (`recordAttempt`) on another connection
+ * while the first held `for no key update` on the session. The dispute link needs the committed attempt (FK) and a server
+ * connection, so it runs after the commit.
+ */
+export const rate: Rate = async (userId, input) => {
+  const link: { reviewItemId?: string; attemptId?: string } = {};
+  const r = await locked(userId, input.sessionId, async (tx, _s, row, items) => {
     const idx = findItem(items, input.itemId);
     const item = items[idx]!;
     const a = item.x.answered;
     if (!a) throw fail('conflict', 'answer the item before rating it');
-    if (item.x.rated) return { due: new Date(item.x.rated.due) }; // idempotent
+    if (item.x.rated) return { due: new Date(item.x.rated.due), fresh: false }; // idempotent
     notEnded(row);
     if (a.gradeLocked && input.grade !== 'again') throw fail('validation', 'grade is locked at "again" (critical error)');
     const overridden = input.overridden || (a.suggestedGrade !== null && a.suggestedGrade !== input.grade);
-    const r = await recordAttempt({
-      id: attemptIdFor(row.id, item.id), userId, cardId: item.cardId, subId: item.subId, sessionId: row.id, mode: item.mode, inputKind: a.inputKind,
+    const attemptId = attemptIdFor(row.id, item.id);
+    const done = await rateInTx(tx, {
+      id: attemptId, userId, cardId: item.cardId, subId: item.subId, sessionId: row.id, mode: item.mode, inputKind: a.inputKind,
       answerText: a.answerText, verdict: a.verdict ? { ...a.verdict, disputed: !!item.x.disputed } : null, grade: input.grade, gradeOverridden: overridden,
       durationMs: a.durationMs, createdAt: new Date(),
+    }, (due) => {
+      const next = [...items];
+      next[idx] = { ...item, x: { ...item.x, rated: { grade: input.grade, due: due.toISOString(), overridden } } };
+      return { sessionId: row.id, items: next };
     });
-    if (!r.ok) throw new Abort(r.error);
-    if (item.x.reviewItemId) await linkDispute(item.x.reviewItemId, attemptIdFor(row.id, item.id)); // disputed before rating
-    items[idx] = { ...item, x: { ...item.x, rated: { grade: input.grade, due: r.data.due.toISOString(), overridden } } };
-    await save(tx, s, row.id, items);
-    return { due: r.data.due };
+    if (item.x.reviewItemId) Object.assign(link, { reviewItemId: item.x.reviewItemId, attemptId }); // disputed before rating
+    return { due: done.due, fresh: true };
   });
+  if (!r.ok) return r;
+  if (r.data.fresh) await invalidate('review.answered', { userId }); // after COMMIT (was inside recordAttempt)
+  if (link.reviewItemId && link.attemptId) await linkDispute(link.reviewItemId, link.attemptId);
+  return ok({ due: r.data.due });
+};
 
 // --- dispute -----------------------------------------------------------------------------------------------------------
 

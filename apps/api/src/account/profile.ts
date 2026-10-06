@@ -1,4 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import {
   RETENTION, addressSchema, computeCompleteness, err, goalSchema, normalizeName, ok, sexSchema, stageSchema, syncGoals, userTypeSchema,
   type AccountSnapshot, type CancelDeletion, type LinkedIdentity, type Profile, type UpdateProfile,
@@ -17,7 +18,8 @@ const DEFAULT_TZ = 'America/Sao_Paulo';
 
 type AuthData = { email: string; emailConfirmed: boolean; pendingEmail: string | null; identities: LinkedIdentity[]; joinedAt: Date };
 
-type ProfileRow = typeof import('@remoa/db').profiles.$inferSelect;
+const PROFILE_COLS = ['name', 'avatarKey', 'avatarColor', 'goal', 'goals', 'stage', 'timezone', 'userType', 'sex', 'phone', 'address', 'school', 'schoolId', 'role', 'deletedAt', 'suspendedAt'] as const;
+type ProfileRow = Pick<typeof import('@remoa/db').profiles.$inferSelect, (typeof PROFILE_COLS)[number]>;
 const profileOf = (userId: string, r: ProfileRow | undefined): Profile => ({
   userId,
   name: r?.name ?? null,
@@ -69,7 +71,7 @@ async function passwordChangedAt(userId: string): Promise<Date | null> {
 /** FR-3 snapshot. Auth data (e-mail, pending e-mail, identities) comes from Supabase Admin, see `loadAuthUser`. */
 export async function getAccount(userId: string, auth: AuthData, now = new Date()): Promise<AccountSnapshot> {
   const { db, profiles } = await dbm();
-  const [row] = await db.select().from(profiles).where(eq(profiles.userId, userId));
+  const [row] = await db.select(pick(profiles, ...PROFILE_COLS)).from(profiles).where(eq(profiles.userId, userId));
   const ent = await getEntitlements(userId, now);
   if (!ent.ok) throw new Error(ent.error.message);
   const profile = profileOf(userId, row);

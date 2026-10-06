@@ -1,4 +1,5 @@
-import { and, eq, inArray, isNull, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import {
   type CardDetail, type CardPreview, type GetCard, type SaveCard,
   caseStages, err, idSchema, ok,
@@ -34,17 +35,20 @@ export function cardPreview(type: string, payload: unknown): CardPreview | undef
   }
 }
 
+type CardRow = Omit<typeof import('@remoa/db').cards.$inferSelect, 'sourceCardId' | 'createdAt' | 'deletedAt'>;
+// payload is returned as stored: an unedited card may still hold `{}` for its type.
+const toDetail = (r: CardRow) => ({
+  id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, backAssetId: r.backAssetId, size: sizeOf(r), tags: r.tags, source: r.source,
+  position: { x: r.x, y: r.y }, status: r.status, order: r.order, reviewerId: r.reviewerId, updatedAt: r.updatedAt,
+  rubric: r.rubric, payload: r.payload, suspendedAt: r.suspendedAt, preview: cardPreview(r.type, r.payload),
+} as unknown as CardDetail);
+
 export const getCard: GetCard = async (userId, cardId) => {
   if (!isUuid(cardId)) return notFound();
   return run(userId, async (tx, s) => {
-    const [r] = await tx.select().from(s.cards).where(and(eq(s.cards.id, cardId), isNull(s.cards.deletedAt)));
+    const [r] = await tx.select(pick(s.cards, 'id', 'boardId', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'source', 'x', 'y', 'status', 'order', 'reviewerId', 'updatedAt', 'rubric', 'payload', 'suspendedAt')).from(s.cards).where(and(eq(s.cards.id, cardId), isNull(s.cards.deletedAt)));
     if (!r) return notFound();
-    // payload is returned as stored: an unedited card may still hold `{}` for its type.
-    return ok({
-      id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, backAssetId: r.backAssetId, size: sizeOf(r), tags: r.tags, source: r.source,
-      position: { x: r.x, y: r.y }, status: r.status, order: r.order, reviewerId: r.reviewerId, updatedAt: r.updatedAt,
-      rubric: r.rubric, payload: r.payload, suspendedAt: r.suspendedAt, preview: cardPreview(r.type, r.payload),
-    } as unknown as CardDetail);
+    return ok(toDetail(r));
   });
 };
 
@@ -74,39 +78,40 @@ export const saveCard: SaveCard = async (userId, cardId, input) => {
       const maskRows: (typeof s.masks.$inferInsert)[] = [];
       if (input.type === 'image') {
         const { assetId, masks } = input.payload;
-        const [asset] = await tx.select({ id: s.assets.id }).from(s.assets).where(eq(s.assets.id, assetId));
-        if (!asset) throw new Abort({ code: 'validation', message: 'assetId is not an asset you can read' });
+        // assetId is already in assetIdsOf(), so the batch read above proved it readable (was a second select)
         if (!masks.every((m) => isUuid(m.id))) throw new Abort({ code: 'validation', message: 'mask ids must be uuids' });
         for (const m of masks) maskRows.push({ id: m.id, cardId, assetId, polygon: m.polygon, label: m.label });
       }
 
-      await tx
+      // G21 FR-21 (D-1036): `returning` replaces the old getCard (a second transaction); masks go in one statement
+      const [saved] = await tx
         .update(s.cards)
         .set({ type: input.type, shape: input.shape, title: input.title, front: input.front, frontAssetId: input.frontAssetId, back, backAssetId, source: input.source, payload: input.payload, updatedAt: new Date() })
-        .where(eq(s.cards.id, cardId));
+        .where(eq(s.cards.id, cardId))
+        .returning();
 
       // mirror inline masks into `masks`: drop removed, upsert the rest
       const keep = maskRows.map((m) => m.id!);
       await tx.delete(s.masks).where(and(eq(s.masks.cardId, cardId), keep.length ? notInArray(s.masks.id, keep) : undefined));
-      for (const m of maskRows) {
-        // A mask id owned by another card (only a crafted client) fails on the PK/RLS: 422, not 500. The batch rolls back.
-        const saved = await tx
+      if (maskRows.length) {
+        // A mask id owned by another card (only a crafted client) fails on the PK/RLS, or the guarded update skips it: 422, not 500. The batch rolls back.
+        const done = await tx
           .insert(s.masks)
-          .values(m)
+          .values(maskRows)
           .onConflictDoUpdate({
             target: s.masks.id,
-            set: { assetId: m.assetId, polygon: m.polygon, label: m.label, updatedAt: new Date() },
+            set: { assetId: sql`excluded.asset_id`, polygon: sql`excluded.polygon`, label: sql`excluded.label`, updatedAt: new Date() },
             setWhere: eq(s.masks.cardId, cardId),
           })
           .returning({ id: s.masks.id })
           .catch(() => []);
-        if (!saved.length) throw new Abort({ code: 'validation', message: 'mask id already in use' });
+        if (done.length !== maskRows.length) throw new Abort({ code: 'validation', message: 'mask id already in use' });
       }
       await tx.update(s.boards).set({ updatedAt: new Date() }).where(eq(s.boards.id, row.boardId));
-      return { boardId: row.boardId };
+      return { boardId: row.boardId, card: toDetail(saved!) };
     }),
   );
   if (!r.ok) return r;
   await invalidate('card.changed', { userId, mapId: r.data.boardId }); // after COMMIT
-  return getCard(userId, cardId);
+  return ok(r.data.card);
 };

@@ -1,6 +1,7 @@
 // G19 F27 FR-26 (D-908): blog image pipeline. Signature check (not Content-Type), EXIF stripped by re-encoding after `.rotate()`,
 // WebP + AVIF variants (no upscale), a 1200x630 JPEG crop for social cards, public bucket, row in blog_assets.
 import { eq, inArray } from 'drizzle-orm';
+import { pick } from '../pick';
 import sharp from 'sharp';
 import { env } from '@remoa/config';
 import { BLOG_LIMITS, blogErrors, err, ok, slugify, type BlogAsset, type BlogAssetVariant, type Result } from '@remoa/contracts';
@@ -19,6 +20,7 @@ const SIGNATURES: { mime: string; format: string; test: (b: Buffer) => boolean }
 const baseUrl = () => env().r2PublicBaseUrl.replace(/\/+$/, '');
 const urlOf = (key: string) => `${baseUrl()}/${key.split('/').map(encodeURIComponent).join('/')}`;
 
+export const ASSET_COLS = ['id', 'key', 'width', 'height', 'mime', 'size', 'variants'] as const;
 type AssetRow = { id: string; key: string; width: number; height: number; mime: string; size: number; variants: unknown };
 
 /** DB row → API shape (public URLs, ready-made srcsets). */
@@ -46,7 +48,7 @@ export function blogImageResolver(assets: AssetRow[], externals: Map<string, { w
 export async function loadAssets(ids: string[]): Promise<AssetRow[]> {
   if (!ids.length) return [];
   const { db, blogAssets } = await dbm();
-  return db.select().from(blogAssets).where(inArray(blogAssets.id, ids));
+  return db.select(pick(blogAssets, ...ASSET_COLS)).from(blogAssets).where(inArray(blogAssets.id, ids));
 }
 
 export async function uploadBlogImage(userId: string, input: { bytes: Buffer; slug: string; id?: string }, tx?: Tx): Promise<Result<{ asset: BlogAsset }>> {
@@ -99,5 +101,5 @@ export async function uploadBlogImage(userId: string, input: { bytes: Buffer; sl
 
 export const getAsset = async (id: string) => {
   const { db, blogAssets } = await dbm();
-  return (await db.select().from(blogAssets).where(eq(blogAssets.id, id)))[0] ?? null;
+  return (await db.select(pick(blogAssets, ...ASSET_COLS)).from(blogAssets).where(eq(blogAssets.id, id)))[0] ?? null;
 };

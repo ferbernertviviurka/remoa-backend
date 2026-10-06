@@ -2,24 +2,29 @@ import { sql } from 'drizzle-orm';
 import { ACTIVATION_TARGETS, activationItems, ok, onboardingAnswersSchema, type ActivationItem, type GetOnboarding, type CompleteOnboarding, type OnboardingAnswersPatch, type OnboardingState, type SaveOnboarding } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
 import { dbm } from '../db';
+import { ownTotals } from '../review/stats';
 import { env } from '@remoa/config';
 import { notify } from '../notifications/notify';
 import { invalidate } from '../cache';
 
 const log = createLogger({ requestId: 'onboarding' });
 
-type Row = { done_at: string | null; answers: Record<string, unknown>; cards: number; edges: number; sessions: number };
+type Row = { done_at: string | null; answers: Record<string, unknown>; sessions: number };
 
-/** One query per read: profile row + FR-9 counts over live, non-archived boards (D-524). */
+/**
+ * Profile row + FR-9 counts over live, non-archived boards (D-524). G21 FR-23: cards and connections come from map_stats
+ * (connections = both ends live, the map's rule), not a count(*) over every card of the user.
+ */
 async function load(userId: string): Promise<OnboardingState> {
   const { db } = await dbm();
-  const [r] = await db.execute<Row>(sql`
-    select p.onboarding_done_at as done_at, p.onboarding_answers as answers,
-      (select count(*)::int from cards c join boards b on b.id = c.board_id where b.user_id = ${userId} and b.archived_at is null and c.deleted_at is null and c.type <> 'note') as cards,
-      (select count(*)::int from edges e join boards b on b.id = e.board_id where b.user_id = ${userId} and b.archived_at is null) as edges,
-      (select count(*)::int from sessions s where s.user_id = ${userId} and s.ended_at is not null) as sessions
-    from profiles p where p.user_id = ${userId}`);
-  const counts = { cards: r?.cards ?? 0, edges: r?.edges ?? 0, sessions: r?.sessions ?? 0 };
+  const [[r], totals] = await Promise.all([
+    db.execute<Row>(sql`
+      select p.onboarding_done_at as done_at, p.onboarding_answers as answers,
+        (select count(*)::int from sessions s where s.user_id = ${userId} and s.ended_at is not null) as sessions
+      from profiles p where p.user_id = ${userId}`),
+    ownTotals(userId),
+  ]);
+  const counts = { cards: totals.cards, edges: totals.edges, sessions: r?.sessions ?? 0 };
   const checklist: ActivationItem[] = activationItems.map((id) => ({ id, current: counts[id], target: ACTIVATION_TARGETS[id], done: counts[id] >= ACTIVATION_TARGETS[id] }));
   return {
     doneAt: r?.done_at ? new Date(r.done_at) : null,

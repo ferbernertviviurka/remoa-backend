@@ -1,0 +1,33 @@
+name: Bench
+
+# G21 FR-55 (P-484): manual or weekly. Small seed (20 users) on this job's own Supabase (the isolated `remoa_perf` database inside it,
+# never a shared one) and `perf:bench --strict`, which exits 1 when a p95 or a query budget (QUERY_BUDGETS) is crossed. Not part of ci.yml:
+# it is slow, depends on runner noise for the p95 and, until P-480 closes, is expected to fail on the query budgets. Reports go to the artifacts.
+on:
+  workflow_dispatch:
+    inputs:
+      users: { description: 'PERF_SEED_USERS', default: '20' }
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm i --frozen-lockfile
+      - uses: supabase/setup-cli@v1
+      - run: supabase start -x studio,imgproxy,edge-runtime,logflare,vector
+      - run: pnpm --silent db:env > .env && pnpm db:migrate
+      - run: pnpm perf:seed
+        env: { PERF_SEED_USERS: '${{ inputs.users || 20 }}', PERF_SEED_CARDS_MIN: '500', PERF_SEED_CARDS_MAX: '2000' }
+      - run: pnpm perf:bench --strict
+      - if: always()
+        run: mkdir -p bench-out && cp ../docs/perf/bench-* bench-out/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: bench, path: bench-out, retention-days: 30 }

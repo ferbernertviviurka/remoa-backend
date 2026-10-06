@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { httpErrorBodySchema } from '@remoa/contracts';
 import { createApp } from './app';
 
-const app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (t === 'good' ? 'user-1' : null) });
+// uuid: with a database the user id reaches `where user_id = $1` (uuid column) in the first statement of run() (G21 D-990)
+const USER = '00000000-0000-4000-8000-000000000001';
+const app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (t === 'good' ? USER : null) });
 
 describe('api', () => {
   it('health is public and echoes a request id', async () => {
@@ -22,7 +24,7 @@ describe('api', () => {
 
   it('resolves the user from the bearer token', async () => {
     const res = await app.request('/v1/me', { headers: { authorization: 'Bearer good' } });
-    expect(await res.json()).toEqual({ ok: true, data: { userId: 'user-1' } });
+    expect(await res.json()).toEqual({ ok: true, data: { userId: USER } });
   });
 
   it('unknown routes return not_found', async () => {

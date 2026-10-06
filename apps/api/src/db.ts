@@ -46,11 +46,19 @@ export class Abort extends Error {
     super(error.message);
   }
 }
+/** SQLSTATE of a postgres-js error, also when Drizzle wraps it in `cause`. */
+export const pgCode = (e: unknown): string | undefined => {
+  const x = e as { code?: unknown; cause?: { code?: unknown } } | null;
+  const c = x?.code ?? x?.cause?.code;
+  return typeof c === 'string' ? c : undefined;
+};
 export const guard = async <T>(fn: () => Promise<T>): Promise<Result<T>> => {
   try {
     return ok(await fn());
   } catch (e) {
     if (e instanceof Abort) return { ok: false, error: e.error };
+    // RLS WITH CHECK (42501): the client's view is stale (e.g. an edge to a card another tab just deleted). A 409, not an opaque 500.
+    if (pgCode(e) === '42501') return { ok: false, error: { code: 'conflict', message: 'stale_state' } };
     throw e;
   }
 };

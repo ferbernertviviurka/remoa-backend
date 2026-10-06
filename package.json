@@ -24,7 +24,8 @@
     "emails:test": "pnpm --silent --filter @remoa/api exec tsx src/emails/cli.ts test",
     "perf:seed": "cd packages/db && pnpm --silent exec tsx --env-file=../../.env src/perf/seed.ts",
     "perf:bench": "cd packages/db && pnpm --silent exec tsx --env-file=../../.env src/perf/bench.ts",
-    "perf:queries": "cd packages/db && pnpm --silent exec tsx --env-file=../../.env src/perf/queries.ts"
+    "perf:queries": "cd packages/db && pnpm --silent exec tsx --env-file=../../.env src/perf/queries.ts",
+    "perf:explain": "cd packages/db && pnpm --silent exec tsx --env-file=../../.env src/perf/explain.ts"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

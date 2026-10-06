@@ -1,4 +1,5 @@
 import { eq, inArray } from 'drizzle-orm';
+import { pick } from '../pick';
 import sharp from 'sharp';
 import { err, ok, SUPPORT_LIMITS, supportErrors, type Result, type SignSupportAttachment } from '@remoa/contracts';
 import { dbm } from '../db';
@@ -61,7 +62,7 @@ export async function processAttachments(userId: string, keys: string[]): Promis
 /** Signed short-lived GET (1 h), only ever called for the owner's or an admin's view. */
 export const attachmentsOf = async (ticketId: string, messageIds?: string[]) => {
   const { db, supportAttachments } = await dbm();
-  const rows = await db.select().from(supportAttachments).where(eq(supportAttachments.ticketId, ticketId));
+  const rows = await db.select(pick(supportAttachments, 'id', 'messageId', 'mime', 'size', 'key')).from(supportAttachments).where(eq(supportAttachments.ticketId, ticketId));
   const wanted = messageIds ? rows.filter((r) => messageIds.includes(r.messageId)) : rows;
   return Promise.all(wanted.map(async (r) => ({ messageId: r.messageId, id: r.id, mime: r.mime as StoredAttachment['mime'], sizeBytes: r.size, url: await presignGet(r.key) })));
 };

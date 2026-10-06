@@ -82,7 +82,7 @@ export async function updateLabel(userId: string, id: string, patch: CalendarLab
 export async function deleteLabel(userId: string, id: string): Promise<Result<CalendarLabelDeleted>> {
   if (!idSchema.safeParse(id).success) return err('not_found', 'label not found');
   const r = await run(userId, async (tx, s) => {
-    const [label] = await tx.select().from(s.calendarLabels).where(eq(s.calendarLabels.id, id));
+    const [label] = await tx.select({ systemKey: s.calendarLabels.systemKey }).from(s.calendarLabels).where(eq(s.calendarLabels.id, id));
     if (!label) return err<CalendarLabelDeleted>('not_found', 'label not found');
     if (label.systemKey === 'personal') return err<CalendarLabelDeleted>('conflict', calendarErrors.labelPersonal);
     const [personal] = await tx.select({ id: s.calendarLabels.id }).from(s.calendarLabels).where(and(eq(s.calendarLabels.userId, userId), eq(s.calendarLabels.systemKey, 'personal')));

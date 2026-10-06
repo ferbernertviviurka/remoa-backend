@@ -8,6 +8,7 @@ import { sendInactivityNotices } from '../account/inactivity';
 import { inngest } from './client';
 import { blogJobs } from './blog';
 import { invalidate } from '../cache';
+import { rebuildAllStats } from '../review/stats';
 
 // Loaded when a job runs: the app (and its tests) boot without pulling the e-mail stack.
 const notify: Notify = async (userId, type, payload, opts) => (await import('../notifications/notify')).notify(userId, type, payload, opts);
@@ -38,6 +39,8 @@ export const noticeJobs = {
   'inactivity.check': { cron: '0 13 * * *', run: (now: Date) => sendInactivityNotices(now, notify) }, // 10:00 in São Paulo
   'notifications.retention': { cron: '30 6 * * *', run: purgeOldNotifications },
   'calendar.cleanup': { cron: '45 6 * * *', run: purgeDeletedEvents },
+  // G21 FR-23 (CCR-055): rollups rebuilt from scratch, all users in batches. Run once by hand after migration 0034 (backfill); weekly = drift net
+  'stats.rebuild': { cron: '0 8 * * 0', run: rebuildAllStats },
   ...blogJobs, // F27: sitemap.daily, blog.publish-scheduled, blog.cleanup
 } as const;
 export type NoticeJob = keyof typeof noticeJobs;

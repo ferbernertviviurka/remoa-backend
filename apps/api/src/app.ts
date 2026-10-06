@@ -55,6 +55,12 @@ import { perfMiddleware } from './perf';
  * `defer` (D-990): the verifier may skip the session query and answer `pending`; requireUser then owes it to the request.
  */
 export type VerifyToken = (token: string, opts?: { defer?: boolean }) => Promise<string | Verified | null>;
+/**
+ * G21 P-482 (D-1047): writes that also defer the session check to run()'s first statement (one query less). Only a route whose handler
+ * touches no other connection and calls nothing external before its first run(): a rejected session throws there, the transaction
+ * rolls back and nothing was written. `rate`: body parse, then `locked()` = run(); dispute link/invalidate only after that commit.
+ */
+export const FUSED_WRITES = new Set(['POST /v1/challenge/rate']);
 export { supabaseVerifier };
 
 export type Env = { Variables: { requestId: string; log: Logger; userId: string; sessionId: string | null } };
@@ -87,8 +93,9 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   const requireUser = createMiddleware<Env>(async (c, next) => {
     const token = c.req.header('authorization')?.replace(/^Bearer /, '');
     const route = `${c.req.method} ${c.req.path}`;
-    // Reads only: a GET has no side effect to stop, and its answer is replaced below if the session turns out dead.
-    const defer = c.req.method === 'GET' || c.req.method === 'HEAD';
+    // Reads: a GET has no side effect to stop, and its answer is replaced below if the session turns out dead. FUSED_WRITES: writes
+    // whose first DB touch is run(), so the check settles (and rolls back) in run()'s first statement before anything is written.
+    const defer = c.req.method === 'GET' || c.req.method === 'HEAD' || FUSED_WRITES.has(route);
     const v = token ? await verifyToken(token, { defer }) : null;
     const { userId, sessionId, account, pending } = typeof v === 'string' ? { userId: v, sessionId: null } : (v ?? { userId: null, sessionId: null });
     if (!userId) return fail({ code: 'unauthorized', message: 'invalid or missing token' });

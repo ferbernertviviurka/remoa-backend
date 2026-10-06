@@ -1,9 +1,9 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import {
   PLAN_LIMITS, PREVIEW_MAX_NODES, cacheTags, REVIEW_HUB_AHEAD_DAYS, type Area, type QueueFilter, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
   type BoardSummary, type GetDailyQueue, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
 } from '@remoa/contracts';
-import { aggregate, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
+import { aggregate, CURVE, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
 import { run } from '../db';
 import { cached, type UserCacheDef } from '../cache';
@@ -27,35 +27,54 @@ const subIds = (key: 'steps' | 'masks') => sql`case when jsonb_typeof(c.payload-
   select jsonb_agg(x->>'id' order by ord) from jsonb_array_elements(c.payload->${key}::text) with ordinality t(x, ord) where jsonb_typeof(x) = 'object' and x->>'id' is not null
 ), '[]'::jsonb) else '[]'::jsonb end`;
 
-/** RLS (withUser) decides what is readable. `boardId` null = daily scope: live cards of non-archived boards the user owns or has study state on. */
-export async function loadCards(tx: Tx, userId: string, boardId: string | null, withNotes = false): Promise<CardRow[]> {
-  const scope = boardId
-    ? sql`c.board_id = ${boardId}`
-    : sql`b.archived_at is null and (b.user_id = ${userId} or exists (select 1 from fsrs_state s where s.user_id = ${userId} and s.card_id = c.id))`;
-  const rows = await tx.execute<{ id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean; area: Area }>(sql`
+export const uuids = (ids: readonly string[]) => sql`${`{${ids.join(',')}}`}::uuid[]`;
+
+/**
+ * RLS (withUser) decides what is readable. `boardId` null = daily scope: live cards of non-archived boards the user owns or has study
+ * state on; a list = those boards (no ownership rule). G21 FR-22 (D-1027): the daily scope first narrows to the boards of the two indexed
+ * sources (`boards.user_id`, `fsrs_state.user_id`), so cards are read by `cards.board_id`; the plain `b.user_id = $u or exists(fsrs_state)`
+ * could not use an index and scanned every card of the database (13 s per call in the baseline).
+ */
+export async function loadCards(tx: Tx, userId: string, boardId: string | readonly string[] | null, withNotes = false): Promise<CardRow[]> {
+  // `= any(array(subquery))` is an index condition on cards.board_id; a join or an OR here let the planner seq-scan cards under RLS
+  const scope = boardId === null
+    ? sql`b.archived_at is null and c.board_id = any(array(
+        select id from boards where user_id = ${userId} and archived_at is null
+        union select c3.board_id from fsrs_state s join cards c3 on c3.id = s.card_id where s.user_id = ${userId}))
+      and (b.user_id = ${userId} or exists (select 1 from fsrs_state s where s.user_id = ${userId} and s.card_id = c.id))`
+    : typeof boardId === 'string' ? sql`c.board_id = ${boardId}` : sql`c.board_id = any(${uuids(boardId)})`;
+  return (await tx.execute<CardSqlRow>(cardsSql(userId, scope, withNotes))).map(toCardRow);
+}
+
+export type CardSqlRow = { id: string; board_id: string; type: CardType; order: number; board_ms: number; own: boolean; subs: string[]; x: number; y: number; suspended: boolean; area: Area };
+/** The statement of loadCards for a ready `where` fragment over `c` (cards) and `b` (boards); rows go through `toCardRow`. */
+export const cardsSql = (userId: string, scope: SQL, withNotes: boolean) => sql`
     select (c.suspended_at is not null) as suspended, b.area::text as area, c.id, c.board_id, c.type, c."order", c.x, c.y, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms, (b.user_id = ${userId}) as own,
       case c.type when 'flow' then ${subIds('steps')} when 'image' then ${subIds('masks')} else '[""]'::jsonb end as subs
     from cards c join boards b on b.id = c.board_id
-    where c.deleted_at is null and (${withNotes}::boolean or c.type <> 'note') and ${scope}`); // D-200: notes are never scheduled, counted, or in the recall map (absent = no state); only the Hoje thumbnail asks for them (D-334)
-  return rows.map((r) => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y, suspended: r.suspended, area: r.area }));
-}
+    where c.deleted_at is null and (${withNotes}::boolean or c.type <> 'note') and ${scope}`; // D-200: notes are never scheduled, counted, or in the recall map (absent = no state); only the Hoje thumbnail asks for them (D-334)
+export const toCardRow = (r: CardSqlRow): CardRow => ({ id: r.id, boardId: r.board_id, type: r.type, order: r.order, boardMs: r.board_ms, own: r.own, subs: r.subs, x: r.x, y: r.y, suspended: r.suspended, area: r.area });
 
 /**
  * `cardIds` null = every state of the user. Scoping by ids (PK lookups) instead of a subquery on `cards`: the cards RLS
  * subquery isn't leakproof, so `card_id in (select … from cards)` planned as a nested loop (~200 ms for 500 cards).
  */
 export async function loadStates(tx: Tx, userId: string, cardIds: string[] | null) {
-  const scope = cardIds ? sql`and card_id = any(${`{${cardIds.join(',')}}`}::uuid[])` : sql``;
-  const rows = await tx.execute<{
-    card_id: string; sub_id: string; stability: number; difficulty: number; due_ms: number; reps: number; lapses: number;
-    last_ms: number | null; state: FsrsCardState; learning_steps: number; scheduled_days: number; created_ms: number;
-  }>(sql`
+  return toStates(await tx.execute<StateSqlRow>(statesSql(userId, cardIds ? sql`and card_id = any(${uuids(cardIds)})` : sql``)));
+}
+
+export type StateSqlRow = {
+  card_id: string; sub_id: string; stability: number; difficulty: number; due_ms: number; reps: number; lapses: number;
+  last_ms: number | null; state: FsrsCardState; learning_steps: number; scheduled_days: number; created_ms: number;
+};
+export const statesSql = (userId: string, scope: SQL) => sql`
     select card_id, sub_id, stability, difficulty, (extract(epoch from due) * 1000)::float8 as due_ms, reps, lapses,
       (extract(epoch from last_review) * 1000)::float8 as last_ms, state, learning_steps, scheduled_days,
       (extract(epoch from created_at) * 1000)::float8 as created_ms
-    from fsrs_state where user_id = ${userId} ${scope}`);
+    from fsrs_state where user_id = ${userId} ${scope}`;
+export function toStates(rows: Iterable<StateSqlRow>) {
   return new Map<string, StateRow>(
-    rows.map((r) => [
+    [...rows].map((r) => [
       stateKey(r.card_id, r.sub_id),
       {
         cardId: r.card_id, subId: r.sub_id, stability: r.stability, difficulty: r.difficulty, due: new Date(Math.round(r.due_ms)), reps: r.reps,
@@ -68,19 +87,18 @@ export async function loadStates(tx: Tx, userId: string, cardIds: string[] | nul
 
 /** "Today" = user's timezone, rolling over at 04:00 local. Returns the next rollover and the start of the current study day (epoch ms). */
 export async function dayWindow(tx: Tx, userId: string, now: Date) {
-  const [p] = await tx.execute<{ tz: string }>(sql`select timezone as tz from profiles where user_id = ${userId}`);
-  let tz = p?.tz ?? DEFAULT_TZ;
-  try {
-    new Intl.DateTimeFormat('en', { timeZone: tz });
-  } catch {
-    tz = DEFAULT_TZ;
-  }
-  const [w] = await tx.execute<{ start_ms: number; end_ms: number; day: string }>(sql`
-    with l as (select ((${now.toISOString()}::timestamptz at time zone ${tz}::text) - make_interval(hours => ${ROLLOVER_HOUR}))::date as d)
-    select l.d::text as day, (extract(epoch from ((l.d + time '04:00') at time zone ${tz}::text)) * 1000)::float8 as start_ms,
-           (extract(epoch from (((l.d + 1) + time '04:00') at time zone ${tz}::text)) * 1000)::float8 as end_ms from l`);
-  return { startMs: Math.round(w!.start_ms), endMs: Math.round(w!.end_ms), day: w!.day, tz };
+  // G21 P-480 (D-1044): one statement (profile tz read inline). ponytail: profile.timezone is validated on write (ianaTimezoneSchema);
+  // an invalid stored name would make `at time zone` raise, so there is no JS fallback any more except for a missing profile.
+  return toWindow((await tx.execute<WindowSqlRow>(windowSql(userId, now)))[0]!);
 }
+export type WindowSqlRow = { start_ms: number; end_ms: number; day: string; tz: string };
+export const toWindow = (w: WindowSqlRow) => ({ startMs: Math.round(w.start_ms), endMs: Math.round(w.end_ms), day: w.day, tz: w.tz });
+/** The statement of dayWindow (one row: tz, day, start_ms, end_ms); embeddable as a CTE. */
+export const windowSql = (userId: string, now: Date) => sql`
+    with z as (select coalesce((select timezone from profiles where user_id = ${userId}), ${DEFAULT_TZ}::text) as tz),
+    l as (select z.tz, ((${now.toISOString()}::timestamptz at time zone z.tz) - make_interval(hours => ${ROLLOVER_HOUR}))::date as d from z)
+    select l.tz, l.d::text as day, (extract(epoch from ((l.d + time '04:00') at time zone l.tz)) * 1000)::float8 as start_ms,
+           (extract(epoch from (((l.d + 1) + time '04:00') at time zone l.tz)) * 1000)::float8 as end_ms from l`;
 
 /** D-057: concept/case = the card; flow = one item per step; image = one per mask. */
 export const itemsOf = (cards: CardRow[], boardScope: boolean): Item[] =>
@@ -90,7 +108,7 @@ export const itemsOf = (cards: CardRow[], boardScope: boolean): Item[] =>
     })),
   );
 
-// --- pure queue rule (FR-6) -------------------------------------------------------------------------------------
+// --- pure queue rule (FR-6): the reference. The served queue is the SQL below (D-1027); review.test.ts checks both give the same list --
 
 export function buildQueue(
   items: Item[], states: Map<string, StateRow>, o: { now: Date; endMs: number; newBudget: number; limit?: number },
@@ -133,24 +151,132 @@ export function aheadItems(items: Item[], states: Map<string, StateRow>, endMs: 
     .map(({ it }) => ({ cardId: it.cardId, boardId: it.boardId, subId: it.subId || null, reason: 'due' as const, mode: it.mode }));
 }
 
-const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number; filter?: QueueFilter }) => {
-  const [cards, states, win, plan, [pref]] = await Promise.all([
-    loadCards(tx, userId, boardId), loadStates(tx, userId, null), dayWindow(tx, userId, opts.now), planOf(userId, opts.now), // F08: newCardsPerDay by plan (P-027)
-    tx.execute<{ n: number | null }>(sql`select new_cards_per_day as n from user_preferences where user_id = ${userId}`), // F13 D-122: the user's choice, capped by the plan
+// --- the served queue: indexed SQL with limits, no card scan, no ts-fsrs per item (G21 FR-22, D-1027/D-1028) -----------------------
+
+const DAY_MS = 86_400_000;
+const at = (ms: number) => sql`${new Date(ms).toISOString()}::timestamptz`;
+
+/**
+ * Recall of the state row `f` at `nowMs`, with the same expression and roundings as @remoa/fsrs `retrievability` (ts-fsrs:
+ * round8((1 + factor * floor(elapsed days) / round8(S)) ^ decay); 0 when never reviewed). Used only to order and to pick "em atenção".
+ */
+export const recallSql = (nowMs: number) => sql`(case when f.reps = 0 or f.last_review is null or f.state = 'new' then 0::float8 else round(power(
+  1 + ${CURVE.factor}::float8 * greatest(floor((${nowMs}::float8 - round(extract(epoch from f.last_review) * 1000)) / ${DAY_MS}), 0)
+    / greatest(round(f.stability::numeric, 8)::float8, 1e-300), ${CURVE.decay}::float8)::numeric, 8)::float8 end)`;
+
+const arrayOf = (key: 'steps' | 'masks') => sql`(case when jsonb_typeof(c.payload->${key}::text) = 'array' then c.payload->${key}::text else '[]'::jsonb end)`;
+/** The state's sub_id is still an item of the card (D-057: '' for concept/case, a current step/mask id otherwise). */
+const subAlive = sql`(case c.type
+  when 'flow' then exists (select 1 from jsonb_array_elements(${arrayOf('steps')}) as e(v) where jsonb_typeof(e.v) = 'object' and e.v->>'id' = f.sub_id)
+  when 'image' then exists (select 1 from jsonb_array_elements(${arrayOf('masks')}) as e(v) where jsonb_typeof(e.v) = 'object' and e.v->>'id' = f.sub_id)
+  else f.sub_id = '' end)`;
+
+export type Scope = { userId: string; boardId: string | null; filter?: Pick<QueueFilter, 'boardIds' | 'area'> };
+/** Cards (c) and boards (b) an item may come from: the board, or the daily scope (non-archived) narrowed by the Revisar filter. */
+const scopeSql = (s: Scope) => sql.join([
+  s.boardId ? sql`c.board_id = ${s.boardId}` : sql`b.archived_at is null`,
+  ...(s.filter?.boardIds ? [sql`c.board_id = any(${uuids(s.filter.boardIds)})`] : []),
+  ...(s.filter?.area ? [sql`b.area = ${s.filter.area}`] : []),
+], sql` and `);
+
+/**
+ * Items that have a state (due, em atenção, adiantar), live and active (F03 FR-9: suspended ones never queue). Range on `fsrs_state(user_id, due)`,
+ * then one PK probe per state into cards and boards: `offset 0` keeps the lateral a per-row lookup (with the RLS filter of cards the planner
+ * otherwise picked a hash join over a seq scan of every card).
+ */
+const stateItemsSql = (s: Scope, where: SQL) => sql`
+  from fsrs_state f
+  cross join lateral (select c.id, c.board_id, c.type, c.payload, c.deleted_at, c.suspended_at from cards c where c.id = f.card_id offset 0) c
+  cross join lateral (select b.id, b.area, b.archived_at from boards b where b.id = c.board_id offset 0) b
+  where f.user_id = ${s.userId} and c.deleted_at is null and c.suspended_at is null and c.type <> 'note' and ${scopeSql(s)} and ${subAlive} and ${where}`;
+
+/** New items: live, active cards of the user's own boards (or of the board) whose step/mask has no state yet. */
+const freshSql = (s: Scope) => sql`
+  select c.id as card_id, c.board_id, c.type, sx.sub_id, sx.ord, c."order" as ord_card, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms,
+    row_number() over (partition by c.board_id order by c."order", c.id, sx.ord) as board_rank
+  from boards b join cards c on c.board_id = b.id
+  cross join lateral (
+    select '' as sub_id, 0::bigint as ord where c.type in ('concept', 'case')
+    union all
+    select e.v->>'id', e.ord from jsonb_array_elements(case c.type when 'flow' then ${arrayOf('steps')} when 'image' then ${arrayOf('masks')} else '[]'::jsonb end) with ordinality as e(v, ord)
+    where jsonb_typeof(e.v) = 'object' and e.v->>'id' is not null
+  ) sx
+  where c.deleted_at is null and c.suspended_at is null and c.type <> 'note' and ${scopeSql(s)}
+    and ${s.boardId ? sql`true` : sql`b.user_id = ${s.userId} and c.board_id = any(array(select id from boards where user_id = ${s.userId} and archived_at is null))`}
+    and not exists (select 1 from fsrs_state f where f.user_id = ${s.userId} and f.card_id = c.id and f.sub_id = sx.sub_id)`;
+
+type Row = { g: 'due' | 'new' | 'weak' | 'ahead'; card_id: string; board_id: string; type: CardType; sub_id: string; r: number; due_ms: number; ord: number; ord_card: number; board_ms: number };
+const lim = (n: number | null) => (n === null ? sql`` : sql`limit ${n}`);
+const cmpR = (a: Row, b: Row) => a.r - b.r || cmp(a.card_id, b.card_id) || cmp(a.sub_id, b.sub_id); // the reference comparator (byR)
+const cmpFresh = (a: Row, b: Row) => b.board_ms - a.board_ms || cmp(a.board_id, b.board_id) || a.ord_card - b.ord_card || cmp(a.card_id, b.card_id) || a.ord - b.ord;
+const toItem = (reason: QueueItem['reason']) => (r: Row): QueueItem => ({ cardId: r.card_id, boardId: r.board_id, subId: r.sub_id || null, reason, mode: MODE[r.type] });
+
+/**
+ * One statement: each group is an index range with its own `limit` (null = all, false = skip). SQL picks the rows; JS orders them with
+ * the reference comparators (same tie-breaks as `buildQueue`). `fresh.perBoard` caps new items per board (the hub).
+ */
+export async function queueRows(tx: Tx, s: Scope, o: QueueOpts) {
+  const q = queueRowsSql(s, o);
+  return sortQueueRows(q ? await tx.execute<QueueSqlRow>(q) : []);
+}
+type QueueOpts = {
+  now: Date; endMs: number; due: number | null | false; weak: number | null | false; fresh: { limit: number | null; perBoard: number | null } | false; ahead?: number | null;
+};
+export type QueueSqlRow = Row;
+/** The statement of queueRows (null = no group asked); rows go through `sortQueueRows`. */
+export function queueRowsSql(s: Scope, o: QueueOpts): SQL | null {
+  const nowMs = o.now.getTime();
+  const r = recallSql(nowMs);
+  const cols = sql`f.card_id, c.board_id, c.type, f.sub_id, ${r} as r, round(extract(epoch from f.due) * 1000)::float8 as due_ms, 0::bigint as ord, 0 as ord_card, 0::float8 as board_ms`;
+  const parts: SQL[] = [];
+  if (o.ahead !== undefined) parts.push(sql`(select 'ahead' as g, ${cols} ${stateItemsSql(s, sql`f.due >= ${at(o.endMs)} and f.due < ${at(o.endMs + REVIEW_HUB_AHEAD_DAYS * DAY_MS)}`)} order by f.due, f.card_id, f.sub_id collate "C" ${lim(o.ahead)})`);
+  if (o.due !== false) parts.push(sql`(select 'due' as g, ${cols} ${stateItemsSql(s, sql`f.due < ${at(o.endMs)}`)} order by r, f.card_id, f.sub_id collate "C" ${lim(o.due)})`);
+  if (o.weak !== false) parts.push(sql`(select 'weak' as g, ${cols} ${stateItemsSql(s, sql`f.due >= ${at(o.endMs)} and ${r} < ${STEADY_FROM}`)} order by r, f.card_id, f.sub_id collate "C" ${lim(o.weak)})`);
+  if (o.fresh !== false) parts.push(sql`(select 'new' as g, card_id, board_id, type, sub_id, 0::float8 as r, 0::float8 as due_ms, ord, ord_card, board_ms from (${freshSql(s)}) n
+    ${o.fresh.perBoard === null ? sql`` : sql`where board_rank <= ${o.fresh.perBoard}`} order by board_ms desc, board_id, ord_card, card_id, ord ${lim(o.fresh.limit)})`);
+  return parts.length ? sql.join(parts, sql` union all `) : null;
+}
+export function sortQueueRows(rows: readonly Row[]) {
+  const of = (g: Row['g']) => rows.filter((x) => x.g === g);
+  return {
+    due: of('due').sort(cmpR).map(toItem('due')),
+    new: of('new').sort(cmpFresh).map(toItem('new')),
+    weak: of('weak').sort(cmpR).map(toItem('weak')),
+    ahead: of('ahead').sort((a, b) => a.due_ms - b.due_ms || cmp(a.card_id, b.card_id) || cmp(a.sub_id, b.sub_id)).map(toItem('due')),
+  };
+}
+
+/** New-card cap of the day (null = unlimited, D-647) and how many states were first created today, across all boards. */
+export async function newCardBudget(tx: Tx, userId: string, plan: Promise<{ plan: keyof typeof PLAN_LIMITS }>, startMs: number) {
+  const [[row], p] = await Promise.all([
+    tx.execute<{ pref: number | null; introduced: number }>(sql`select (select new_cards_per_day from user_preferences where user_id = ${userId}) as pref,
+      (select count(*)::int from fsrs_state where user_id = ${userId} and created_at >= ${at(startMs)}) as introduced`), // F13 D-122: the user's choice, capped by the plan
+    plan,
   ]);
-  // the daily limit is global, also for a board queue: count states first attempted today across all boards
-  let introduced = 0;
-  for (const s of states.values()) if (s.createdMs >= win.startMs) introduced++;
-  const ids = boardId ? new Set(cards.map((c) => c.id)) : null;
-  const scoped = ids ? new Map([...states].filter(([, s]) => ids.has(s.cardId))) : states;
+  return budgetOf(row, p.plan);
+}
+export function budgetOf(row: { pref: number | null; introduced: number } | undefined, plan: keyof typeof PLAN_LIMITS) {
+  const limit = effectiveNewCardsPerDay(row?.pref ?? null, PLAN_LIMITS[plan].newCardsPerDay);
+  return { limit, introduced: row?.introduced ?? 0, remaining: limit === null ? Infinity : Math.max(0, limit - (row?.introduced ?? 0)) };
+}
+
+const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number; filter?: QueueFilter }) => {
+  const win = await dayWindow(tx, userId, opts.now);
   const f = opts.filter;
-  const live = active(cards).filter((c) => (!f?.boardIds || f.boardIds.includes(c.boardId)) && (!f?.area || c.area === f.area)); // G15: scope first, so the new-card budget goes to the chosen boards
-  const items = itemsOf(live, boardId !== null);
-  if (f?.ahead) return aheadItems(items, scoped, win.endMs).slice(0, opts.limit);
-  const reasons = f ? (f.reasons ?? ['due', 'new']) : null;
-  const q = buildQueue(items, scoped, { now: opts.now, endMs: win.endMs, newBudget: (effectiveNewCardsPerDay(pref?.n ?? null, PLAN_LIMITS[plan.plan].newCardsPerDay) ?? Infinity) - introduced }); // null = unlimited (D-647)
-  const kept = reasons ? q.filter((i) => reasons.includes(i.reason)) : q;
-  return opts.limit === undefined ? kept : kept.slice(0, opts.limit);
+  const scope: Scope = { userId, boardId, filter: f };
+  const n = opts.limit ?? null;
+  if (f?.ahead) return (await queueRows(tx, scope, { now: opts.now, endMs: win.endMs, due: false, weak: false, fresh: false, ahead: n })).ahead;
+  const plan = planOf(userId, opts.now); // F08: newCardsPerDay by plan (P-027); other connection, in parallel with the budget query
+  const reasons = f ? (f.reasons ?? ['due', 'new']) : null; // G15: scope first (boardIds/area in SQL), so the new-card budget goes to the chosen boards
+  const want = (r: QueueItem['reason']) => !reasons || reasons.includes(r);
+  const budget = (await newCardBudget(tx, userId, plan, win.startMs)).remaining;
+  const newLimit = Math.min(budget, n ?? Infinity);
+  const q = await queueRows(tx, scope, {
+    now: opts.now, endMs: win.endMs, due: want('due') ? n : false, weak: want('weak') ? n : false,
+    fresh: want('new') && newLimit > 0 ? { limit: Number.isFinite(newLimit) ? newLimit : null, perBoard: null } : false,
+  });
+  const all = [...q.due, ...q.new, ...q.weak];
+  return n === null ? all : all.slice(0, n);
 };
 
 export const getDailyQueue: GetDailyQueue = async (userId, opts) => ok(await run(userId, (tx) => queueFor(tx, userId, null, opts)));
@@ -217,36 +343,24 @@ export async function boardListExtras(tx: Tx, userId: string, now: Date, boardId
   return out;
 }
 
-const DAY_MS = 86_400_000;
-
 /**
  * G01 "Hoje": items due per study-day offset (0 = today incl. overdue, same rule as the queue's `due`; k = k days ahead), offsets 0..days-1.
+ * G21 FR-22: one grouped count over the `fsrs_state(user_id, due)` range (was every card and state of the user).
  * ponytail: fixed 24 h day buckets; wrong by 1 h across a DST change (BR has none). Use dayWindow per offset if that matters.
  */
 export async function dueByOffset(tx: Tx, userId: string, win: { endMs: number }, days: number) {
-  const [cards, states] = await Promise.all([loadCards(tx, userId, null), loadStates(tx, userId, null)]);
-  const out = Array<number>(days).fill(0);
-  for (const it of itemsOf(active(cards), false)) {
-    const m = states.get(stateKey(it.cardId, it.subId));
-    if (!m) continue;
-    const k = isDue(m, win.endMs) ? 0 : Math.floor((m.due.getTime() - win.endMs) / DAY_MS) + 1;
-    if (k < days) out[k]!++;
-  }
+  return days < 1 ? Array<number>(days).fill(0) : dueFrom(await tx.execute<{ k: number; n: number }>(dueByOffsetSql(userId, win, days)), days);
+}
+export function dueFrom(rows: Iterable<{ k: number; n: number }>, days: number) {
+  const out = Array<number>(Math.max(days, 0)).fill(0);
+  for (const r of rows) if (r.k >= 0 && r.k < days) out[r.k] = r.n;
   return out;
 }
-
-/** F07: live cards and reviewed-card recall per board (same loaders and per-card state rule as the map). */
-export async function boardCardStats(tx: Tx, userId: string, now: Date) {
-  const [cards, states] = await Promise.all([loadCards(tx, userId, null), loadStates(tx, userId, null)]);
-  const out = new Map<string, { cards: number; recalls: number[] }>();
-  for (const c of cards) {
-    const o = out.get(c.boardId) ?? out.set(c.boardId, { cards: 0, recalls: [] }).get(c.boardId)!;
-    o.cards++;
-    const s = cardState(c, states, now);
-    if (s.state !== 'unknown') o.recalls.push(s.r);
-  }
-  return out;
-}
+/** The statement of dueByOffset (days >= 1): rows (k, n). */
+export const dueByOffsetSql = (userId: string, win: { endMs: number }, days: number) => sql`
+    select (case when f.due < ${at(win.endMs)} then 0 else floor((round(extract(epoch from f.due) * 1000) - ${win.endMs}::float8) / ${DAY_MS})::int + 1 end) as k, count(*)::int as n
+    ${stateItemsSql({ userId, boardId: null }, sql`f.due < ${at(win.endMs + (days - 1) * DAY_MS)}`)}
+    group by 1`;
 
 // --- retrievability map (FR-7) ----------------------------------------------------------------------------------
 

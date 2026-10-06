@@ -1,5 +1,6 @@
 // G16 / F22 Fase A: store waitlist (CCR-030, D-650–D-659). Upsert by user, delete = opt-out (hard delete, D-653).
 import { eq, getTableColumns, sql } from 'drizzle-orm';
+import { pick } from '../pick';
 import { createLogger } from '@remoa/log';
 import { err, ok, storeConfigSchema, storeErrors, storeStatusSchema, storeWaitlistInputSchema, type StoreConfig, type StoreWaitlistEntry, type Result } from '@remoa/contracts';
 import { env } from '@remoa/config';
@@ -33,7 +34,7 @@ const toEntry = (r: { email: string; wantsBuy: boolean; wantsSell: boolean; sell
 
 export async function getStoreWaitlist(userId: string): Promise<Result<StoreWaitlistEntry | null>> {
   const { db, storeWaitlist: t } = await dbm();
-  const [r] = await db.select().from(t).where(eq(t.userId, userId));
+  const [r] = await db.select(pick(t, 'email', 'wantsBuy', 'wantsSell', 'sellerRole', 'updatedAt')).from(t).where(eq(t.userId, userId));
   return ok(r ? toEntry(r) : null);
 }
 

@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { pick } from '../pick';
 import {
   DEFAULT_PREFERENCES, PLAN_LIMITS, effectivePref, effectiveNewCardsPerDay, err, ok, reminderHourSchema, themes,
   type Preferences, type UpdatePreferences,
@@ -8,7 +9,7 @@ import { planOf } from '../billing/plan';
 import { setPref } from '../notifications/service';
 import { invalidate } from '../cache';
 
-type Row = { theme: string; reduceMotion: boolean | null; reminderEnabled: boolean; reminderHour: number; newCardsPerDay: number | null; emailReviewReminders: boolean; emailProductNews: boolean };
+type Row = { theme: string; reduceMotion: boolean | null; reminderHour: number; newCardsPerDay: number | null; emailProductNews: boolean };
 
 /** P-301 (D-743): the review reminder e-mail lives in notification_preferences 'review_reminder'; the two old booleans both read it. */
 const reminderEmail = async (userId: string) => {
@@ -29,7 +30,7 @@ const toPrefs = (r: Row | undefined, cap: number | null, reminder: boolean): Pre
 
 export async function getPreferences(userId: string, planCap: number | null): Promise<Preferences> {
   const { db, userPreferences: t } = await dbm();
-  const [r] = await db.select().from(t).where(eq(t.userId, userId));
+  const [r] = await db.select(pick(t, 'theme', 'reduceMotion', 'reminderHour', 'newCardsPerDay', 'emailProductNews')).from(t).where(eq(t.userId, userId));
   return toPrefs(r, planCap, await reminderEmail(userId));
 }
 

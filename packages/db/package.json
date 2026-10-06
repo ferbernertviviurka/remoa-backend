@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit migrate",
+    "migrate": "tsx src/migrate.ts",
     "seed": "tsx --env-file=../../.env src/seed.ts",
     "seed:blog": "tsx --env-file=../../.env src/seed-blog.ts",
     "seed:maps": "tsx --env-file=../../.env src/seed-maps-run.ts",

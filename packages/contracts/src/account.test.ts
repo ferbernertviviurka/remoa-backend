@@ -106,9 +106,10 @@ describe('inputs', () => {
     expect(effectiveNewCardsPerDay(null, null)).toBeNull(); // D-647: Pro unlimited
     expect(effectiveNewCardsPerDay(15, null)).toBe(15);
   });
-  it('avatar upload capped at 5 MB', () => {
-    expect(uploadSignInputSchema.safeParse({ mime: 'image/webp', sizeBytes: 6e6, kind: 'avatar' }).success).toBe(false);
-    expect(uploadSignInputSchema.safeParse({ mime: 'image/webp', sizeBytes: 6e6 }).success).toBe(true);
+  it('card and avatar images capped at 100 MB (D-1202)', () => {
+    expect(uploadSignInputSchema.safeParse({ mime: 'image/webp', sizeBytes: 60e6, kind: 'avatar' }).success).toBe(true);
+    expect(uploadSignInputSchema.safeParse({ mime: 'image/webp', sizeBytes: 60e6 }).success).toBe(true);
+    expect(uploadSignInputSchema.safeParse({ mime: 'image/webp', sizeBytes: 101 * 1024 * 1024 }).success).toBe(false);
   });
   it('events carry no free text', () => {
     expect(eventSchemas.preference_changed.safeParse({ key: 'theme', value: 'dark' }).success).toBe(true);

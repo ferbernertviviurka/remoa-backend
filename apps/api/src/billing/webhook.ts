@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pick } from '../pick';
 import { billingPeriods, subscriptionStatuses, type CheckoutInput } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
 import { and, eq, ne } from 'drizzle-orm';
@@ -51,7 +52,7 @@ export async function applyStripeEvent(event: StripeEventLike, stripe: StripePor
       // `no_payment_required` = fully covered by a coupon (G05 M1); `unpaid` = Pix still pending.
       if (s.payment_status && s.payment_status !== 'paid' && s.payment_status !== 'no_payment_required') break;
       const period: CheckoutInput['period'] = s.metadata?.period ?? 'monthly';
-      const [cur] = await db.select().from(subscriptions).where(eq(subscriptions.userId, s.client_reference_id));
+      const [cur] = await db.select(pick(subscriptions, 'plan', 'stripeSubscriptionId', 'status', 'renewsAt')).from(subscriptions).where(eq(subscriptions.userId, s.client_reference_id));
       if (period === 'lifetime') {
         const userId = s.client_reference_id;
         // D-375 Founder: forever, no renewal. A live Pro card subscription is canceled now (nothing left to pay for); if that

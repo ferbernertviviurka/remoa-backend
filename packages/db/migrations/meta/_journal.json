@@ -225,6 +225,34 @@
       "when": 1791248226008,
       "tag": "0031_g20_profile_school",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791282527177,
+      "tag": "0032_g21_rls_select_uid",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791282583309,
+      "tag": "0033_g21_indexes_concurrently",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1791283024185,
+      "tag": "0034_g21_rollups",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1791283025185,
+      "tag": "0035_g21_cards_rls_plan",
+      "breakpoints": true
     }
   ]
 }

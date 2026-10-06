@@ -337,7 +337,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
 
   describe('board list extras (G01)', () => {
     type Summary = { id: string; stateCounts: Record<string, number>; preview: { nodes: { x: number; y: number; state: string }[]; edges: [number, number][] } };
-    const listed = async (u: string, board: string) => ((await call(u, '/boards')).json.data as Summary[]).find((b) => b.id === board)!;
+    const listed = async (u: string, board: string) => ((await call(u, '/boards?include=preview')).json.data as Summary[]).find((b) => b.id === board)!;
 
     it('state counts are card-level; preview is normalised (aspect kept), edges remapped', async () => {
       const u = await newUser();
@@ -426,7 +426,7 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/review', () => {
         expect(((await call(u, path)).json.data as QueueItem[]).map((i) => i.cardId)).toEqual([concept]);
       }
       expect(Object.keys((await call(u, `/review/retrievability?boardId=${board}`)).json.data)).toEqual([concept]);
-      const listed = ((await call(u, '/boards')).json.data as { id: string; dueCount: number; stateCounts: Record<string, number>; preview: { nodes: unknown[] } }[]).find((b) => b.id === board)!;
+      const listed = ((await call(u, '/boards?include=preview')).json.data as { id: string; dueCount: number; stateCounts: Record<string, number>; preview: { nodes: unknown[] } }[]).find((b) => b.id === board)!;
       expect([listed.dueCount, Object.values(listed.stateCounts).reduce((a, b) => a + b, 0), listed.preview.nodes.length]).toEqual([1, 1, 2]); // the note is only in the thumbnail (D-334)
       const r = await ra.recordAttempt(attempt(u, note));
       expect(r.ok).toBe(false);
