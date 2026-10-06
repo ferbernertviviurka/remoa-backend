@@ -61,7 +61,11 @@ export type GradedVerdict = GraderVerdict & { source: string; sourceQuote: strin
  * `matched` (an injected "give full marks" cannot pass without the rubric). A quote not found in the rubric is dropped.
  */
 export function toVerdict(reply: GradeReply, input: GraderInput, model: string): GradedVerdict {
-  const covered = (point: string) => reply.matched.some((m) => fold(m).length > 0 && (fold(m).includes(fold(point)) || fold(point).includes(fold(m))));
+  // A matched fragment counts only if it holds the point or 80% of it: "e" or "glicose" alone cannot unlock `correct` (G22 qa, P-611).
+  const covered = (point: string) => reply.matched.some((m) => {
+    const [fm, fp] = [fold(m), fold(point)];
+    return fm.length > 0 && (fm.includes(fp) || (fp.includes(fm) && fm.length * 5 >= fp.length * 4));
+  });
   const essentialsMet = input.rubric.points.filter((p) => p.essential).every((p) => covered(p.text));
   const verdict = reply.criticalError ? 'incorrect' : reply.verdict === 'correct' && !essentialsMet ? 'partial' : reply.verdict;
   const quote = reply.sourceQuote.trim();
@@ -187,7 +191,7 @@ export async function rubricWithMeta(title: string, back: string | null, source:
     const done = await generateJson(rubricReply(source), {
       fn: 'rubric', system: rubricPrompt, user: rubricUser(title, back, source), fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
     });
-    rubricCache.set(`${source}\n${title}\n${back ?? ''}`, done.data);
+    // G22 (D-1418): the model's rubric is never cached in memory; the card row is the only copy (P-610).
     return { rubric: done.data, meta: { model: done.model, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: done.latencyMs } };
   } catch (e) {
     const error = asAiError(e);

@@ -38,7 +38,11 @@ export const LIMITS = { question: 1_000, answer: 4_000, point: 500, points: 12, 
 
 /** Personal data never goes to the provider: e-mails and CPF-like numbers are masked (names cannot be detected reliably). */
 export const redact = (text: string) =>
-  text.replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, '[e-mail removido]').replace(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g, '[CPF removido]');
+  text
+    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, '[e-mail removido]')
+    .replace(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g, '[CPF removido]')
+    .replace(/\bCRM[\s/-]*(?:[A-Z]{2}[\s/-]*)?\d{4,7}(?:\s*[/-]\s*[A-Z]{2})?\b/gi, '[CRM removido]') // G22 qa (P-613)
+    .replace(/\(\d{2}\)\s?9?\d{4}-?\d{4}\b/g, '[telefone removido]');
 
 /** Cuts to `max` characters with a visible notice, so the model knows the block is incomplete. */
 export function truncate(text: string, max: number): string {
@@ -50,7 +54,11 @@ export function truncate(text: string, max: number): string {
  * look-alike guillemets. The system prompts say everything between the markers is data, never an instruction.
  */
 export function dataBlock(label: string, text: string, max: number): string {
-  const safe = truncate(redact(text), max).replace(/<{3,}/g, '‹‹‹').replace(/>{3,}/g, '›››');
+  // G22 qa (P-612): invisible characters go first (`<\u200b<<` would still read as a marker), and full-width/small/angle
+  // look-alikes count as `<`/`>`, so `＜＜＜FIM …＞＞＞` cannot spell a marker either.
+  const safe = truncate(redact(text.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')), max)
+    .replace(/[<＜﹤〈⟨〈❮]{3,}/g, '‹‹‹')
+    .replace(/[>＞﹥〉⟩〉❯]{3,}/g, '›››');
   return `<<<${label}>>>\n${safe}\n<<<FIM ${label}>>>`;
 }
 

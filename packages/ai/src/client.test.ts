@@ -242,6 +242,14 @@ describe('guards', () => {
     expect(refusal('vendor/x:free', { ...aiConfig(), production: true, allowFreeInProd: true })).toBeNull();
     expect(refusal('vendor/paid', { ...aiConfig(), production: true })).toBeNull();
   });
+  it('production also refuses the free router and a zero-priced model without the :free suffix (P-615)', () => {
+    const prod = { ...aiConfig(), production: true, allowFreeInProd: false, requireFree: false };
+    expect(refusal('openrouter/free', prod)).toMatch(/production/);
+    rememberPrice('vendor/zero-priced', 0, 0);
+    expect(refusal('vendor/zero-priced', prod)).toMatch(/production/);
+    rememberPrice('vendor/priced', 0.000002, 0.000004);
+    expect(refusal('vendor/priced', prod)).toBeNull();
+  });
   it('skips refused models in the chain; none left = model_refused without a request', async () => {
     process.env.AI_REQUIRE_FREE = '1';
     process.env.AI_MODEL_FALLBACKS = 'vendor/ok:free';

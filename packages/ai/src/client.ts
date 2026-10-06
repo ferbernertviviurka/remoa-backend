@@ -161,10 +161,12 @@ export function costCents(tokensIn: number, tokensOut: number, model = ''): numb
 
 /** Why a model may not be used here, or null. */
 export function refusal(model: string, c: AiConfig = aiConfig()): string | null {
-  const free = model.endsWith(':free');
-  if (c.requireFree && !free) return 'AI_REQUIRE_FREE=1 and the model id does not end in :free';
   const price = knownPrices.get(model);
+  if (c.requireFree && !model.endsWith(':free')) return 'AI_REQUIRE_FREE=1 and the model id does not end in :free';
   if (c.requireFree && price && (price.prompt !== 0 || price.completion !== 0)) return 'AI_REQUIRE_FREE=1 and the catalog price is not zero';
+  // G22 qa (P-615, D-1435): "free" for the production lock also means the free router (`…/free`) and any model the catalog
+  // prices at zero, not only the `:free` suffix. Without the catalog only the id is known (fails open on price, closed on the id).
+  const free = model.endsWith(':free') || model.endsWith('/free') || (price !== undefined && price.prompt === 0 && price.completion === 0);
   if (c.production && free && !c.allowFreeInProd) return 'free model in production without AI_ALLOW_FREE_IN_PROD=1';
   return null;
 }
