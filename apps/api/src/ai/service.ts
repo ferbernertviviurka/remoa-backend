@@ -7,7 +7,7 @@ import {
   type AiInfo, type AiQuota, type AppError, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput, type GraderVerdict,
 } from '@remoa/contracts';
 import {
-  AI_ERROR_MESSAGES, AiError, aiMode, aiUsage, cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf,
+  AI_ERROR_MESSAGES, AiError, aiMode, aiUsage, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf,
   pdfPageCount, readPdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent,
 } from '@remoa/ai';
 import type { Tx } from '@remoa/db';
@@ -230,12 +230,6 @@ async function buildRubric(userId: string, cardId: string): Promise<{ ok: true; 
     const parsed = rubricSchema.safeParse(existing);
     if (parsed.success) return { ok: true, data: parsed.data, ai: OK };
   }
-  const remembered = cachedRubric(card.title, card.back, source);
-  if (remembered) {
-    await db.update(cards).set({ rubric: { ...remembered, inputHash: hash }, updatedAt: new Date() }).where(eq(cards.id, card.id));
-    await invalidate('card.changed', { userId, mapId: card.boardId });
-    return { ok: true, data: remembered, ai: OK };
-  }
   const live = aiMode() === 'live';
   let held: Reservation | null = null;
   if (live) {
@@ -427,7 +421,8 @@ export async function startGeneration(userId: string, input: GenerateBoardInput)
   try {
     text = input.kind === 'text' ? input.text : await pdfSource(userId, input.pdfAssetId);
   } catch (e) {
-    return { ok: false, error: { code: 'validation', message: e instanceof Error ? e.message : 'failed' } };
+    const known = e instanceof Error && (e.message === 'pdf_not_found' || e.message === 'pdf_unreadable');
+    return { ok: false, error: { code: 'validation', message: known ? e.message : 'failed' } }; // never a storage error text (P-614)
   }
   const hash = sha(JSON.stringify([input.kind, input.title, input.area, text]));
   return shared(`gen:${userId}:${hash}`, async () => {
@@ -488,6 +483,17 @@ class JobError extends Error {
   }
 }
 
+/**
+ * The code stored in `ai_jobs.error` (returned by GET /jobs/:id): a known job code, never a raw exception text such as a
+ * Postgres message (G22 qa, P-614). The raw error stays in the log only.
+ */
+export function jobErrorCode(e: unknown): string {
+  if (e instanceof JobError) return e.code;
+  if (e instanceof Error && (e.message === 'generate_timeout' || e.message === 'no_content')) return e.message;
+  createLogger({ requestId: 'ai-job' }).error('generation crashed', { error: e instanceof Error ? e.name : 'unknown' });
+  return 'failed';
+}
+
 async function executeGeneration(jobId: string) {
   const { db, aiJobs } = await dbm();
   const [job] = await db.update(aiJobs)
@@ -543,7 +549,7 @@ async function executeGeneration(jobId: string) {
     track('extract', model, latencyMs, ai, jobId);
     await notifyMapReady({ userId: job.userId, boardId, origin: job.kind === 'pdf' ? 'pdf' : 'text', tookMs: Date.now() - startedAt }); // G18; never throws
   } catch (e) {
-    const code = e instanceof JobError ? e.code : e instanceof Error ? e.message : 'failed';
+    const code = jobErrorCode(e);
     const ai = e instanceof JobError && e.info ? e.info : failedInfo('error', code, messageOf(code));
     await failJob(jobId, code, ai).catch(() => undefined);
     track('extract', model, latencyMs, ai, jobId);

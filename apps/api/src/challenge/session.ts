@@ -257,6 +257,13 @@ export const createAnswerStream = (grade?: GradeAnswer, stream?: GradeStream) =>
     }
     let verdict: GraderVerdict | null = null;
     let settled = false;
+    const held = claim.data.held;
+    // G22 qa (P-616): nothing saved (session ended while the model wrote, DB error) = no correction delivered, the unit goes back.
+    const commit = async () => {
+      const saved = await commitStream(userId, input, verdict, held);
+      if (!saved.ok) await held.refund().catch(() => undefined);
+      return saved;
+    };
     try {
       try {
         for await (const event of limitStream(stream(claim.data.input), GRADER_TIMEOUT_MS)) {
@@ -266,11 +273,11 @@ export const createAnswerStream = (grade?: GradeAnswer, stream?: GradeStream) =>
       } catch {
         /* keep a verdict that already arrived; otherwise the commit refunds */
       }
-      const saved = await commitStream(userId, input, verdict, claim.data.held);
+      const saved = await commit();
       settled = true;
       yield saved.ok ? { result: saved.data } : { error: saved.error };
     } finally {
-      if (!settled) await commitStream(userId, input, verdict, claim.data.held);
+      if (!settled) await commit();
     }
   };
 

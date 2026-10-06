@@ -574,6 +574,29 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/challenge', () => {
     expect(c?.aiGrades ?? 0).toBe(0);
   });
 
+  it('G22 qa (P-616): the session ends while the model writes -> nothing saved and the ai_grades unit goes back', async () => {
+    const u = await newUser();
+    const w = await prancheta(u, RUBRIC('approved'));
+    let sessionId = '';
+    const ending: GradeStream = async function* () {
+      await dbm.db.update(dbm.sessions).set({ endedAt: new Date() }).where(eq(dbm.sessions.id, sessionId));
+      yield { verdict: { verdict: 'correct', matched: [], missing: [], criticalError: false, feedback: 'Certo.', model: 'stream-test' } };
+    };
+    const streaming = mk(mockGrader, ending);
+    const s = await start(u, { kind: 'board', boardId: w.b }, true);
+    sessionId = s.sessionId;
+    const it = s.items.find((i) => i.subId === 's1')!;
+    const res = await streaming.request('/v1/challenge/answer', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${u}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({ sessionId: s.sessionId, itemId: it.id, durationMs: 4000, inputKind: 'text', text: 'noradrenalina' }),
+    });
+    const events = (await res.text()).trim().split('\n\n').map((block) => JSON.parse(block.replace(/^data: /, '')) as { error?: { code: string } });
+    expect(events.at(-1)?.error?.code).toBe('conflict');
+    const [c] = await dbm.db.select().from(dbm.usageCounters).where(eq(dbm.usageCounters.userId, u));
+    expect(c?.aiGrades ?? 0).toBe(0);
+  });
+
   it('D-200: a note is neither an item nor an edge neighbour / distractor source', async () => {
     const u = await newUser();
     const b = await board(u);

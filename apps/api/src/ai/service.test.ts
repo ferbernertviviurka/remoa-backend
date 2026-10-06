@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { allowGrade, sourcedCards, startGeneration, startPdfGeneration } from './service';
+import { allowGrade, jobErrorCode, sourcedCards, startGeneration, startPdfGeneration } from './service';
 
 const env = { ...process.env };
 beforeEach(() => {
@@ -47,5 +47,14 @@ describe('sourcedCards (D-1414)', () => {
       { ref: 'e', sourceExcerpt: 'sepse' }, // too short to prove anything
     ];
     expect(sourcedCards(cards, text).map((c) => c.ref)).toEqual(['a']);
+  });
+});
+
+describe('jobErrorCode (G22 qa, P-614)', () => {
+  it('stores a known job code, never a raw exception text', () => {
+    expect(jobErrorCode(new Error('no_content'))).toBe('no_content');
+    expect(jobErrorCode(new Error('generate_timeout'))).toBe('generate_timeout');
+    expect(jobErrorCode(new Error('duplicate key value violates unique constraint "cards_pkey"'))).toBe('failed');
+    expect(jobErrorCode('boom')).toBe('failed');
   });
 });
