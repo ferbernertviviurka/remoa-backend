@@ -141,10 +141,12 @@ describe.skipIf(!process.env.DATABASE_URL)('F08 entitlements + quota', () => {
       expect((await plan(u)).usage.ai_grades).toBe(20);
     });
 
-    it('refundQuota gives one unit back', async () => {
+    it('reserveAi: refund gives the unit back once (G22)', async () => {
       const u = await newUser();
-      await q.assertQuota(u, 'ai_grades');
-      await q.refundQuota(u);
+      const r = await q.reserveAi(u, 'ai_grades');
+      if (!r.ok) throw new Error('reserve');
+      await r.refund();
+      await r.refund();
       expect((await plan(u)).usage.ai_grades).toBe(0);
     });
 

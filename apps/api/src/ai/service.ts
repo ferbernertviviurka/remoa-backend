@@ -2,11 +2,19 @@ import { notifyMapReady } from '../notifications/map-ready';
 import { pick } from '../pick';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
-import { AI_DRAFT_SOURCE, generatePdfBoardInputSchema, graderInputSchema, rubricSchema, err, ok, parseWith, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput } from '@remoa/contracts';
-import { aiMode, cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf, pdfPageCount, readPdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent } from '@remoa/ai';
-import { dispatchBoardJob } from '../inngest/client';
-import { assertQuota, refundGeneration, refundQuota } from '../billing/quota';
-import { dbm } from '../db';
+import {
+  AI_DRAFT_SOURCE, OFFLINE_DRAFT_SOURCE, generatePdfBoardInputSchema, graderInputSchema, planDefinition, rubricSchema, err, ok, parseWith,
+  type AiInfo, type AiQuota, type AppError, type BoardGenerationProgress, type CardDraft, type GenerateBoardInput, type GraderVerdict,
+} from '@remoa/contracts';
+import {
+  AI_ERROR_MESSAGES, AiError, aiMode, aiUsage, cachedRubric, costCents, extractWithMeta, EXTRACT_PROMPT_VERSION, gradeWithMeta, layout, ocrPdf,
+  pdfPageCount, readPdfText, rubricWithMeta, RUBRIC_PROMPT_VERSION, streamGrade, type GradeEvent,
+} from '@remoa/ai';
+import type { Tx } from '@remoa/db';
+import { dispatchBoardJob, inngest, inngestConfigured } from '../inngest/client';
+import { assertQuota, liveCardsSql, refundAt, reserveAi, type Reservation } from '../billing/quota';
+import { planOf } from '../billing/plan';
+import { dbm, run } from '../db';
 import { maybeQualifyReferral } from '../referral/qualify';
 import { initialShareColumns } from '../share/crypto';
 import type { z } from 'zod';
@@ -17,6 +25,9 @@ import { invalidate } from '../cache';
 
 /** D-582: a failed job answers 200 on /jobs/:id, so its reason only shows up in the API log through this line. */
 const logFailed = (jobId: string, error: string) => createLogger({ requestId: jobId }).warn('generation failed', { jobId, error });
+
+/** A service failure; `retryAfter` (seconds) becomes the Retry-After header of a 429; `ai` says what happened with the model. */
+export type AiFailure = { ok: false; error: AppError; retryAfter?: number; ai?: AiInfo };
 
 const hits = new Map<string, number[]>();
 
@@ -33,9 +44,77 @@ export function allow(bucket: 'grade' | 'rubric' | 'generate', userId: string, m
 export const allowGrade = (userId: string, now = Date.now()) => allow('grade', userId, 30, now);
 const RUBRIC_PER_MINUTE = 30;
 const GENERATE_PER_MINUTE = 5;
-const limited = { ok: false as const, error: { code: 'rate_limited' as const, message: 'rate_limited' } };
+const limited: AiFailure = { ok: false, error: { code: 'rate_limited', message: 'rate_limited' }, retryAfter: 60 };
 /** D-580: no OPENROUTER_API_KEY and no AI=mock. 503 before anything is charged; the log line says which env var is missing. */
-const aiOff = { ok: false as const, error: { code: 'ai_unavailable' as const, message: 'ai_not_configured' } };
+const aiOff: AiFailure = { ok: false, error: { code: 'ai_unavailable', message: 'ai_not_configured' } };
+
+// --- G22: what happened with the model, telemetry, dedup ------------------------------------------------------------
+
+/** The provider failure packages/ai attaches to `meta` when it fell back to the local grader/extractor (G22). */
+const errorOf = (meta: object): AiError | undefined => ('error' in meta && meta.error instanceof AiError ? meta.error : undefined);
+const OK: AiInfo = { status: 'ok', code: null, message: null };
+const failedInfo = (status: 'fallback' | 'error', code: string, message: string): AiInfo => ({ status, code, message });
+/** Job and server failure codes that are not an AiErrorCode, with the text to show (D-1413). */
+const JOB_MESSAGES: Record<string, string> = {
+  canceled: 'Geração cancelada.',
+  pdf_unreadable: 'Não conseguimos ler o texto desse PDF.',
+  no_content: 'Não encontramos conteúdo para estudar nesse texto.',
+  no_sourced_cards: 'A IA não conseguiu apontar no texto a origem de nenhum card. Tente de novo.',
+  generate_timeout: AI_ERROR_MESSAGES.timeout,
+  boards: 'Você atingiu o limite de mapas do seu plano.',
+  cards: 'Você atingiu o limite de cards do seu plano.',
+  offline: 'Correção automática, sem IA.',
+};
+const messageOf = (code: string) => (AI_ERROR_MESSAGES as Record<string, string>)[code] ?? JOB_MESSAGES[code] ?? AI_ERROR_MESSAGES.provider_error;
+
+/**
+ * The verdict's AI status. `fallback` = the local grader answered (provider error, AI off, or a blank answer graded locally);
+ * the quota is given back for it. AI=mock is the configured grader in dev/e2e: `ok`.
+ */
+function gradeInfo(model: string, error: AiError | undefined): AiInfo {
+  if (error) return failedInfo('fallback', error.code, error.userMessage);
+  if (!model.startsWith('offline')) return OK;
+  const mode = aiMode();
+  if (mode === 'mock') return OK;
+  return failedInfo('fallback', mode === 'off' ? 'not_configured' : 'offline', mode === 'off' ? AI_ERROR_MESSAGES.not_configured : JOB_MESSAGES.offline!);
+}
+
+/** CCR-071: `ai_call` per AI operation and `ai_error` when it was not ok. Log lines with `event` (the server events path), never content. */
+function track(fn: 'grade' | 'rubric' | 'extract', model: string, latencyMs: number, info: AiInfo, requestId = 'ai') {
+  const log = createLogger({ requestId });
+  log.info('ai_call', { event: 'ai_call', fn, model: model.slice(0, 80) || 'none', latencyMs: Math.max(0, Math.round(latencyMs)), status: info.status });
+  if (info.code) log.warn('ai_error', { event: 'ai_error', fn, type: info.code });
+}
+
+/** AI limits of the app (packages/ai counter): 429 with Retry-After before any quota is taken. Only when the model is live. */
+export function providerRoom(now = Date.now()): { ok: true } | AiFailure {
+  if (aiMode() !== 'live') return { ok: true };
+  const u = aiUsage(now);
+  if (u.day >= u.rpdLimit) {
+    const midnight = Date.parse(`${u.utcDay}T00:00:00Z`) + 86_400_000;
+    return { ok: false, error: { code: 'rate_limited', message: AI_ERROR_MESSAGES.quota_exceeded }, retryAfter: Math.max(1, Math.ceil((midnight - now) / 1000)), ai: failedInfo('error', 'quota_exceeded', AI_ERROR_MESSAGES.quota_exceeded) };
+  }
+  if (u.minute >= u.rpmLimit) return { ok: false, error: { code: 'rate_limited', message: AI_ERROR_MESSAGES.rate_limited }, retryAfter: 60, ai: failedInfo('error', 'rate_limited', AI_ERROR_MESSAGES.rate_limited) };
+  return { ok: true };
+}
+
+/** A model failure as an API error: the local limit is a 429 with Retry-After, anything else 503 with the friendly message. */
+function aiFailure(e: AiError): AiFailure {
+  const ai = failedInfo('error', e.code, e.userMessage);
+  if (e.local || e.code === 'rate_limited') return { ok: false, error: { code: 'rate_limited', message: e.userMessage }, retryAfter: e.code === 'quota_exceeded' ? 3600 : 60, ai };
+  return { ok: false, error: { code: 'ai_unavailable', message: e.userMessage }, ai };
+}
+
+const inflight = new Map<string, Promise<unknown>>();
+/** G22 (D-1418): identical calls of the same user already running share one promise. No AI response is cached (F26). */
+function shared<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const hit = inflight.get(key);
+  if (hit) return hit as Promise<T>;
+  const p = fn().finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+const sha = (s: string | Uint8Array) => createHash('sha256').update(s).digest('hex');
 
 /** F14 FR-19 (D-499): a generated map is a new board, so the Free 2-map cap applies before any AI is spent (402 like the other paths). */
 async function boardRoom(userId: string) {
@@ -44,180 +123,183 @@ async function boardRoom(userId: string) {
   return quota.ok ? { ok: true as const } : { ok: false as const, error: quota.error };
 }
 
-const jobs = new Map<string, BoardGenerationProgress & { userId: string }>();
-/** D-532: what the PDF path decides about the map up front (items checked, password already hashed: no plaintext waits in memory). */
-type BoardExtras = { matrixItemIds: string[]; share: Awaited<ReturnType<typeof initialShareColumns>> };
-const work = new Map<string, { userId: string; input: GenerateBoardInput; text: string; charged: boolean; refunded: boolean; logKind?: string; extras?: BoardExtras }>();
-const counts = new Map<string, { cards: number; edges: number; pages?: number }>();
-
-async function recordCall(userId: string, kind: string, meta: { model: string; tokensIn: number; tokensOut: number; latencyMs: number }) {
-  if (!process.env.DATABASE_URL) return;
-  const { db, aiCalls } = await dbm();
-  await db.insert(aiCalls).values({
-    userId, kind, model: meta.model, promptVersion: EXTRACT_PROMPT_VERSION, inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: meta.latencyMs,
-  });
+/** G22 (D-1414): cards the plan still allows (PlanDefinition `cards` minus live cards); null = unlimited. */
+async function cardRoom(userId: string): Promise<number | null> {
+  const limit = planDefinition((await planOf(userId)).plan).cards;
+  if (limit === null) return null;
+  const { db } = await dbm();
+  const [r] = await db.execute<{ n: number }>(sql`select (${liveCardsSql(userId)}) as n`);
+  return Math.max(0, limit - r!.n);
 }
 
-/** F04 port: OpenRouter when OPENROUTER_API_KEY is set, rubric-only grader otherwise. Logs the call when a request user is in scope. */
-export async function gradeAnswer(input: Parameters<typeof gradeWithMeta>[0]) {
-  const { verdict, meta } = await gradeWithMeta(input);
-  const userId = caller.getStore();
-  if (userId && process.env.DATABASE_URL) {
-    try {
-      const { db, aiCalls } = await dbm();
-      await db.insert(aiCalls).values({
-        userId, kind: 'grade', model: verdict.model, promptVersion: meta.promptVersion,
-        inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model), latencyMs: meta.latencyMs,
-      });
-    } catch {
-      /* the verdict still stands if the cost row cannot be written */
-    }
-  }
-  return ok({ ...verdict, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model) });
-}
-
-/** Same grader as `gradeAnswer`, but feedback leaves as the model writes it. One `ai_calls` row when a verdict arrives. */
-export async function* streamGradeAnswer(input: Parameters<typeof streamGrade>[0]): AsyncGenerator<GradeEvent> {
-  for await (const event of streamGrade(input)) {
-    if (!event.verdict || !event.meta) {
-      yield event;
-      continue;
-    }
-    const verdict = { ...event.verdict, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut, event.verdict.model) };
-    const priced: GradeEvent = { ...event, verdict };
-    yield priced;
-    const userId = caller.getStore();
-    if (!userId || !process.env.DATABASE_URL) continue;
-    try {
-      const { db, aiCalls } = await dbm();
-      await db.insert(aiCalls).values({
-        userId, kind: 'grade', model: verdict.model, promptVersion: event.meta.promptVersion,
-        inputTokens: event.meta.tokensIn, outputTokens: event.meta.tokensOut, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut, verdict.model), latencyMs: event.meta.latencyMs,
-      });
-    } catch {
-      /* the streamed verdict still stands */
-    }
-  }
-}
-
-export async function gradeForUser(userId: string, body: unknown) {
-  if (!allowGrade(userId)) return { ok: false as const, error: { code: 'rate_limited' as const, message: '30 por minuto' } };
-  const input = parseWith(graderInputSchema, body);
-  if (!input.ok) return input;
-  if (process.env.DATABASE_URL) {
-    const quota = await assertQuota(userId, 'ai_grades');
-    if (!quota.ok) return quota;
-  }
-  try {
-    const { verdict, meta } = await gradeWithMeta(input.data);
-    if (process.env.DATABASE_URL) {
-      const { db, aiCalls } = await dbm();
-      await db.insert(aiCalls).values({
-        userId,
-        kind: 'grade',
-        model: verdict.model,
-        promptVersion: meta.promptVersion,
-        inputTokens: meta.tokensIn,
-        outputTokens: meta.tokensOut,
-        costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model),
-        latencyMs: meta.latencyMs,
-      });
-    }
-    return { ok: true as const, data: { ...verdict, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model) } };
-  } catch {
-    if (process.env.DATABASE_URL) await refundQuota(userId).catch(() => undefined);
-    return { ok: false as const, error: { code: 'ai_unavailable' as const, message: 'não foi possível corrigir, revele e avalie' } };
-  }
-}
-
-export async function openGradeStream(userId: string, body: unknown) {
-  if (!allowGrade(userId)) return { ok: false as const, error: { code: 'rate_limited' as const, message: '30 por minuto' } };
-  const input = parseWith(graderInputSchema, body);
-  if (!input.ok) return { ok: false as const, error: input.error };
-  if (process.env.DATABASE_URL) {
-    const quota = await assertQuota(userId, 'ai_grades');
-    if (!quota.ok) return { ok: false as const, error: quota.error };
-  }
-  return { ok: true as const, events: recordGradeStream(userId, input.data) };
-}
-
-async function* recordGradeStream(userId: string, input: Parameters<typeof streamGrade>[0]): AsyncGenerator<GradeEvent> {
-  let last: GradeEvent | undefined;
-  for await (const event of streamGrade(input)) {
-    if (!event.verdict || !event.meta) {
-      yield event;
-      continue;
-    }
-    const priced: GradeEvent = { ...event, verdict: { ...event.verdict, costCents: costCents(event.meta.tokensIn, event.meta.tokensOut, event.verdict.model) } };
-    last = priced;
-    yield priced;
-  }
-  const verdict = last?.verdict;
-  const meta = last?.meta;
-  if (!verdict || !meta || !process.env.DATABASE_URL) return;
+async function recordCall(userId: string, kind: string, meta: { model: string; promptVersion: string; tokensIn: number; tokensOut: number; latencyMs: number }): Promise<string | null> {
+  if (!process.env.DATABASE_URL) return null;
   try {
     const { db, aiCalls } = await dbm();
+    const id = randomUUID();
     await db.insert(aiCalls).values({
-      userId, kind: 'grade', model: verdict.model, promptVersion: meta.promptVersion,
-      inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model), latencyMs: meta.latencyMs,
+      id, userId, kind, model: meta.model, promptVersion: meta.promptVersion, inputTokens: meta.tokensIn, outputTokens: meta.tokensOut,
+      costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: meta.latencyMs,
     });
+    return id;
   } catch {
-    /* the streamed verdict still stands */
+    return null; // the verdict still stands if the cost row cannot be written
   }
 }
 
-/** Writes a draft rubric on the user's card. An approved rubric stays as it is. */
+// --- correction ---------------------------------------------------------------------------------------------------
+
+/** One graded call: priced, recorded (its id is the flag target) and tracked, with the AI status on the verdict. */
+async function finishGrade<V extends GraderVerdict>(userId: string | undefined, verdict: V, meta: NonNullable<GradeEvent['meta']>): Promise<V> {
+  const info = gradeInfo(verdict.model, errorOf(meta));
+  const callId = userId ? await recordCall(userId, 'grade', { model: verdict.model, ...meta }) : null;
+  track('grade', verdict.model, meta.latencyMs, info, callId ?? undefined);
+  return { ...verdict, costCents: costCents(meta.tokensIn, meta.tokensOut, verdict.model), ai: { ...info, callId } };
+}
+
+/** F04 port: the model when configured, the local grader otherwise or on failure (then `ai.status = 'fallback'`). */
+export async function gradeAnswer(input: Parameters<typeof gradeWithMeta>[0]) {
+  const { verdict, meta } = await gradeWithMeta(input);
+  return ok(await finishGrade(caller.getStore(), verdict, meta));
+}
+
+/** Same grader as `gradeAnswer`, but feedback leaves as the model writes it. One `ai_calls` row, written before the verdict leaves. */
+export async function* streamGradeAnswer(input: Parameters<typeof streamGrade>[0], userId = caller.getStore()): AsyncGenerator<GradeEvent> {
+  for await (const event of streamGrade(input)) {
+    if (!event.verdict || !event.meta) {
+      yield event;
+      continue;
+    }
+    yield { ...event, verdict: await finishGrade(userId, event.verdict, event.meta) };
+  }
+}
+
+/** POST /v1/ai/grade: rate limit, app AI limit (429 + Retry-After), then one ai_grades unit held until the verdict says ok. */
+export async function openGradeStream(userId: string, body: unknown) {
+  if (!allowGrade(userId)) return limited;
+  const input = parseWith(graderInputSchema, body);
+  if (!input.ok) return { ok: false as const, error: input.error };
+  const room = providerRoom();
+  if (!room.ok) return room;
+  let held: Reservation | null = null;
+  if (process.env.DATABASE_URL) {
+    const r = await reserveAi(userId, 'ai_grades');
+    if (!r.ok) return { ok: false as const, error: r.error };
+    held = r;
+  }
+  return { ok: true as const, events: holdGradeStream(userId, input.data, held) };
+}
+
+/** Only a model verdict keeps the unit: a fallback, an error or a client that left before the verdict gives it back. */
+async function* holdGradeStream(userId: string, input: Parameters<typeof streamGrade>[0], held: Reservation | null): AsyncGenerator<GradeEvent> {
+  let kept = false;
+  try {
+    for await (const event of streamGradeAnswer(input, userId)) {
+      if (!event.verdict) {
+        yield event;
+        continue;
+      }
+      kept = event.verdict.ai?.status === 'ok';
+      const quota = held ? (kept ? held.quota : await held.refund()) : null;
+      yield { ...event, verdict: { ...event.verdict, ai: { ...(event.verdict.ai ?? OK), quota } } };
+    }
+  } finally {
+    if (!kept) await held?.refund().catch(() => undefined);
+  }
+}
+
+// --- rubric -------------------------------------------------------------------------------------------------------
+
+/** Writes a draft rubric on the user's card. An approved rubric stays as it is. Model failure: nothing saved, unit given back. */
 export async function attachRubric(userId: string, cardId: string) {
-  if (!allow('rubric', userId, RUBRIC_PER_MINUTE)) return err('rate_limited', 'rate_limited');
-  const { db, cards, boards, aiCalls } = await dbm();
+  if (!allow('rubric', userId, RUBRIC_PER_MINUTE)) return limited;
+  return shared(`rubric:${userId}:${cardId}`, () => buildRubric(userId, cardId));
+}
+
+async function buildRubric(userId: string, cardId: string): Promise<{ ok: true; data: z.infer<typeof rubricSchema>; ai: AiInfo } | AiFailure> {
+  const { db, cards, boards } = await dbm();
   const [card] = await db.select(pick(cards, 'id', 'boardId', 'deletedAt', 'rubric', 'source', 'title', 'back')).from(cards).where(eq(cards.id, cardId));
-  if (!card || card.deletedAt) return err('not_found', 'not found');
+  if (!card || card.deletedAt) return { ok: false, error: { code: 'not_found', message: 'not found' } };
   const [board] = await db.select({ userId: boards.userId }).from(boards).where(eq(boards.id, card.boardId));
-  if (!board || board.userId !== userId) return err('not_found', 'not found');
+  if (!board || board.userId !== userId) return { ok: false, error: { code: 'not_found', message: 'not found' } };
   const existing = card.rubric && typeof card.rubric === 'object' ? card.rubric as { status?: string; inputHash?: string } : null;
-  if (existing?.status === 'approved') return err('conflict', 'approved rubric');
+  if (existing?.status === 'approved') return { ok: false, error: { code: 'conflict', message: 'approved rubric' } };
   const source = card.source?.trim() || AI_DRAFT_SOURCE;
-  const hash = createHash('sha256').update(`${card.title}\n${card.back ?? ''}\n${source}`).digest('hex');
+  const hash = sha(`${card.title}\n${card.back ?? ''}\n${source}`);
   if (existing?.status === 'draft' && existing.inputHash === hash) {
     const parsed = rubricSchema.safeParse(existing);
-    if (parsed.success) return ok(parsed.data);
+    if (parsed.success) return { ok: true, data: parsed.data, ai: OK };
   }
   const remembered = cachedRubric(card.title, card.back, source);
   if (remembered) {
     await db.update(cards).set({ rubric: { ...remembered, inputHash: hash }, updatedAt: new Date() }).where(eq(cards.id, card.id));
     await invalidate('card.changed', { userId, mapId: card.boardId });
-    return ok(remembered);
+    return { ok: true, data: remembered, ai: OK };
   }
-  const charged = Boolean(process.env.DATABASE_URL && process.env.OPENROUTER_API_KEY);
-  if (charged) {
-    const quota = await assertQuota(userId, 'ai_grades');
-    if (!quota.ok) return quota;
+  const live = aiMode() === 'live';
+  let held: Reservation | null = null;
+  if (live) {
+    const room = providerRoom();
+    if (!room.ok) return room;
+    if (process.env.DATABASE_URL) {
+      const r = await reserveAi(userId, 'ai_rubrics');
+      if (!r.ok) return { ok: false, error: r.error };
+      held = r;
+    }
   }
   let built: Awaited<ReturnType<typeof rubricWithMeta>>;
   try {
     built = await rubricWithMeta(card.title, card.back, source);
-  } catch (error) {
-    if (charged) await refundQuota(userId).catch(() => undefined);
-    throw error;
+  } catch (e) {
+    await held?.refund().catch(() => undefined);
+    throw e;
   }
   const { rubric, meta } = built;
+  const error = errorOf(meta);
+  await recordCall(userId, 'rubric', { ...meta, promptVersion: RUBRIC_PROMPT_VERSION });
+  if (live && error) {
+    // G22 (D-1413): an offline rubric in place of the model's is not saved as if the AI wrote it; the student tries again.
+    await held?.refund().catch(() => undefined);
+    const failure = aiFailure(error);
+    track('rubric', meta.model, meta.latencyMs, failure.ai!);
+    return failure;
+  }
+  const info: AiInfo = live || aiMode() === 'mock' ? OK : failedInfo('fallback', 'not_configured', AI_ERROR_MESSAGES.not_configured);
+  track('rubric', meta.model, meta.latencyMs, info);
   await db.update(cards).set({ rubric: { ...rubric, inputHash: hash }, updatedAt: new Date() }).where(eq(cards.id, card.id));
   await invalidate('card.changed', { userId, mapId: card.boardId });
-  if (process.env.DATABASE_URL) {
-    await db.insert(aiCalls).values({
-      userId, kind: 'rubric', model: meta.model, promptVersion: RUBRIC_PROMPT_VERSION,
-      inputTokens: meta.tokensIn, outputTokens: meta.tokensOut, costCents: costCents(meta.tokensIn, meta.tokensOut, meta.model), latencyMs: meta.latencyMs,
-    });
-  }
-  return ok(rubric);
+  return { ok: true, data: rubric, ai: { ...info, quota: held?.quota ?? null } };
 }
 
-async function saveBoard(userId: string, input: GenerateBoardInput, cards: CardDraft[], edges: { fromRef: string; toRef: string; label: string | null }[], extras?: BoardExtras) {
-  const { db, boards, boardMatrixItems, cards: cardTable, edges: edgeTable } = await dbm();
+// --- "Essa correção está errada" ------------------------------------------------------------------------------------
+
+/** G22 (D-1416): flags the user's own graded call. Under RLS (insert policy checks the call is theirs and a grade). Idempotent. */
+export async function flagGrade(userId: string, callId: string) {
+  return run(userId, async (tx) => {
+    await tx.execute(sql`insert into ai_grade_flags (call_id, user_id) select id, user_id from ai_calls where id = ${callId} and kind = 'grade' on conflict (call_id) do nothing`);
+    const [row] = await tx.execute<{ created_at: string }>(sql`select created_at from ai_grade_flags where call_id = ${callId}`);
+    return row ? ok({ callId, flaggedAt: new Date(row.created_at).toISOString() }) : err('not_found', 'grade not found');
+  });
+}
+
+// --- map generation jobs (D-1415): state in ai_jobs, run by Inngest or inline ---------------------------------------
+
+/** D-532: what the PDF path decides about the map up front (items checked, password already hashed: no plaintext waits). */
+type BoardExtras = { matrixItemIds: string[]; share: Awaited<ReturnType<typeof initialShareColumns>> };
+type JobInput = { kind: 'text' | 'pdf'; title: string; area: GenerateBoardInput['area']; extras?: BoardExtras };
+type JobStats = { cards?: number; edges?: number; pages?: number; dropped?: number; truncated?: boolean };
+
+/** Characters of pasted text one generation accepts (env, D-1414); PDFs beyond it are cut by packages/ai (`truncated`). */
+const maxInputChars = () => Number(process.env.AI_MAX_INPUT_CHARS) || 120_000;
+/** Running in this process: cancel aborts the model call. Another process sees the cancel when it reads the job row. */
+const running = new Map<string, AbortController>();
+
+async function saveBoard(tx: Tx, userId: string, input: JobInput, cards: CardDraft[], edges: { fromRef: string; toRef: string; label: string | null }[]) {
+  const { boards, boardMatrixItems, cards: cardTable, edges: edgeTable } = await dbm();
   const places = new Map(layout(cards, edges).map((p) => [p.ref, p]));
-  const itemIds = extras?.matrixItemIds ?? [];
-  const [board] = await db.insert(boards).values({ userId, title: input.title, area: input.area, status: 'private', matrixItemId: itemIds[0] ?? null, ...extras?.share }).returning();
-  if (itemIds.length) await db.insert(boardMatrixItems).values(itemIds.map((matrixItemId) => ({ boardId: board!.id, matrixItemId })));
+  const itemIds = input.extras?.matrixItemIds ?? [];
+  const [board] = await tx.insert(boards).values({ userId, title: input.title, area: input.area, status: 'private', matrixItemId: itemIds[0] ?? null, ...input.extras?.share }).returning();
+  if (itemIds.length) await tx.insert(boardMatrixItems).values(itemIds.map((matrixItemId) => ({ boardId: board!.id, matrixItemId })));
   // G21 FR-21 (D-1036): one insert of all cards (ids generated here, no `returning` round trip) and one of the edges (was ~1 per card/edge)
   const ids = new Map<string, string>();
   const rows = cards.filter((c) => c.type !== 'image').map((card, order) => {
@@ -229,14 +311,27 @@ async function saveBoard(userId: string, input: GenerateBoardInput, cards: CardD
       payload: card.payload, status: 'draft' as const, order, x: place?.x ?? 80, y: place?.y ?? 80,
     };
   });
-  if (rows.length) await db.insert(cardTable).values(rows);
+  if (rows.length) await tx.insert(cardTable).values(rows);
   const edgeRows = edges.flatMap((edge) => {
     const fromCardId = ids.get(edge.fromRef);
     const toCardId = ids.get(edge.toRef);
     return fromCardId && toCardId ? [{ boardId: board!.id, fromCardId, toCardId, label: edge.label }] : [];
   });
-  if (edgeRows.length) await db.insert(edgeTable).values(edgeRows);
+  if (edgeRows.length) await tx.insert(edgeTable).values(edgeRows);
   return board!.id;
+}
+
+const fold = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+/**
+ * G22 (D-1414): an AI card stays only if its `sourceExcerpt` (12+ characters once normalized) is literally in the input text
+ * (accents, case, punctuation and spacing ignored). packages/ai checks the same per chunk; this is the server's own check.
+ */
+export function sourcedCards<T extends { sourceExcerpt?: string }>(cards: T[], text: string): T[] {
+  const haystack = fold(text);
+  return cards.filter((c) => {
+    const needle = fold(c.sourceExcerpt ?? '');
+    return needle.length >= 12 && haystack.includes(needle);
+  });
 }
 
 async function readableText(bytes: Uint8Array): Promise<string> {
@@ -253,142 +348,253 @@ async function pdfSource(userId: string, assetId: string): Promise<string> {
   return text;
 }
 
-function failJob(jobId: string, error: string) {
-  const job = jobs.get(jobId);
-  if (job) jobs.set(jobId, { ...job, status: 'failed', stage: job.stage, error });
-  logFailed(jobId, error);
+/** Ends a queued/running job as failed and gives its unit back exactly once (`charged` flips in the same statement). */
+async function failJob(jobId: string, code: string, ai: AiInfo = failedInfo('error', code, messageOf(code)), extra: { clearText?: boolean; userId?: string } = {}) {
+  const { db } = await dbm();
+  const [r] = await db.execute<{ user_id: string; charged: boolean; quota_period: string | null }>(sql`
+    with old as (select id, user_id, charged, quota_period from ai_jobs
+      where id = ${jobId} and status in ('queued', 'running') and board_id is null ${extra.userId ? sql`and user_id = ${extra.userId}` : sql``} for update)
+    update ai_jobs j set status = 'failed', progress = 100, stage = null, error = ${code}, ai = ${JSON.stringify(ai)}::jsonb, charged = false,
+      text = ${extra.clearText ? null : sql`j.text`}, updated_at = now()
+    from old where j.id = old.id
+    returning old.user_id, old.charged, old.quota_period::text as quota_period`);
+  if (!r) return false;
+  if (r.charged && r.quota_period) await refundAt(r.user_id, 'ai_generations', r.quota_period).catch(() => undefined);
+  if (code !== 'canceled') logFailed(jobId, code);
+  return true;
 }
 
-/**
- * Starts the PDF job and returns once rate limit, board cap and the monthly generation are cleared, before OCR spends anything.
- * OCR and extraction run after, so the screen can show 0–100. An unreadable PDF gives the generation back.
- */
-export async function startPdfGeneration(userId: string, board: z.output<typeof generatePdfBoardInputSchema>, bytes: Uint8Array) {
+async function setProgress(jobId: string, progress: number, stage: 'ocr' | 'extract' | 'layout') {
+  const { db } = await dbm();
+  await db.execute(sql`update ai_jobs set progress = greatest(progress, ${progress}), stage = ${stage}, updated_at = now() where id = ${jobId} and status = 'running'`);
+}
+
+async function dispatch(jobId: string) {
+  const sent = await dispatchBoardJob(jobId).catch(() => false);
+  if (!sent) void executeGeneration(jobId);
+}
+
+/** A queued/running job of the same user with the same input: the second start returns it (no second charge). */
+async function activeJob(userId: string, hash: string) {
+  const { db } = await dbm();
+  const [r] = await db.execute<{ id: string }>(sql`select id from ai_jobs where user_id = ${userId} and input_hash = ${hash} and status in ('queued', 'running') limit 1`);
+  return r?.id ?? null;
+}
+
+/** Checks shared by text and PDF: rate limit, map cap, AI configured, app AI limit, card room. Nothing is charged yet. */
+async function preflight(userId: string): Promise<{ ok: true } | AiFailure> {
   if (!allow('generate', userId, GENERATE_PER_MINUTE)) return limited;
   const room = await boardRoom(userId);
   if (!room.ok) return room;
-  // D-532: items must be leaves of the board's area (same rule as createBoard/import), checked before anything is charged.
-  if (board.matrixItemIds.length && process.env.DATABASE_URL) {
-    const { db, matrixItems } = await dbm();
-    const valid = await db.select({ id: matrixItems.id }).from(matrixItems).where(and(inArray(matrixItems.id, board.matrixItemIds), eq(matrixItems.area, board.area),
-      sql`not exists (select 1 from matrix_items c where c.parent_id = ${matrixItems.id})`));
-    if (valid.length !== board.matrixItemIds.length) return { ok: false as const, error: { code: 'validation' as const, message: 'matrixItemId is unknown, a group, or does not belong to the board area' } };
-  }
-  const extras: BoardExtras = { matrixItemIds: board.matrixItemIds, share: await initialShareColumns({ access: board.access, password: board.password }) };
-  const { title } = board;
   if (aiMode() === 'off') return aiOff;
-  const charged = await chargeGeneration(userId);
-  if (!charged.ok) return charged;
-  const giveBack = async () => {
-    if (charged.charged) await refundGeneration(userId).catch(() => undefined);
-  };
-  const jobId = randomUUID();
-  jobs.set(jobId, { jobId, userId, status: 'queued', progress: 0, stage: 'ocr', boardId: null, error: null });
-  counts.set(jobId, { cards: 0, edges: 0, pages: pdfPageCount(bytes) });
-  void (async () => {
-    const reading = jobs.get(jobId);
-    if (reading) jobs.set(jobId, { ...reading, status: 'running', progress: 10, stage: 'ocr' });
-    let text: string;
-    try {
-      text = await readableText(bytes);
-    } catch (e) {
-      await giveBack();
-      failJob(jobId, e instanceof Error ? e.message : 'failed');
-      return;
-    }
-    if (text.length < 40) {
-      await giveBack();
-      failJob(jobId, 'pdf_unreadable');
-      return;
-    }
-    const current = jobs.get(jobId);
-    if (!current || current.status === 'failed') return;
-    jobs.set(jobId, { ...current, status: 'queued', progress: 20, stage: 'extract' });
-    work.set(jobId, {
-      userId,
-      input: { kind: 'text', text, area: board.area, title },
-      text,
-      charged: charged.charged,
-      refunded: false,
-      logKind: 'generate_pdf',
-      extras,
-    });
-    const sent = await dispatchBoardJob(jobId).catch(() => false);
-    if (!sent) await executeGeneration(jobId);
-  })();
-  return { ok: true as const, data: { jobId } };
+  const provider = providerRoom();
+  if (!provider.ok) return provider;
+  if ((await cardRoom(userId)) === 0) return { ok: false, error: { code: 'quota_exceeded', message: 'cards' } };
+  return { ok: true };
 }
 
-async function chargeGeneration(userId: string) {
-  if (!process.env.DATABASE_URL) return { ok: true as const, charged: false };
-  const quota = await assertQuota(userId, 'ai_generations');
-  if (!quota.ok) return { ok: false as const, error: quota.error, charged: false };
-  return { ok: true as const, charged: true };
+type Started = { ok: true; data: { jobId: string; ai: AiInfo } } | AiFailure;
+
+/** Reserves one ai_generations unit and writes the job; the caller dispatches it. */
+async function createJob(userId: string, input: JobInput, hash: string, text: string | null, stats: JobStats, ocr: boolean): Promise<Started> {
+  const existing = await activeJob(userId, hash);
+  if (existing) return { ok: true, data: { jobId: existing, ai: OK } };
+  const held = await reserveAi(userId, 'ai_generations');
+  if (!held.ok) return { ok: false, error: held.error };
+  const { db, aiJobs } = await dbm();
+  try {
+    const [job] = await db.insert(aiJobs).values({
+      userId, kind: input.kind, input, text, inputHash: hash, stats, charged: true, quotaPeriod: held.quota.period,
+      status: ocr ? 'running' : 'queued', stage: ocr ? 'ocr' : 'extract', progress: ocr ? 10 : 0,
+    }).returning({ id: aiJobs.id });
+    return { ok: true, data: { jobId: job!.id, ai: { ...OK, quota: held.quota } } };
+  } catch (e) {
+    await held.refund().catch(() => undefined);
+    throw e;
+  }
 }
 
-export async function startGeneration(userId: string, input: GenerateBoardInput) {
-  if (!allow('generate', userId, GENERATE_PER_MINUTE)) return limited;
-  const room = await boardRoom(userId);
-  if (!room.ok) return room;
+export async function startGeneration(userId: string, input: GenerateBoardInput): Promise<Started> {
+  const pre = await preflight(userId);
+  if (!pre.ok) return pre;
+  if (input.kind === 'text' && input.text.length > maxInputChars()) return { ok: false, error: { code: 'validation', message: 'text_too_long' } };
   let text: string;
   try {
     text = input.kind === 'text' ? input.text : await pdfSource(userId, input.pdfAssetId);
   } catch (e) {
-    return { ok: false as const, error: { code: 'validation' as const, message: e instanceof Error ? e.message : 'failed' } };
+    return { ok: false, error: { code: 'validation', message: e instanceof Error ? e.message : 'failed' } };
   }
-  if (input.kind === 'pdf' && text.length < 40) return { ok: false as const, error: { code: 'validation' as const, message: 'pdf_unreadable' } };
-  if (aiMode() === 'off') return aiOff;
-  const charged = await chargeGeneration(userId);
-  if (!charged.ok) return charged;
-  const jobId = randomUUID();
-  jobs.set(jobId, { jobId, userId, status: 'queued', progress: 0, stage: 'extract', boardId: null, error: null });
-  work.set(jobId, { userId, input, text, charged: charged.charged, refunded: false });
-  const sent = await dispatchBoardJob(jobId).catch(() => false);
-  if (!sent) void runGeneration(jobId);
-  return { ok: true as const, data: { jobId, status: 'queued' as const, progress: 0, stage: 'extract' as const, boardId: null, error: null } };
+  const hash = sha(JSON.stringify([input.kind, input.title, input.area, text]));
+  return shared(`gen:${userId}:${hash}`, async () => {
+    const started = await createJob(userId, { kind: input.kind, title: input.title, area: input.area }, hash, text, {}, false);
+    if (started.ok) await dispatch(started.data.jobId);
+    return started;
+  });
 }
 
+/**
+ * Starts the PDF job and returns once rate limit, board cap and the monthly generation are cleared, before OCR spends anything.
+ * OCR runs in this process (the bytes are not stored); the extraction is the same job as the text path. An unreadable PDF gives the unit back.
+ */
+export async function startPdfGeneration(userId: string, board: z.output<typeof generatePdfBoardInputSchema>, bytes: Uint8Array): Promise<Started> {
+  const pre = await preflight(userId);
+  if (!pre.ok) return pre;
+  // D-532: items must be leaves of the board's area (same rule as createBoard/import), checked before anything is charged.
+  if (board.matrixItemIds.length) {
+    const { db, matrixItems } = await dbm();
+    const valid = await db.select({ id: matrixItems.id }).from(matrixItems).where(and(inArray(matrixItems.id, board.matrixItemIds), eq(matrixItems.area, board.area),
+      sql`not exists (select 1 from matrix_items c where c.parent_id = ${matrixItems.id})`));
+    if (valid.length !== board.matrixItemIds.length) return { ok: false, error: { code: 'validation', message: 'matrixItemId is unknown, a group, or does not belong to the board area' } };
+  }
+  const input: JobInput = { kind: 'pdf', title: board.title, area: board.area, extras: { matrixItemIds: board.matrixItemIds, share: await initialShareColumns({ access: board.access, password: board.password }) } };
+  const hash = sha(Buffer.concat([Buffer.from(JSON.stringify([board.title, board.area])), Buffer.from(bytes)]));
+  return shared(`gen:${userId}:${hash}`, async () => {
+    const started = await createJob(userId, input, hash, null, { pages: pdfPageCount(bytes) }, true);
+    if (started.ok) void readPdfJob(started.data.jobId, bytes);
+    return started;
+  });
+}
+
+async function readPdfJob(jobId: string, bytes: Uint8Array) {
+  let text: string;
+  try {
+    text = await readableText(bytes);
+  } catch {
+    text = '';
+  }
+  if (text.length < 40) {
+    await failJob(jobId, 'pdf_unreadable');
+    return;
+  }
+  const { db } = await dbm();
+  const [moved] = await db.execute<{ id: string }>(sql`
+    update ai_jobs set text = ${text}, status = 'queued', stage = 'extract', progress = 20, updated_at = now() where id = ${jobId} and status = 'running' returning id`);
+  if (moved) await dispatch(jobId); // canceled while reading: nothing to do
+}
+
+/** Inngest function body and inline runner. Claims the job (queued -> running) so only one process ever runs it. */
 export async function runGeneration(jobId: string) {
-  const job = jobs.get(jobId);
-  if (!job || job.status !== 'queued') return;
   await executeGeneration(jobId);
 }
 
-async function executeGeneration(jobId: string) {
-  const job = jobs.get(jobId);
-  const item = work.get(jobId);
-  if (!job || !item || job.status === 'done' || job.status === 'failed') return;
-  jobs.set(jobId, { ...job, status: 'running', progress: Math.max(job.progress, 30), stage: 'extract' });
-  const startedAt = Date.now(); // ponytail: run time only (queue wait not counted); map_ready decides the e-mail from it
-  try {
-    const { extracted, meta } = await extractWithMeta(item.text, AI_DRAFT_SOURCE);
-    counts.set(jobId, { cards: extracted.cards.length, edges: extracted.edges.length, pages: counts.get(jobId)?.pages });
-    const current = jobs.get(jobId);
-    if (current) jobs.set(jobId, { ...current, progress: 75, stage: 'layout' });
-    if (!(await boardRoom(item.userId)).ok) throw new Error('boards'); // a concurrent map took the last slot: refund below
-    const boardId = process.env.DATABASE_URL ? await saveBoard(item.userId, item.input, extracted.cards, extracted.edges, item.extras) : null;
-    if (boardId) await invalidate('map.changed', { userId: item.userId, mapId: boardId }); // after saveBoard's writes: the generated map and its draft cards
-    if (boardId) await maybeQualifyReferral(item.userId); // F18 (D-485): after saveBoard's writes; never throws. Draft cards count (D-402 does not filter status)
-    await recordCall(item.userId, item.logKind ?? (item.input.kind === 'pdf' ? 'generate_pdf' : 'generate_text'), meta);
-    const done = jobs.get(jobId);
-    if (done) jobs.set(jobId, { ...done, status: 'done', progress: 100, stage: null, boardId });
-    work.delete(jobId);
-    if (boardId) await notifyMapReady({ userId: item.userId, boardId, origin: item.input.kind === 'pdf' ? 'pdf' : 'text', tookMs: Date.now() - startedAt }); // G18; never throws
-  } catch (e) {
-    if (item.charged && !item.refunded) {
-      item.refunded = true;
-      await refundGeneration(item.userId).catch(() => undefined);
-    }
-    const failed = jobs.get(jobId);
-    const error = e instanceof Error ? e.message : 'failed';
-    if (failed) jobs.set(jobId, { ...failed, status: 'failed', progress: 100, stage: null, error });
-    logFailed(jobId, error);
+class JobError extends Error {
+  constructor(readonly code: string, readonly info?: AiInfo) {
+    super(code);
   }
 }
 
-export function generationOf(userId: string, jobId: string): (BoardGenerationProgress & { cards?: number; edges?: number; pages?: number }) | null {
-  const job = jobs.get(jobId);
-  if (!job || job.userId !== userId) return null;
-  const n = counts.get(jobId);
-  return { jobId: job.jobId, status: job.status, progress: job.progress, stage: job.stage, boardId: job.boardId, error: job.error, ...(n ?? {}) };
+async function executeGeneration(jobId: string) {
+  const { db, aiJobs } = await dbm();
+  const [job] = await db.update(aiJobs)
+    .set({ status: 'running', progress: sql`greatest(${aiJobs.progress}, 30)`, stage: 'extract', attempts: sql`${aiJobs.attempts} + 1`, updatedAt: new Date() })
+    .where(and(eq(aiJobs.id, jobId), eq(aiJobs.status, 'queued')))
+    .returning();
+  if (!job) return;
+  const input = job.input as JobInput;
+  const text = job.text ?? '';
+  const ac = new AbortController();
+  running.set(jobId, ac);
+  const cancellable: typeof fetch = (url, init) => fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, ac.signal]) : ac.signal });
+  const startedAt = Date.now(); // ponytail: run time only (queue wait not counted); map_ready decides the e-mail from it
+  let model = 'none';
+  let latencyMs = 0;
+  try {
+    const room = await cardRoom(job.userId);
+    if (room === 0) throw new JobError('cards');
+    const live = aiMode() === 'live';
+    const { extracted, meta } = await extractWithMeta(text, AI_DRAFT_SOURCE, cancellable, undefined, room ?? undefined);
+    if (ac.signal.aborted) return; // canceled: the cancel already ended the job and gave the unit back
+    model = meta.model;
+    latencyMs = meta.latencyMs;
+    const error = errorOf(meta);
+    // D-1414: a model failure is a failed job (unit given back, retry available), never a paragraph split saved as an AI map
+    if (live && error) throw new JobError(error.code, failedInfo('error', error.code, error.userMessage));
+    const all = extracted.cards as (CardDraft & { sourceExcerpt?: string })[];
+    const kept = (live ? sourcedCards(all, text) : all.map((c) => ({ ...c, source: OFFLINE_DRAFT_SOURCE }))).slice(0, room ?? Infinity);
+    if (!kept.length) throw new JobError('no_sourced_cards');
+    const refs = new Set(kept.map((c) => c.ref));
+    const edges = extracted.edges.filter((e) => refs.has(e.fromRef) && refs.has(e.toRef));
+    const stats: JobStats = { ...(job.stats as JobStats | null), cards: kept.length, edges: edges.length, dropped: all.length - kept.length + (meta.dropped ?? 0), ...(meta.truncated ? { truncated: true } : {}) };
+    await setProgress(jobId, 75, 'layout');
+    if (!(await boardRoom(job.userId)).ok) throw new JobError('boards'); // a concurrent map took the last slot: refund below
+    const ai: AiInfo = live ? OK : failedInfo('fallback', 'offline', 'Mapa montado sem IA (modo de teste).');
+    // Board + board_id in one transaction holding the job row: a cancel lands before (nothing saved) or after (a job with a board
+    // is never failed or canceled, see failJob). `done` comes after the side effects, so done = map, referral and cost row all there.
+    const boardId = await db.transaction(async (tx) => {
+      const [row] = await tx.execute<{ status: string }>(sql`select status from ai_jobs where id = ${jobId} for update`);
+      if (row?.status !== 'running') return null;
+      const id = await saveBoard(tx, job.userId, input, kept, edges);
+      await tx.update(aiJobs).set({ progress: 95, boardId: id, text: null, error: null, ai, stats, updatedAt: new Date() }).where(eq(aiJobs.id, jobId));
+      return id;
+    });
+    if (!boardId) return;
+    try {
+      await invalidate('map.changed', { userId: job.userId, mapId: boardId }); // after the commit: the generated map and its draft cards
+      await maybeQualifyReferral(job.userId); // F18 (D-485): after the writes; never throws. Draft cards count (D-402 does not filter status)
+      await recordCall(job.userId, job.kind === 'pdf' ? 'generate_pdf' : 'generate_text', { ...meta, promptVersion: EXTRACT_PROMPT_VERSION });
+    } finally {
+      await db.update(aiJobs).set({ status: 'done', progress: 100, stage: null, updatedAt: new Date() }).where(eq(aiJobs.id, jobId));
+    }
+    track('extract', model, latencyMs, ai, jobId);
+    await notifyMapReady({ userId: job.userId, boardId, origin: job.kind === 'pdf' ? 'pdf' : 'text', tookMs: Date.now() - startedAt }); // G18; never throws
+  } catch (e) {
+    const code = e instanceof JobError ? e.code : e instanceof Error ? e.message : 'failed';
+    const ai = e instanceof JobError && e.info ? e.info : failedInfo('error', code, messageOf(code));
+    await failJob(jobId, code, ai).catch(() => undefined);
+    track('extract', model, latencyMs, ai, jobId);
+  } finally {
+    running.delete(jobId);
+  }
 }
+
+/** POST /v1/ai/jobs/:id/cancel. Queued/running only; the unit goes back and the input text is erased. */
+export async function cancelGeneration(userId: string, jobId: string): Promise<{ ok: true } | AiFailure> {
+  const canceled = await failJob(jobId, 'canceled', failedInfo('error', 'canceled', JOB_MESSAGES.canceled!), { clearText: true, userId });
+  if (!canceled) return (await generationOf(userId, jobId)) ? { ok: false, error: { code: 'conflict', message: 'job is not running' } } : { ok: false, error: { code: 'not_found', message: 'job not found' } };
+  running.get(jobId)?.abort();
+  if (inngestConfigured()) await inngest.send({ name: 'ai/board.cancel', data: { jobId } }).catch(() => undefined);
+  return { ok: true };
+}
+
+/** POST /v1/ai/jobs/:id/retry. A failed job that still has its text runs again with a new unit (the failure gave the old one back). */
+export async function retryGeneration(userId: string, jobId: string): Promise<Started> {
+  if (!allow('generate', userId, GENERATE_PER_MINUTE)) return limited;
+  if (aiMode() === 'off') return aiOff;
+  const provider = providerRoom();
+  if (!provider.ok) return provider;
+  const job = await generationOf(userId, jobId);
+  if (!job) return { ok: false, error: { code: 'not_found', message: 'job not found' } };
+  if (job.status !== 'failed' || job.error === 'canceled') return { ok: false, error: { code: 'conflict', message: 'job cannot be retried' } };
+  const held = await reserveAi(userId, 'ai_generations');
+  if (!held.ok) return { ok: false, error: held.error };
+  const { db } = await dbm();
+  const [moved] = await db.execute<{ id: string }>(sql`
+    update ai_jobs set status = 'queued', stage = 'extract', progress = 20, error = null, ai = null, board_id = null, charged = true,
+      quota_period = ${held.quota.period}::date, updated_at = now()
+    where id = ${jobId} and user_id = ${userId} and status = 'failed' and text is not null returning id`);
+  if (!moved) {
+    await held.refund().catch(() => undefined);
+    return { ok: false, error: { code: 'conflict', message: 'job cannot be retried' } };
+  }
+  await dispatch(jobId);
+  return { ok: true, data: { jobId, ai: { ...OK, quota: held.quota } } };
+}
+
+export type GenerationView = BoardGenerationProgress;
+
+/** GET /v1/ai/jobs/:id from the database, under RLS (any process, after a restart too). */
+export async function generationOf(userId: string, jobId: string): Promise<GenerationView | null> {
+  return run(userId, async (tx, s) => {
+    const [j] = await tx.select(pick(s.aiJobs, 'id', 'status', 'progress', 'stage', 'boardId', 'error', 'ai', 'stats')).from(s.aiJobs).where(eq(s.aiJobs.id, jobId));
+    if (!j) return null;
+    const stats = (j.stats ?? {}) as JobStats;
+    return {
+      jobId: j.id, status: j.status, progress: j.progress, stage: j.stage as GenerationView['stage'], boardId: j.boardId, error: j.error,
+      ai: (j.ai as AiInfo | null) ?? null,
+      ...(stats.cards !== undefined ? { cards: stats.cards } : {}), ...(stats.edges !== undefined ? { edges: stats.edges } : {}),
+      ...(stats.pages !== undefined ? { pages: stats.pages } : {}), ...(stats.dropped !== undefined ? { dropped: stats.dropped } : {}),
+    };
+  });
+}
+
+export type { AiQuota };

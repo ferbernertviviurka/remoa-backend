@@ -66,10 +66,10 @@ describe.skipIf(!process.env.DATABASE_URL)('F18 qualification on generation and 
       const started = await startGeneration(referee, { kind: 'text', title: 'Sepse', area: 'CM', text } as Parameters<typeof startGeneration>[1]);
       expect(started.ok).toBe(true);
       if (!started.ok || !('data' in started)) return;
-      let job = generationOf(referee, started.data.jobId);
+      let job = await generationOf(referee, started.data.jobId);
       for (let i = 0; i < 200 && job?.status !== 'done' && job?.status !== 'failed'; i++) {
         await new Promise((r) => setTimeout(r, 25));
-        job = generationOf(referee, started.data.jobId);
+        job = await generationOf(referee, started.data.jobId);
       }
       expect(job).toMatchObject({ status: 'done' });
       const [n] = await exec<{ n: number }>(sql`select count(*)::int n from cards where board_id = ${job!.boardId}`);
