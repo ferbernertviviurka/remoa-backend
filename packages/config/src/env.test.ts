@@ -129,8 +129,8 @@ describe('addressOf', () => {
       'LEGAL_TERMS_VERSION must be 1-32 letters, digits, ".", "_" or "-"', 'LEGAL_PRIVACY_VERSION is required in production',
     ]));
   });
-  it('refuses the public blog bucket equal to the private one (P-431)', () => {
-    expect(problems({ ...prod, S3_BUCKET: 'assets', S3_PUBLIC_BUCKET: 'assets' })).toContain('S3_PUBLIC_BUCKET must differ from S3_BUCKET (blog images would land in the private bucket)');
+  it('accepts one bucket for both (blog images served by the API proxy)', () => {
+    expect(problems({ ...prod, S3_BUCKET: 'assets', S3_PUBLIC_BUCKET: 'assets' })).toEqual([]);
   });
 });
 

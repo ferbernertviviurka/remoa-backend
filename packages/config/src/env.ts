@@ -40,9 +40,9 @@ export type Env = {
   siteUrl: string;
   /** HMAC key of the 24 h preview links (>= 32 chars). */
   blogPreviewSecret: string;
-  /** Public bucket of blog images (separate from the private S3_BUCKET). Local: a public Supabase Storage bucket. */
+  /** Bucket of blog images (keys `blog/...`); may equal S3_BUCKET. Local: a public Supabase Storage bucket. */
   s3PublicBucket: string;
-  /** CDN origin of that bucket, no trailing slash: image URL = `${r2PublicBaseUrl}/${key}`. */
+  /** Base of the image URLs, no trailing slash: image URL = `${r2PublicBaseUrl}/${key}`. A private bucket uses the API's `/v1/public/blog/files`. */
   r2PublicBaseUrl: string;
   /** The web's on-demand revalidation endpoint; default `${siteUrl}/api/revalidate`. */
   revalidateUrl: string;
@@ -165,7 +165,6 @@ export function parseEnv(source: Source = process.env): Env {
   const siteUrl = checkUrl('SITE_URL', need('SITE_URL', get('SITE_URL'), DEV.appUrl));
   const blogPreviewSecret = checkSecret('BLOG_PREVIEW_SECRET', need('BLOG_PREVIEW_SECRET', get('BLOG_PREVIEW_SECRET'), DEV.blogPreviewSecret));
   const s3PublicBucket = need('S3_PUBLIC_BUCKET', get('S3_PUBLIC_BUCKET'), DEV.s3PublicBucket);
-  if (s3PublicBucket && s3PublicBucket === get('S3_BUCKET')) problems.push('S3_PUBLIC_BUCKET must differ from S3_BUCKET (blog images would land in the private bucket)');
   const r2PublicBaseUrl = checkUrl('R2_PUBLIC_BASE_URL', need('R2_PUBLIC_BASE_URL', get('R2_PUBLIC_BASE_URL'), DEV.r2PublicBaseUrl));
   const revalidateUrl = checkUrl('REVALIDATE_URL', get('REVALIDATE_URL') ?? (siteUrl && `${siteUrl.replace(/\/+$/, '')}/api/revalidate`));
   const revalidateSecret = checkSecret('REVALIDATE_SECRET', need('REVALIDATE_SECRET', get('REVALIDATE_SECRET'), DEV.revalidateSecret));
