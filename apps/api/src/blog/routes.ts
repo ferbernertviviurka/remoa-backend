@@ -1,6 +1,7 @@
 // G19 F27 /v1/admin/blog/* (D-908–D-910). Mounted by routes/admin.ts under requireAdmin; every write goes through withAdmin (rule 9).
 // Side effects (revalidation, sitemap) run after the commit and never fail the request.
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import {
   BLOG_AUTO_REASONS, BLOG_LIMITS, blogAdminListQuerySchema, blogCategoryInputSchema, blogErrors, blogPostCreateInputSchema, blogPostInputSchema, blogScheduleInputSchema,
   err, idSchema, ok, parseWith, slugify, type AuditEntry, type Result,
@@ -158,9 +159,8 @@ export const blogAdminRoutes = new Hono<AdminEnv>()
     });
     return r.ok ? send(ok({ ...r.data.link, audit: r.data.audit })) : send(r);
   })
-  .post('/images', async (c) => {
-    const declared = Number(c.req.header('content-length') ?? 0);
-    if (declared > BLOG_LIMITS.imageMaxBytes + 64 * 1024) return send(err('validation', blogErrors.badImage));
+  // bodyLimit also counts a chunked body (no content-length) while it streams, so an oversized upload is cut before it is buffered.
+  .post('/images', bodyLimit({ maxSize: BLOG_LIMITS.imageMaxBytes + 64 * 1024, onError: () => send(err('validation', blogErrors.badImage)) }), async (c) => {
     const form = await c.req.formData().catch(() => null);
     const file = form?.get('file');
     const slug = form?.get('slug');

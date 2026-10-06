@@ -72,8 +72,8 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     // D-643: an authenticated write can change cards, boards or the queue: drop this user's 60 s Revisar hub cache (one Map delete).
     // ponytail: async jobs that add cards later (Anki import, PDF generation) still show up within the 60 s TTL; invalidate at job end if that matters.
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.get('userId')) invalidateReviewHub(c.get('userId'));
-    // F17: the share token is a credential; it never reaches the logs
-    const line = { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/(?:shared|referral|calendar(?:\/cover)?)\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start };
+    // F17: the share token is a credential; it never reaches the logs (F27: nor the blog preview token)
+    const line = { method: c.req.method, path: c.req.path.replace(/^(\/v1\/public\/(?:shared|referral|calendar(?:\/cover)?|blog\/preview)\/)[^/]+/, '$1:token'), status: c.res.status, ms: Date.now() - start };
     if (c.res.status < 400) return log.info('request', line);
     // D-582: 4xx/5xx carry the typed error (`{ error: { code, message } }`, written by the API itself: no token, password or body echo).
     // The message only outside production: a zod message can quote a received value.

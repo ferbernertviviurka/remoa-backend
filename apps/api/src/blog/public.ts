@@ -13,7 +13,7 @@ import { authorOf, listCategories, toItems, type PostRow, type Q } from './posts
 
 const send = <T>(r: Result<T>, cache = 'public, max-age=60, stale-while-revalidate=300') =>
   r.ok ? Response.json({ ok: true, data: r.data }, { headers: { 'cache-control': cache } })
-    : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code] });
+    : Response.json({ error: r.error } satisfies HttpErrorBody, { status: errorHttpStatus[r.error.code], ...(cache === 'no-store' ? { headers: { 'cache-control': cache } } : {}) });
 const gone = () => err<never>('not_found', 'not found');
 
 const published = async () => {
