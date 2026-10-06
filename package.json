@@ -21,7 +21,10 @@
     "ai:eval": "pnpm --filter @remoa/ai eval",
     "coverage": "turbo test:coverage",
     "emails:check": "pnpm --silent --filter @remoa/api exec tsx src/emails/cli.ts check",
-    "emails:test": "pnpm --silent --filter @remoa/api exec tsx src/emails/cli.ts test"
+    "emails:test": "pnpm --silent --filter @remoa/api exec tsx src/emails/cli.ts test",
+    "perf:seed": "pnpm --silent --filter @remoa/db exec tsx src/perf/seed.ts",
+    "perf:bench": "pnpm --silent --filter @remoa/db exec tsx --env-file=../../.env src/perf/bench.ts",
+    "perf:queries": "pnpm --silent --filter @remoa/db exec tsx src/perf/queries.ts"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
