@@ -1,7 +1,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { ok, type CoverageRow, type GetCoverage, type LinkBoardMatrix, type ListMatrixItems, type SuggestMatrixItems, type UnlinkBoardMatrix } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
-import { boardCardStats } from '../review/queue';
+import { mapStatsFor } from '../review/stats';
 import { Abort, dbm, guard, run } from '../db';
 import { invalidate } from '../cache';
 
@@ -21,7 +21,8 @@ export const getCoverage: GetCoverage = async (userId) =>
         sql`select l.board_id, l.matrix_item_id as item_id from board_matrix_items l join boards b on b.id = l.board_id where b.user_id = ${userId} and b.archived_at is null`,
       );
       if (!links.length) return [];
-      const [items, stats] = await Promise.all([tx.select().from(s.matrixItems), boardCardStats(tx, userId, new Date())]);
+      // G21 FR-23: per-board totals from map_stats (was every card and state of the user); avg recall = sum of r / reviewed cards
+      const [items, stats] = await Promise.all([tx.select().from(s.matrixItems), mapStatsFor(tx, userId, links.map((l) => l.board_id), new Date())]);
       const byItem = new Map<string, { board_id: string; item_id: string }[]>();
       for (const l of links) byItem.set(l.item_id, [...(byItem.get(l.item_id) ?? []), l]);
       return items
@@ -31,12 +32,12 @@ export const getCoverage: GetCoverage = async (userId) =>
           const boards = byItem.get(i.id)!;
           const st = boards.map((l) => stats.get(l.board_id));
           const cards = st.reduce((n, x) => n + (x?.cards ?? 0), 0);
-          const recalls = st.flatMap((x) => x?.recalls ?? []);
+          const reviewed = st.reduce((n, x) => n + (x?.reviewed ?? 0), 0);
           const target = i.targetCards;
           return {
             matrixItemId: i.id, area: i.area, code: i.code, title: i.title, boards: boards.length, cards, targetCards: target,
             coverage: Math.min(100, (cards / target) * 100),
-            avgRetrievability: recalls.length ? recalls.reduce((a, b) => a + b, 0) / recalls.length : null,
+            avgRetrievability: reviewed ? st.reduce((n, x) => n + (x?.rSum ?? 0), 0) / reviewed : null,
           };
         });
     }),

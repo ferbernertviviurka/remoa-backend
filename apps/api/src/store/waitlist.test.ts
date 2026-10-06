@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { adminStoreWaitlistSummarySchema, storeConfigSchema, storeWaitlistEntrySchema } from '@remoa/contracts';
 import { captureEmails, templateOf } from '../test-email';
+import { drainEmails } from '../emails/send';
 import { kit, type Kit } from '../admin/users/test-kit';
 import { getStoreConfig, takeStoreWaitlistSlot } from './waitlist';
 
@@ -46,9 +47,11 @@ describe.skipIf(!process.env.DATABASE_URL)('G16 store waitlist routes', () => {
     const put = await k.call('/v1/store/waitlist', { method: 'PUT', as: u.id, body });
     expect(put.status).toBe(200);
     expect(storeWaitlistEntrySchema.parse(put.json.data)).toMatchObject({ email: 'aluno@teste.com', interest: ['buy', 'sell'], sellerRole: 'teacher' });
+    await drainEmails(5000); // G21 D-992: the provider call runs after the response
     expect(mails()).toBe(1);
     const again = await k.call('/v1/store/waitlist', { method: 'PUT', as: u.id, body: { ...body, interest: ['buy'], sellerRole: null } });
     expect(again.json.data).toMatchObject({ interest: ['buy'], sellerRole: null });
+    await drainEmails(5000);
     expect(mails()).toBe(1);
     expect((await k.dbm.db.execute(sql`select 1 from store_waitlist where user_id = ${u.id}`)).length).toBe(1);
     expect((await k.call('/v1/store/waitlist', { method: 'DELETE', as: u.id })).status).toBe(200);

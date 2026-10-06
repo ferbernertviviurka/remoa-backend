@@ -47,6 +47,9 @@
   "referral/summary.ts": {
     "reason": "só cria o código do próprio usuário na primeira leitura; a leitura que o cria já o devolve, nenhum cache fica velho"
   },
+  "review/stats.ts": {
+    "reason": "map_stats é reescrita pelos próprios leitores (linha invalidada pelos gatilhos da 0034, recalculada com os mesmos números) e pelo stats.rebuild (idempotente; só muda se houver deriva); as escritas que mudam os números já invalidam card.changed / map.changed / review.answered"
+  },
   "store/waitlist.ts": {
     "reason": "lista de espera da loja (G16), sem leitura cacheada; se o T7 cachear o estado da loja do usuário, ligar profile.changed"
   },

@@ -217,32 +217,24 @@ async function saveBoard(userId: string, input: GenerateBoardInput, cards: CardD
   const itemIds = extras?.matrixItemIds ?? [];
   const [board] = await db.insert(boards).values({ userId, title: input.title, area: input.area, status: 'private', matrixItemId: itemIds[0] ?? null, ...extras?.share }).returning();
   if (itemIds.length) await db.insert(boardMatrixItems).values(itemIds.map((matrixItemId) => ({ boardId: board!.id, matrixItemId })));
+  // G21 FR-21 (D-1036): one insert of all cards (ids generated here, no `returning` round trip) and one of the edges (was ~1 per card/edge)
   const ids = new Map<string, string>();
-  let order = 0;
-  for (const card of cards) {
-    if (card.type === 'image') continue;
+  const rows = cards.filter((c) => c.type !== 'image').map((card, order) => {
     const place = places.get(card.ref);
-    const [row] = await db.insert(cardTable).values({
-      boardId: board!.id,
-      type: card.type,
-      title: card.title,
-      front: card.front,
-      back: card.back,
-      source: card.source ?? AI_DRAFT_SOURCE,
-      payload: card.payload,
-      status: 'draft',
-      order,
-      x: place?.x ?? 80,
-      y: place?.y ?? 80,
-    }).returning();
-    ids.set(card.ref, row!.id);
-    order += 1;
-  }
-  for (const edge of edges) {
+    const id = crypto.randomUUID();
+    ids.set(card.ref, id);
+    return {
+      id, boardId: board!.id, type: card.type, title: card.title, front: card.front, back: card.back, source: card.source ?? AI_DRAFT_SOURCE,
+      payload: card.payload, status: 'draft' as const, order, x: place?.x ?? 80, y: place?.y ?? 80,
+    };
+  });
+  if (rows.length) await db.insert(cardTable).values(rows);
+  const edgeRows = edges.flatMap((edge) => {
     const fromCardId = ids.get(edge.fromRef);
     const toCardId = ids.get(edge.toRef);
-    if (fromCardId && toCardId) await db.insert(edgeTable).values({ boardId: board!.id, fromCardId, toCardId, label: edge.label });
-  }
+    return fromCardId && toCardId ? [{ boardId: board!.id, fromCardId, toCardId, label: edge.label }] : [];
+  });
+  if (edgeRows.length) await db.insert(edgeTable).values(edgeRows);
   return board!.id;
 }
 

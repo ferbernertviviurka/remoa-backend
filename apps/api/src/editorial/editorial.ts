@@ -348,25 +348,28 @@ export async function copySeed(userId: string, boardId: string) {
   }).returning();
   const map = new Map<string, string>();
   const maskRows: { id: string; cardId: string; assetId: string; polygon: unknown; label: string | null }[] = [];
-  for (const card of srcCards) {
+  // G21 FR-21 (D-1036): one batched insert of cards (was one per card)
+  const cardRows = srcCards.map((card) => {
     const id = crypto.randomUUID();
     const image = copiedImage(card, id, allowed);
     maskRows.push(...image.rows);
-    await db.insert(cards).values({
+    map.set(card.id, id);
+    return {
       id, boardId: copy!.id, type: card.type, shape: card.shape, title: card.title, front: card.front, back: card.back,
       frontAssetId: keep(card.frontAssetId), backAssetId: keep(card.backAssetId),
       width: card.width, height: card.height, tags: card.tags,
       payload: image.payload, rubric: card.rubric, source: card.source, x: card.x, y: card.y, status: card.status, order: card.order, sourceCardId: card.id, // a card reopened by a dispute travels as draft (rule 6)
-    });
-    map.set(card.id, id);
-  }
+    };
+  });
+  if (cardRows.length) await db.insert(cards).values(cardRows);
   if (maskRows.length) await db.insert(masks).values(maskRows);
   const srcEdges = await db.select().from(edges).where(eq(edges.boardId, source.id));
-  for (const edge of srcEdges) {
+  const edgeRows = srcEdges.flatMap((edge) => {
     const from = map.get(edge.fromCardId);
     const to = map.get(edge.toCardId);
-    if (from && to) await db.insert(edges).values({ boardId: copy!.id, fromCardId: from, toCardId: to, label: edge.label, question: edge.question });
-  }
+    return from && to ? [{ boardId: copy!.id, fromCardId: from, toCardId: to, label: edge.label, question: edge.question }] : [];
+  });
+  if (edgeRows.length) await db.insert(edges).values(edgeRows);
   await invalidate('map.changed', { userId, mapId: copy!.id });
   await maybeQualifyReferral(userId); // F18 (D-485): a copied seed can be the first map; never throws
   return ok({ id: copy!.id });

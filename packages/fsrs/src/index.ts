@@ -1,5 +1,5 @@
 // F03 scheduler: thin, pure wrapper over ts-fsrs (default parameters, no fuzz so results are deterministic; D-056).
-import { createEmptyCard, fsrs, generatorParameters, Rating, State, type Card, type Grade as FsrsGrade } from 'ts-fsrs';
+import { computeDecayFactor, createEmptyCard, fsrs, generatorParameters, Rating, State, type Card, type Grade as FsrsGrade } from 'ts-fsrs';
 import {
   grades, type FsrsCardState, type FsrsMemory, type Grade, type IntervalPreview, type MapState, type MapStateOf, type Preview,
   type Retrievability, type Schedule, type VerdictToGrade,
@@ -11,6 +11,12 @@ export const REVIEW_BELOW = 0.7;
 export const STEADY_FROM = 0.85;
 
 const engine = fsrs(generatorParameters({ enable_fuzz: false }));
+
+/**
+ * G21 FR-22 (D-1028): the forgetting curve as `retrievability` evaluates it (ts-fsrs: r = round8((1 + factor * floor(days) / round8(S)) ^ decay)),
+ * so the review queue can order and filter by recall in SQL with the same numbers instead of loading every state.
+ */
+export const CURVE: { decay: number; factor: number } = computeDecayFactor(engine.parameters.w);
 
 const STATES: Record<FsrsCardState, State> = { new: State.New, learning: State.Learning, review: State.Review, relearning: State.Relearning };
 const STATE_NAMES: Record<number, FsrsCardState> = { [State.New]: 'new', [State.Learning]: 'learning', [State.Review]: 'review', [State.Relearning]: 'relearning' };

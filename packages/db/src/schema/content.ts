@@ -97,6 +97,9 @@ export const boards = pgTable('boards', {
   // F19 admin: search by title (ILIKE) and newest first.
   index('boards_title_trgm_idx').using('gin', t.title.op('gin_trgm_ops')),
   index('boards_created_idx').on(t.createdAt.desc()),
+  // G21 FR-26 (0033): listBoards (apps/api/src/boards/boards.ts:61-62) and seed legs of boards_select / listSeeds (editorial.ts:295).
+  index('boards_user_updated_idx').on(t.userId, t.updatedAt.desc()).where(sql`${t.archivedAt} is null`),
+  index('boards_status_idx').on(t.status).where(sql`${t.status} <> 'private'`),
   check('boards_share_token_chk', sql`(${t.access} = 'owner') = (${t.shareToken} is null)`),
   check('boards_share_password_chk', sql`(${t.access} = 'password') = (${t.sharePasswordHash} is not null)`),
   // only student boards are shared; seeds are readable by everyone, so a token there would leak
@@ -122,7 +125,7 @@ export const assets = pgTable('assets', {
   license: licenseEnum('license').notNull().default('own'),
   attribution: text('attribution'),
   ...timestamps,
-});
+}, (t) => [index('assets_user_idx').on(t.userId)]); // G21 FR-26 (0033): assets_own policy, cleanup
 
 export const cards = pgTable('cards', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -153,6 +156,7 @@ export const cards = pgTable('cards', {
   ...timestamps,
 }, (t) => [
   index('cards_board_idx').on(t.boardId),
+  index('cards_board_order_idx').on(t.boardId, t.order, t.createdAt).where(sql`${t.deletedAt} is null`), // G21 FR-26 (0033): getBoard boards.ts:82-83
   index('cards_source_card_idx').on(t.sourceCardId).where(sql`${t.sourceCardId} is not null`),
   index('cards_back_asset_idx').on(t.backAssetId).where(sql`${t.backAssetId} is not null`),
   // limits mirror CARD_SIZE_MIN/MAX in @remoa/contracts
@@ -168,7 +172,12 @@ export const edges = pgTable('edges', {
   label: text('label'),
   question: text('question'),
   ...timestamps,
-}, (t) => [index('edges_board_idx').on(t.boardId)]);
+}, (t) => [
+  index('edges_board_idx').on(t.boardId),
+  // G21 FR-26 (0033): FK cascade from cards
+  index('edges_from_card_idx').on(t.fromCardId),
+  index('edges_to_card_idx').on(t.toCardId),
+]);
 
 export const masks = pgTable('masks', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -177,7 +186,7 @@ export const masks = pgTable('masks', {
   polygon: jsonb('polygon').notNull(),
   label: text('label'),
   ...timestamps,
-});
+}, (t) => [index('masks_card_idx').on(t.cardId)]); // G21 FR-26 (0033): cards.ts:90, masks_* policies, FK cascade
 
 export const boardMatrixItems = pgTable('board_matrix_items', {
   boardId: uuid('board_id').notNull().references(() => boards.id, { onDelete: 'cascade' }),
@@ -194,6 +203,6 @@ export const boardVersions = pgTable('board_versions', {
   reviewerId: uuid('reviewer_id').references(() => authUsers.id),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   ...timestamps,
-});
+}, (t) => [index('board_versions_board_version_idx').on(t.boardId, t.version.desc())]); // G21 FR-26 (0033): getBoard boards.ts:90-95
 
 

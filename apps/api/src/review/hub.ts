@@ -1,99 +1,93 @@
 import { sql } from 'drizzle-orm';
 import {
-  PLAN_LIMITS, REVIEW_HUB_ACTIVITY_WEEKS, REVIEW_HUB_AHEAD_DAYS, REVIEW_HUB_DEFAULT_SECONDS_PER_CARD, REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_HARD_CARDS_MAX,
-  activityLevel, areas, cacheTags, effectiveNewCardsPerDay, ok, type Area, type GetReviewHub, type MapState, type ReviewHub,
+  REVIEW_HUB_ACTIVITY_WEEKS, REVIEW_HUB_AHEAD_DAYS, REVIEW_HUB_DEFAULT_SECONDS_PER_CARD, REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_HARD_CARDS_MAX,
+  activityLevel, areas, cacheTags, ok, type Area, type GetReviewHub, type MapState, type ReviewHub,
 } from '@remoa/contracts';
 import { retrievability } from '@remoa/fsrs';
 import { run } from '../db';
 import { cached, type UserCacheDef } from '../cache';
 import { planOf } from '../billing/plan';
-import { active, buildQueue, cardState, dayWindow, isDue, itemsOf, loadCards, loadStates, stateKey } from './queue';
+import { dayWindow, dueByOffset, newCardBudget, queueRows, recallSql } from './queue';
+import { mapStatsFor, scopeBoards } from './stats';
 
 const DAY_MS = 86_400_000;
 const STREAK_LOOKBACK_DAYS = 400; // ponytail: streaks (and best streak) cap at this
 const addDays = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
 const ratio = (n: number, hits: number) => (n ? hits / n : null);
-const bump = <K>(m: Map<K, { n: number; hits: number }>, key: K, a: { n: number; hits: number }) => {
-  const x = m.get(key) ?? m.set(key, { n: 0, hits: 0 }).get(key)!;
-  x.n += a.n;
-  x.hits += a.hits;
-};
 const zeroStates = (): Record<MapState, number> => ({ review: 0, watch: 0, steady: 0, unknown: 0 });
+const at = (ms: number) => sql`${new Date(ms).toISOString()}::timestamptz`;
 
-/** G15: everything the Revisar page shows, computed on read from `fsrs_state` + `attempts` (no `review_daily`; see D-640). One tx, 5 queries. */
+/**
+ * G15: everything the Revisar page shows. G21 FR-22/FR-23 (D-1027..D-1030): one transaction, no read of every card/state/attempt:
+ * the queue is the indexed SQL of `queueRows`, per-board totals come from `map_stats`, the 400-day series from `user_daily_stats`,
+ * per board/area accuracy from 30 days of `attempts` (range on `attempts_user_created_idx`), hard cards by `order by ... limit`.
+ */
 export async function computeReviewHub(userId: string, now: Date): Promise<ReviewHub> {
-  const [{ plan }, hub] = await Promise.all([
-    planOf(userId, now),
-    run(userId, async (tx) => {
-      const [cards, states, win, prefRows] = await Promise.all([
-        loadCards(tx, userId, null), loadStates(tx, userId, null), dayWindow(tx, userId, now),
-        tx.execute<{ n: number | null }>(sql`select new_cards_per_day as n from user_preferences where user_id = ${userId}`),
-      ]);
-      // one scan of the last STREAK_LOOKBACK_DAYS: per day and board, enough for streaks, the 15-week calendar, retention and areas
-      const [attempts, [med]] = await Promise.all([
-        tx.execute<{ day: string; board_id: string; area: Area; n: number; hits: number }>(sql`
-          select ((a.created_at at time zone ${win.tz}::text) - interval '4 hours')::date::text as day, c.board_id, b.area::text as area,
-                 count(*)::int as n, (count(*) filter (where a.grade >= 3))::int as hits
-          from attempts a join cards c on c.id = a.card_id join boards b on b.id = c.board_id
-          where a.user_id = ${userId} and a.created_at >= (${win.day}::date - ${STREAK_LOOKBACK_DAYS}::int) at time zone ${win.tz}::text + interval '4 hours'
-          group by 1, 2, 3`),
-        tx.execute<{ m: number | null }>(sql`
-          select percentile_cont(0.5) within group (order by duration_ms)::float8 as m
-          from (select duration_ms from attempts where user_id = ${userId} and duration_ms > 0 order by created_at desc limit 200) t`),
-      ]);
-      return { cards, states, win, pref: prefRows[0]?.n ?? null, attempts, studied: new Set(attempts.map((r) => r.day)), medianMs: med?.m ?? null };
-    }),
-  ]);
-  const { cards, states, win, attempts, studied } = hub;
+  const plan = planOf(userId, now); // other connection, in parallel
+  const hub = await run(userId, async (tx) => {
+    const win = await dayWindow(tx, userId, now);
+    const today = win.day;
+    const [budget, boards, due, days, recent, hard, [med]] = await Promise.all([
+      newCardBudget(tx, userId, plan, win.startMs),
+      scopeBoards(tx, userId),
+      dueByOffset(tx, userId, win, Math.max(REVIEW_HUB_FORECAST_DAYS, REVIEW_HUB_AHEAD_DAYS + 1)),
+      tx.execute<{ day: string; n: number; hits: number }>(sql`
+        select day::text, reviews as n, hits from user_daily_stats where user_id = ${userId} and day >= ${today}::date - ${STREAK_LOOKBACK_DAYS}::int`),
+      tx.execute<{ board_id: string; area: Area; n: number; hits: number }>(sql`
+        select c.board_id, b.area::text as area, sum(a.n)::int as n, sum(a.hits)::int as hits
+        from (
+          select card_id, count(*) as n, count(*) filter (where grade >= 3) as hits from attempts
+          where user_id = ${userId} and created_at >= ${at(win.startMs - 29 * DAY_MS)} and created_at < ${at(win.endMs)} group by 1
+        ) a -- grouped per card first (attempts_user_created_idx), then one PK probe per card (see queue.ts stateItemsSql)
+        cross join lateral (select c.board_id from cards c where c.id = a.card_id offset 0) c
+        cross join lateral (select b.area from boards b where b.id = c.board_id offset 0) b
+        group by 1, 2`), // ponytail: 30 x 24 h before today's 04:00 (the old buckets were local days; differs by 1 h across a DST change, BR has none)
+      tx.execute<{ card_id: string; board_id: string; board_title: string; title: string; lapses: number; stability: number; difficulty: number; due: string; reps: number; last_review: string | null; state: 'new' | 'learning' | 'review' | 'relearning'; learning_steps: number; scheduled_days: number }>(sql`
+        select f.card_id, c.board_id, b.title as board_title, c.title, f.lapses, f.stability, f.difficulty, f.due, f.reps, f.last_review, f.state::text as state, f.learning_steps, f.scheduled_days
+        from fsrs_state f
+        cross join lateral (select c.board_id, c.title, c.type, c.deleted_at, c.suspended_at from cards c where c.id = f.card_id offset 0) c
+        cross join lateral (select b.title, b.archived_at from boards b where b.id = c.board_id offset 0) b
+        where f.user_id = ${userId} and f.sub_id = '' and f.reps > 0 and f.lapses > 0 and c.deleted_at is null and c.suspended_at is null and c.type <> 'note' and b.archived_at is null
+        order by f.lapses desc, ${recallSql(now.getTime())}, f.card_id limit ${REVIEW_HUB_HARD_CARDS_MAX}`),
+      tx.execute<{ m: number | null }>(sql`
+        select percentile_cont(0.5) within group (order by duration_ms)::float8 as m
+        from (select duration_ms from attempts where user_id = ${userId} and duration_ms > 0 order by created_at desc limit 200) t`),
+    ]);
+    const [items, stats] = await Promise.all([
+      // new items: at most the day's remaining cap per board (any selection takes at most newRemaining, so more per board is dead weight)
+      queueRows(tx, { userId, boardId: null }, { now, endMs: win.endMs, due: null, weak: null, fresh: budget.limit === null ? { limit: null, perBoard: null } : budget.remaining > 0 ? { limit: null, perBoard: budget.remaining } : false }),
+      mapStatsFor(tx, userId, boards.map((b) => b.id), now, win),
+    ]);
+    return { win, budget, boards, items, stats, due, days, recent, hard, medianMs: med?.m ?? null };
+  });
+  const { win, budget, boards, items, stats, days, recent } = hub;
   const today = win.day;
 
   // --- queue (F03 rule; budget = limit - states introduced today) --------------------------------------------------
-  let introduced = 0;
-  for (const s of states.values()) if (s.createdMs >= win.startMs) introduced++;
-  const newLimit = effectiveNewCardsPerDay(hub.pref, PLAN_LIMITS[plan].newCardsPerDay); // null = unlimited (D-647)
-  const newRemaining = newLimit === null ? Infinity : Math.max(0, newLimit - introduced);
-  const live = active(cards);
-  const items = itemsOf(live, false);
+  const newLimit = budget.limit;
+  const newRemaining = budget.remaining;
   const secondsPerCard = hub.medianMs ? Math.max(1, Math.round(hub.medianMs / 100) / 10) : REVIEW_HUB_DEFAULT_SECONDS_PER_CARD;
-  const kept: ReviewHub['queue']['items'] = [];
-  const newPerBoard = new Map<string, number>();
-  for (const i of buildQueue(items, states, { now, endMs: win.endMs, newBudget: Infinity })) {
-    if (i.reason === 'new') {
-      const n = newPerBoard.get(i.boardId) ?? 0;
-      if (n >= newRemaining) continue; // any selection takes at most newRemaining new items, so more per board is dead weight
-      newPerBoard.set(i.boardId, n + 1);
-    }
-    kept.push({ ...i, mode: i.mode! });
-  }
-  const totalNew = kept.filter((i) => i.reason === 'new').length;
-  const counts = { due: kept.filter((i) => i.reason === 'due').length, new: Math.min(totalNew, newRemaining), weak: kept.filter((i) => i.reason === 'weak').length };
+  const kept: ReviewHub['queue']['items'] = [...items.due, ...items.new, ...items.weak].map((i) => ({ ...i, mode: i.mode! }));
+  const totalNew = items.new.length;
+  const counts = { due: items.due.length, new: Math.min(totalNew, newRemaining), weak: items.weak.length };
   const defaultCount = counts.due + counts.new;
 
   // --- forecast, tomorrow, ahead ------------------------------------------------------------------------------------
-  const due = Array<number>(REVIEW_HUB_FORECAST_DAYS).fill(0);
-  let dueTomorrow = 0;
+  const dueTomorrow = hub.due[1] ?? 0;
   let aheadCount = 0;
-  for (const it of items) {
-    const m = states.get(stateKey(it.cardId, it.subId));
-    if (!m) continue;
-    const k = isDue(m, win.endMs) ? 0 : Math.floor((m.due.getTime() - win.endMs) / DAY_MS) + 1;
-    if (k < REVIEW_HUB_FORECAST_DAYS) due[k]!++;
-    if (k === 1) dueTomorrow++;
-    if (k >= 1 && k <= REVIEW_HUB_AHEAD_DAYS) aheadCount++;
-  }
+  for (let k = 1; k <= REVIEW_HUB_AHEAD_DAYS; k++) aheadCount += hub.due[k] ?? 0;
 
-  // --- states, per board / area ------------------------------------------------------------------------------------
-  const boardIds = [...new Set(cards.map((c) => c.boardId))];
-  const titles = new Map<string, string>();
-  if (boardIds.length) for (const b of await run(userId, (tx) => tx.execute<{ id: string; title: string }>(sql`select id, title from boards where id = any(${`{${boardIds.join(',')}}`}::uuid[])`))) titles.set(b.id, b.title);
+  // --- states, per board / area (map_stats) ------------------------------------------------------------------------
+  const titles = new Map(boards.map((b) => [b.id, b.title]));
   const total = zeroStates();
+  let cardCount = 0;
   const byBoard = new Map<string, { area: Area; cards: number; states: Record<MapState, number> }>();
-  for (const c of cards) {
-    const st = cardState(c, states, now).state;
-    total[st]++;
-    const b = byBoard.get(c.boardId) ?? byBoard.set(c.boardId, { area: c.area, cards: 0, states: zeroStates() }).get(c.boardId)!;
-    b.cards++;
-    b.states[st]++;
+  for (const b of boards) {
+    const st = stats.get(b.id);
+    if (!st || st.cards === 0) continue; // the old hub listed boards with at least one in-scope card
+    cardCount += st.cards;
+    for (const k of Object.keys(total) as MapState[]) total[k] += st.states[k];
+    byBoard.set(b.id, { area: b.area, cards: st.cards, states: st.states });
   }
   const queueOf = new Map<string, { due: number; new: number; weak: number }>();
   for (const i of kept) {
@@ -101,18 +95,18 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
     q[i.reason]++;
   }
 
-  // --- attempts: per day, per board, per area ----------------------------------------------------------------------
-  const perDay = new Map<string, { n: number; hits: number }>();
+  // --- attempts: per day (user_daily_stats), per board / area (last 30 days) ----------------------------------------
+  const perDay = new Map(days.map((d) => [d.day, { n: d.n, hits: d.hits }]));
+  const studied = new Set(days.filter((d) => d.n > 0).map((d) => d.day));
   const perBoard = new Map<string, { n: number; hits: number }>();
   const perArea = new Map<Area, { n: number; hits: number }>();
-  const d30 = addDays(today, -29);
-  for (const a of attempts) {
-    const d = perDay.get(a.day) ?? perDay.set(a.day, { n: 0, hits: 0 }).get(a.day)!;
-    d.n += a.n;
-    d.hits += a.hits;
-    if (a.day < d30 || a.day > today) continue;
-    bump(perBoard, a.board_id, a);
-    bump(perArea, a.area, a);
+  for (const a of recent) {
+    const b = perBoard.get(a.board_id) ?? perBoard.set(a.board_id, { n: 0, hits: 0 }).get(a.board_id)!;
+    b.n += a.n;
+    b.hits += a.hits;
+    const x = perArea.get(a.area) ?? perArea.set(a.area, { n: 0, hits: 0 }).get(a.area)!;
+    x.n += a.n;
+    x.hits += a.hits;
   }
   const sumDays = (from: string, to: string) => {
     let n = 0;
@@ -129,6 +123,7 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
       const x = sumDays(addDays(end, -(step - 1)), end);
       return { date: end, value: ratio(x.n, x.hits) };
     });
+  const d30 = addDays(today, -29);
   const r30 = sumDays(d30, today);
   const prev30 = sumDays(addDays(today, -59), addDays(today, -30));
   const retention30 = ratio(r30.n, r30.hits);
@@ -152,20 +147,21 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
     bestStreak = Math.max(bestStreak, n);
   }
 
-  // --- hard cards (concept/case: the card's own state) -------------------------------------------------------------
-  const hardRows = live.flatMap((c) => {
-    const m = states.get(stateKey(c.id, ''));
-    return m && m.reps > 0 && m.lapses > 0 ? [{ c, lapses: m.lapses, r: retrievability(m, now) }] : [];
-  }).sort((a, b) => b.lapses - a.lapses || a.r - b.r).slice(0, REVIEW_HUB_HARD_CARDS_MAX);
-  const cardTitles = new Map<string, string>();
-  if (hardRows.length) for (const r of await run(userId, (tx) => tx.execute<{ id: string; title: string }>(sql`select id, title from cards where id = any(${`{${hardRows.map((h) => h.c.id).join(',')}}`}::uuid[])`))) cardTitles.set(r.id, r.title);
+  // --- hard cards (concept/case: the card's own state), recall of the 10 picked in ts-fsrs ---------------------------
+  const hardCards = hub.hard.map((h) => ({
+    cardId: h.card_id, boardId: h.board_id, boardTitle: h.board_title, title: h.title, lapses: h.lapses,
+    r: retrievability({ stability: h.stability, difficulty: h.difficulty, due: new Date(h.due), reps: h.reps, lapses: h.lapses, lastReview: h.last_review ? new Date(h.last_review) : null, state: h.state, learningSteps: h.learning_steps, scheduledDays: h.scheduled_days }, now),
+  }));
 
   const reviewed = perDay.get(today)?.n ?? 0;
   const dueByArea = new Map<Area, number>();
-  for (const i of kept) if (i.reason === 'due') dueByArea.set(byBoard.get(i.boardId)!.area, (dueByArea.get(byBoard.get(i.boardId)!.area) ?? 0) + 1);
+  for (const i of items.due) {
+    const area = byBoard.get(i.boardId)?.area;
+    if (area) dueByArea.set(area, (dueByArea.get(area) ?? 0) + 1);
+  }
   const cardsByArea = new Map<Area, number>();
   for (const b of byBoard.values()) cardsByArea.set(b.area, (cardsByArea.get(b.area) ?? 0) + b.cards);
-  const status: ReviewHub['status'] = cards.length === 0 ? 'empty' : studied.size === 0 ? 'no_history' : defaultCount === 0 ? 'done' : 'active';
+  const status: ReviewHub['status'] = cardCount === 0 ? 'empty' : studied.size === 0 ? 'no_history' : defaultCount === 0 ? 'done' : 'active';
 
   return {
     status,
@@ -180,10 +176,10 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
       retentionDelta: retention30 === null || prevRetention === null ? null : Math.round((retention30 - prevRetention) * 100),
       reviews7: sumDays(addDays(today, -6), today).n,
       firm: total.steady,
-      firmTotal: cards.length,
-      firmPct: cards.length ? Math.round((total.steady / cards.length) * 100) : 0,
+      firmTotal: cardCount,
+      firmPct: cardCount ? Math.round((total.steady / cardCount) * 100) : 0,
     },
-    forecast: due.map((count, k) => ({ date: addDays(today, k), count })),
+    forecast: hub.due.slice(0, REVIEW_HUB_FORECAST_DAYS).map((count, k) => ({ date: addDays(today, k), count })),
     states: total,
     retention: { d7: retentionPoints(7, 1), d30: retentionPoints(30, 1), d90: retentionPoints(30, 3) },
     activity,
@@ -191,8 +187,8 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
       const x = perArea.get(area);
       return { area, cards: cardsByArea.get(area) ?? 0, dueToday: dueByArea.get(area) ?? 0, attempts: x?.n ?? 0, accuracy: x ? ratio(x.n, x.hits) : null };
     }),
-    hardCards: hardRows.map((h) => ({ cardId: h.c.id, boardId: h.c.boardId, boardTitle: titles.get(h.c.boardId) ?? '', title: cardTitles.get(h.c.id) ?? '', r: h.r, lapses: h.lapses })),
-    maps: [...byBoard].sort(([ia], [ib]) => (titles.get(ia) ?? '').localeCompare(titles.get(ib) ?? '') || (ia < ib ? -1 : 1)).map(([boardId, b]) => { // stable order (title, id): card load order varied between runs
+    hardCards,
+    maps: [...byBoard].sort(([ia], [ib]) => (titles.get(ia) ?? '').localeCompare(titles.get(ib) ?? '') || (ia < ib ? -1 : 1)).map(([boardId, b]) => { // stable order (title, id)
       const q = queueOf.get(boardId) ?? { due: 0, new: 0, weak: 0 };
       const x = perBoard.get(boardId);
       return { boardId, title: titles.get(boardId) ?? '', area: b.area, cards: b.cards, states: b.states, ...q, retention30: x ? ratio(x.n, x.hits) : null };

@@ -1,7 +1,7 @@
 import { createEmptyCard, fsrs, generatorParameters, type Grade as G } from 'ts-fsrs';
 import { describe, expect, it } from 'vitest';
 import { grades, type FsrsMemory, type Grade } from '@remoa/contracts';
-import { aggregate, mapState, preview, retrievability, schedule, verdictToGrade } from './index';
+import { aggregate, CURVE, mapState, preview, retrievability, schedule, verdictToGrade } from './index';
 
 const DAY = 86_400_000;
 const t0 = new Date('2026-03-01T12:00:00Z');
@@ -140,5 +140,26 @@ describe('property: due never precedes the review time', () => {
         expect(r).toBeLessThanOrEqual(1);
       }
     }
+  });
+});
+
+// G21 D-1028: apps/api `recallSql` evaluates this formula in Postgres to order the queue and pick "em atenção"; it must be ts-fsrs's.
+describe('CURVE (the recall formula the queue SQL uses)', () => {
+  const round8 = (x: number) => Math.round(x * 1e8) / 1e8;
+  const twin = (m: FsrsMemory, now: Date) =>
+    m.reps === 0 || !m.lastReview || m.state === 'new'
+      ? 0
+      : round8(Math.pow(1 + (CURVE.factor * Math.max(Math.floor((now.getTime() - m.lastReview.getTime()) / DAY), 0)) / +m.stability.toFixed(8), CURVE.decay));
+  it('matches retrievability over a grid of stabilities, ages and states', () => {
+    expect(CURVE.decay).toBeLessThan(0);
+    expect(CURVE.factor).toBeGreaterThan(0);
+    for (const stability of [0.001, 0.4, 1, 2.5, 7.123456789, 33, 180.5, 3650])
+      for (const age of [0, 0.5, 1, 1.999, 2, 9, 30, 400])
+        for (const state of ['learning', 'review', 'relearning', 'new'] as const) {
+          const m: FsrsMemory = { stability, difficulty: 5, due: at(1), reps: 2, lapses: 0, lastReview: t0, state, learningSteps: 0, scheduledDays: 1 };
+          expect(twin(m, at(age))).toBe(retrievability(m, at(age)));
+        }
+    const never: FsrsMemory = { stability: 3, difficulty: 5, due: t0, reps: 0, lapses: 0, lastReview: null, state: 'new', learningSteps: 0, scheduledDays: 0 };
+    expect(twin(never, at(3))).toBe(0);
   });
 });

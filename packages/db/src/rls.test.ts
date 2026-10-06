@@ -173,6 +173,7 @@ describe.skipIf(!process.env.DATABASE_URL)('RLS', () => {
     try {
       await m.db.update(s.profiles).set({ name: '  Beatriz   Souza Lima ' }).where(eq(s.profiles.userId, b));
       await m.db.update(s.profiles).set({ name: 'Caio' }).where(eq(s.profiles.userId, c));
+      await m.db.delete(s.referralCodes).where(eq(s.referralCodes.code, 'ABCD2345')); // a run interrupted before its cleanup leaves this fixed code behind
       await m.db.insert(s.referralCodes).values({ userId: a, code: 'ABCD2345' });
       const t0 = new Date();
       const [rb] = await m.db.insert(s.referrals).values({ referrerId: a, refereeId: b, channel: 'link', status: 'qualified', signedUpAt: t0, qualifiedAt: t0 }).returning();
