@@ -294,7 +294,7 @@ const maxInputChars = () => Number(process.env.AI_MAX_INPUT_CHARS) || 120_000;
 /** Running in this process: cancel aborts the model call. Another process sees the cancel when it reads the job row. */
 const running = new Map<string, AbortController>();
 
-async function saveBoard(tx: Tx, userId: string, input: JobInput, cards: CardDraft[], edges: { fromRef: string; toRef: string; label: string | null }[]) {
+async function saveBoard(tx: Tx, userId: string, input: JobInput, cards: (CardDraft & { sourceExcerpt?: string })[], edges: { fromRef: string; toRef: string; label: string | null }[]) {
   const { boards, boardMatrixItems, cards: cardTable, edges: edgeTable } = await dbm();
   const places = new Map(layout(cards, edges).map((p) => [p.ref, p]));
   const itemIds = input.extras?.matrixItemIds ?? [];
@@ -307,7 +307,7 @@ async function saveBoard(tx: Tx, userId: string, input: JobInput, cards: CardDra
     const id = crypto.randomUUID();
     ids.set(card.ref, id);
     return {
-      id, boardId: board!.id, type: card.type, title: card.title, front: card.front, back: card.back, source: card.source ?? AI_DRAFT_SOURCE,
+      id, boardId: board!.id, type: card.type, title: card.title, front: card.front, back: card.back, source: card.source ?? AI_DRAFT_SOURCE, sourceExcerpt: card.sourceExcerpt ?? null,
       payload: card.payload, status: 'draft' as const, order, x: place?.x ?? 80, y: place?.y ?? 80,
     };
   });

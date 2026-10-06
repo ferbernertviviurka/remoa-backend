@@ -46,7 +46,7 @@ const toDetail = (r: CardRow) => ({
 export const getCard: GetCard = async (userId, cardId) => {
   if (!isUuid(cardId)) return notFound();
   return run(userId, async (tx, s) => {
-    const [r] = await tx.select(pick(s.cards, 'id', 'boardId', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'source', 'x', 'y', 'status', 'order', 'reviewerId', 'updatedAt', 'rubric', 'payload', 'suspendedAt')).from(s.cards).where(and(eq(s.cards.id, cardId), isNull(s.cards.deletedAt)));
+    const [r] = await tx.select(pick(s.cards, 'id', 'boardId', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'source', 'sourceExcerpt', 'x', 'y', 'status', 'order', 'reviewerId', 'updatedAt', 'rubric', 'payload', 'suspendedAt')).from(s.cards).where(and(eq(s.cards.id, cardId), isNull(s.cards.deletedAt)));
     if (!r) return notFound();
     return ok(toDetail(r));
   });

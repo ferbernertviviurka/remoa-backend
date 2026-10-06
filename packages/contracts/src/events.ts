@@ -62,6 +62,9 @@ export const eventSchemas = {
   // G22 (CCR-071): server only (log line with `event`), never prompt, answer or card text
   ai_call: z.object({ fn: z.enum(['grade', 'rubric', 'extract']), model: z.string().min(1).max(80), latencyMs: ms, status: z.enum(aiStatuses) }).strict(),
   ai_error: z.object({ fn: z.enum(['grade', 'rubric', 'extract']), type: z.string().regex(/^[a-z_]{1,40}$/) }).strict(),
+  // G22 (CCR-072): client; no user content (code = AiErrorCode)
+  ai_error_shown: z.object({ code: z.string().regex(/^[a-z_]{1,40}$/) }).strict(),
+  ai_grade_flagged: none,
   board_generated_from_pdf: z.object({ pages: count, cards: count, edges: count, durationMs: ms }).strict(),
   rubric_generated: none,
   // F06

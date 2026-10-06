@@ -118,6 +118,8 @@ export const cardSchema = z.object({
   suspendedAt: timestampSchema.nullable().optional(),
   /** F02 FR-9 (D-531): in a seed copy, the seed card it came from. Absent/null = not a seed copy (or copied before 0023). */
   sourceCardId: idSchema.nullable().optional(),
+  /** G22 (CCR-072): verbatim passage of the input an AI-generated card came from. Absent/null = not AI-generated or offline. */
+  sourceExcerpt: z.string().nullable().optional(),
 });
 export type Card = z.infer<typeof cardSchema>;
 

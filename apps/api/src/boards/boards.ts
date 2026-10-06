@@ -156,6 +156,7 @@ export async function getBoardView(
         frontAssetId: s.cards.frontAssetId,
         back: text(s.cards.back), backAssetId: s.cards.backAssetId, width: s.cards.width, height: s.cards.height,
         tags: view === 'structure' ? sql<string[]>`'{}'::text[]` : s.cards.tags, source: view === 'structure' ? sql<string | null>`null` : s.cards.source,
+        sourceExcerpt: view === 'structure' ? sql<string | null>`null` : s.cards.sourceExcerpt,
         x: s.cards.x, y: s.cards.y, status: s.cards.status,
         order: s.cards.order, reviewerId: s.cards.reviewerId, updatedAt: s.cards.updatedAt, payload: s.cards.payload, suspendedAt: s.cards.suspendedAt,
       })
@@ -288,7 +289,7 @@ export const duplicateBoard: DuplicateBoard = async (userId, boardId, title) => 
 };
 
 /** FR-17 (D-1066): what a copy of a card reads (no deleted/suspended/reviewer/source ids). */
-export const CLONE_CARD_COLS = ['id', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order', 'createdAt'] as const;
+export const CLONE_CARD_COLS = ['id', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'sourceExcerpt', 'x', 'y', 'status', 'order', 'createdAt'] as const;
 type CardRow = Pick<typeof import('@remoa/db').cards.$inferSelect, (typeof CLONE_CARD_COLS)[number]>;
 /** Inserts copies of `cards` (fresh ids, image masks included) and the edges between them into `boardId`. Never FSRS state. */
 export async function cloneBoardContent(
@@ -306,7 +307,7 @@ export async function cloneBoardContent(
       const payload = copyImagePayload(c, nid, maskRows);
       return {
         id: nid, boardId, type: c.type, shape: c.shape, title: c.title, front: c.front, frontAssetId: c.frontAssetId, back: c.back, backAssetId: c.backAssetId, width: c.width, height: c.height, tags: o.tags(c), payload,
-        rubric: c.rubric, source: c.source, x: c.x, y: c.y, status: o.status(c), order: c.order,
+        rubric: c.rubric, source: c.source, sourceExcerpt: c.sourceExcerpt, x: c.x, y: c.y, status: o.status(c), order: c.order,
       };
     });
     await tx.insert(s.cards).values(rows);

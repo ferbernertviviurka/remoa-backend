@@ -260,6 +260,13 @@
       "when": 1791298778831,
       "tag": "0036_g22_ai",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791300204499,
+      "tag": "0037_g22_source_excerpt",
+      "breakpoints": true
     }
   ]
 }

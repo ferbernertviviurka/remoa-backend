@@ -65,6 +65,10 @@ export const graderVerdictSchema = z.object({
   costCents: z.number().nonnegative().optional(),
   /** G22: set by the server (status, flag id, quota left). A `fallback` verdict came from the local grader. */
   ai: aiInfoSchema.optional(),
+  /** G22 (CCR-072, grader/v3): the card's source (rubric) the verdict rests on. */
+  source: z.string().nullable().optional(),
+  /** G22 (CCR-072): rubric point copied literally by the model; null when it is not in the rubric. */
+  sourceQuote: z.string().nullable().optional(),
 });
 export type GraderVerdict = z.infer<typeof graderVerdictSchema>;
 
