@@ -346,11 +346,12 @@ async function pdfSource(userId: string, assetId: string): Promise<string> {
  * Ends a queued/running job as failed and gives its unit back in the SAME statement (`charged` flips with the status), so a
  * reader that sees `failed` also sees the unit returned, and it is returned exactly once. A job that already has its board is left alone.
  */
-async function failJob(jobId: string, code: string, ai: AiInfo = failedInfo('error', code, messageOf(code)), extra: { clearText?: boolean; userId?: string } = {}) {
+async function failJob(jobId: string, code: string, ai: AiInfo = failedInfo('error', code, messageOf(code)), extra: { clearText?: boolean; userId?: string; stale?: boolean } = {}) {
   const { db } = await dbm();
   const [r] = await db.execute<{ id: string }>(sql`
     with old as (select id, user_id, charged, quota_period from ai_jobs
-      where id = ${jobId} and status in ('queued', 'running') and board_id is null ${extra.userId ? sql`and user_id = ${extra.userId}` : sql``} for update),
+      where id = ${jobId} and status in ('queued', 'running') and board_id is null ${extra.userId ? sql`and user_id = ${extra.userId}` : sql``}
+        ${extra.stale ? sql`and updated_at < ${staleBefore()}` : sql``} for update),
     j as (update ai_jobs j set status = 'failed', progress = 100, stage = null, error = ${code}, ai = ${JSON.stringify(ai)}::jsonb, charged = false,
         text = ${extra.clearText ? null : sql`j.text`}, updated_at = now()
       from old where j.id = old.id
@@ -363,6 +364,41 @@ async function failJob(jobId: string, code: string, ai: AiInfo = failedInfo('err
   return true;
 }
 
+/**
+ * G22 qa (P-617): a live job touches `updated_at` every minute (heartbeat, plus every stage). One silent for STALE_MINUTES is from
+ * a process that died (redeploy mid-OCR or mid-extraction): `failStaleJobs` ends it and gives its unit back.
+ */
+export const STALE_MINUTES = 15;
+const staleBefore = () => sql`now() - make_interval(mins => ${STALE_MINUTES})`;
+
+function heartbeat(jobId: string): () => void {
+  const timer = setInterval(() => {
+    void dbm()
+      .then(({ db }) => db.execute(sql`update ai_jobs set updated_at = now() where id = ${jobId} and status in ('queued', 'running')`))
+      .catch(() => undefined);
+  }, 60_000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+/**
+ * P-617: jobs of dead processes. No board yet: failed with the unit back (`generate_timeout`, retry available). Board saved but
+ * `done` never written (died between the two): `done`, the map is there and the unit was rightly spent. `userId` scopes it
+ * (dedup on a new start); without it, the hourly maintenance sweeps everyone.
+ * ponytail: seq scan of queued/running rows; a partial index on (updated_at) where status in ('queued','running') if ai_jobs grows.
+ */
+export async function failStaleJobs(userId?: string): Promise<number> {
+  const { db } = await dbm();
+  const mine = userId ? sql`and user_id = ${userId}` : sql``;
+  await db.execute(sql`update ai_jobs set status = 'done', progress = 100, stage = null, text = null, updated_at = now()
+    where status in ('queued', 'running') and board_id is not null and updated_at < ${staleBefore()} ${mine}`);
+  const stale = await db.execute<{ id: string }>(sql`select id from ai_jobs
+    where status in ('queued', 'running') and board_id is null and updated_at < ${staleBefore()} ${mine}`);
+  let failed = 0;
+  for (const { id } of stale) if (await failJob(id, 'generate_timeout', undefined, { stale: true })) failed++;
+  return failed;
+}
+
 async function setProgress(jobId: string, progress: number, stage: 'ocr' | 'extract' | 'layout') {
   const { db } = await dbm();
   await db.execute(sql`update ai_jobs set progress = greatest(progress, ${progress}), stage = ${stage}, updated_at = now() where id = ${jobId} and status = 'running'`);
@@ -373,10 +409,18 @@ async function dispatch(jobId: string) {
   if (!sent) void executeGeneration(jobId);
 }
 
-/** A queued/running job of the same user with the same input: the second start returns it (no second charge). */
+/**
+ * A queued/running job of the same user with the same input: the second start returns it (no second charge). A stale one (P-617)
+ * is ended first, its unit back, so the new start runs and is charged once.
+ */
+// ponytail (P-620): check-then-insert; `shared()` dedups only inside one process. Fine with 1 Railway replica; with more, two
+// replicas can each start the same job (2 units). Upgrade: unique partial index on ai_jobs (user_id, input_hash) where status in
+// ('queued','running') + insert ... on conflict do nothing (migration via architect).
 async function activeJob(userId: string, hash: string) {
+  await failStaleJobs(userId);
   const { db } = await dbm();
-  const [r] = await db.execute<{ id: string }>(sql`select id from ai_jobs where user_id = ${userId} and input_hash = ${hash} and status in ('queued', 'running') limit 1`);
+  const [r] = await db.execute<{ id: string }>(sql`select id from ai_jobs where user_id = ${userId} and input_hash = ${hash} and status in ('queued', 'running')
+    and updated_at >= ${staleBefore()} limit 1`);
   return r?.id ?? null;
 }
 
@@ -457,10 +501,13 @@ export async function startPdfGeneration(userId: string, board: z.output<typeof 
 
 async function readPdfJob(jobId: string, bytes: Uint8Array) {
   let text: string;
+  const stop = heartbeat(jobId); // OCR may take minutes (P-617)
   try {
     text = await readableText(bytes);
   } catch {
     text = '';
+  } finally {
+    stop();
   }
   if (text.length < 40) {
     await failJob(jobId, 'pdf_unreadable');
@@ -505,6 +552,7 @@ async function executeGeneration(jobId: string) {
   const text = job.text ?? '';
   const ac = new AbortController();
   running.set(jobId, ac);
+  const stop = heartbeat(jobId);
   const cancellable: typeof fetch = (url, init) => fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, ac.signal]) : ac.signal });
   const startedAt = Date.now(); // ponytail: run time only (queue wait not counted); map_ready decides the e-mail from it
   let model = 'none';
@@ -554,6 +602,7 @@ async function executeGeneration(jobId: string) {
     await failJob(jobId, code, ai).catch(() => undefined);
     track('extract', model, latencyMs, ai, jobId);
   } finally {
+    stop();
     running.delete(jobId);
   }
 }

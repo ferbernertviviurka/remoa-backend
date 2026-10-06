@@ -2,7 +2,7 @@
 // No real AI call: "live" mode points AI_BASE_URL at a fake host and `fetch` is stubbed per test.
 import { config } from 'dotenv';
 import { sql } from 'drizzle-orm';
-import { randomUUID as uuid } from 'node:crypto';
+import { createHash, randomUUID as uuid } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { planDefinition } from '@remoa/contracts';
 
@@ -200,6 +200,26 @@ describe.skipIf(!process.env.DATABASE_URL)('G22 AI quotas, errors, jobs and flag
       expect(after!.rubric).toBeNull();
     });
 
+    it('P-610/P-623: /rubric after a model failure asks the model again, saves the model rubric as ok and spends one unit', async () => {
+      const u = await newUser();
+      const [b] = await dbm.db.insert(dbm.boards).values({ userId: u, title: 'Meu' }).returning();
+      const [card] = await dbm.db.insert(dbm.cards).values({ boardId: b!.id, title: 'Lactato', back: 'Reavaliar em 2 a 4 horas.' }).returning();
+      live();
+      stubAi(() => new Response('{"error":{"message":"down","code":503}}', { status: 503 }));
+      expect((await post(u, '/rubric', { cardId: card!.id })).status).toBe(503);
+      vi.unstubAllGlobals();
+      const spy = stubAi(() => chat(JSON.stringify({ points: [{ text: 'Lactato seriado guia a reposição', essential: true }] })));
+      const res = await post(u, '/rubric', { cardId: card!.id });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { data: { points: { text: string }[] }; ai: { status: string; quota: { used: number } } };
+      expect(spy).toHaveBeenCalled(); // no local rubric from a cache
+      expect(body.data.points[0]!.text).toBe('Lactato seriado guia a reposição');
+      expect(body.ai).toMatchObject({ status: 'ok', quota: { used: 1 } });
+      expect(await used(u, 'ai_rubrics')).toBe(1);
+      const [after] = await dbm.db.execute<{ rubric: { points: { text: string }[] } }>(sql`select rubric from cards where id = ${card!.id}`);
+      expect(after!.rubric.points[0]!.text).toBe('Lactato seriado guia a reposição');
+    });
+
     it('generation: provider failure fails the job (no paragraph map saved as AI) and gives the unit back', async () => {
       const u = await newUser('pro');
       live();
@@ -347,6 +367,77 @@ describe.skipIf(!process.env.DATABASE_URL)('G22 AI quotas, errors, jobs and flag
       expect(ids[0]).toBe(ids[1]);
       await settle(u, ids[0]!);
       expect(await used(u, 'ai_generations')).toBe(1);
+    });
+
+    /** A charged job in `status`, last touched `minutes` ago (a dead process stops the heartbeat). */
+    const stuckJob = async (u: string, o: { status: 'queued' | 'running'; minutes: number; hash?: string; boardId?: string }) => {
+      const held = await q.reserveAi(u, 'ai_generations');
+      if (!held.ok) throw new Error('no unit');
+      const [row] = await dbm.db.insert(dbm.aiJobs).values({
+        userId: u, kind: 'text', input: { kind: 'text', title: 'Morto', area: 'CM' }, text: TEXT, inputHash: o.hash ?? uuid(), status: o.status, stage: 'extract',
+        progress: 30, charged: true, quotaPeriod: held.quota.period, boardId: o.boardId ?? null,
+      }).returning();
+      await dbm.db.execute(sql`update ai_jobs set updated_at = now() - make_interval(mins => ${o.minutes}) where id = ${row!.id}`);
+      return row!.id;
+    };
+    const statusOf = async (id: string) =>
+      (await dbm.db.execute<{ status: string; error: string | null; charged: boolean }>(sql`select status, error, charged from ai_jobs where id = ${id}`))[0]!;
+
+    it('P-617: the sweep fails a job silent for 15 min with its unit back; a live one is kept; one with its board is done', async () => {
+      const u = await newUser('pro');
+      const dead = await stuckJob(u, { status: 'running', minutes: 20 });
+      const deadQueued = await stuckJob(u, { status: 'queued', minutes: 16 });
+      const alive = await stuckJob(u, { status: 'running', minutes: 5 });
+      const [b] = await dbm.db.insert(dbm.boards).values({ userId: u, title: 'Salvo' }).returning();
+      const saved = await stuckJob(u, { status: 'running', minutes: 20, boardId: b!.id });
+      expect(await used(u, 'ai_generations')).toBe(4);
+      expect(await svc.failStaleJobs(u)).toBe(2);
+      expect(await statusOf(dead)).toEqual({ status: 'failed', error: 'generate_timeout', charged: false });
+      expect(await statusOf(deadQueued)).toMatchObject({ status: 'failed', charged: false });
+      expect(await statusOf(alive)).toMatchObject({ status: 'running', charged: true });
+      expect(await statusOf(saved)).toMatchObject({ status: 'done', charged: true }); // the map exists: the unit was rightly spent
+      expect(await used(u, 'ai_generations')).toBe(2);
+      expect(await svc.failStaleJobs(u)).toBe(0); // idempotent: the unit goes back once
+      expect(await used(u, 'ai_generations')).toBe(2);
+      expect((await post(u, `/jobs/${dead}/retry`)).status).toBe(200); // the text is kept: the student can run it again
+      expect(await settle(u, dead)).toMatchObject({ status: 'done' });
+    });
+
+    it('P-617: dedup ignores a dead job of the same input, ends it (unit back) and starts a new one charged once', async () => {
+      const u = await newUser('pro');
+      const body = { kind: 'text' as const, title: 'Sepse', area: 'CM' as const, text: TEXT };
+      const hash = createHash('sha256').update(JSON.stringify([body.kind, body.title, body.area, body.text])).digest('hex');
+      const dead = await stuckJob(u, { status: 'running', minutes: 30, hash });
+      const res = await post(u, '/generate-board', body);
+      expect(res.status).toBe(200);
+      const { data } = (await res.json()) as { data: { jobId: string } };
+      expect(data.jobId).not.toBe(dead);
+      expect(await statusOf(dead)).toMatchObject({ status: 'failed', error: 'generate_timeout', charged: false });
+      expect(await settle(u, data.jobId)).toMatchObject({ status: 'done' });
+      expect(await used(u, 'ai_generations')).toBe(1);
+    });
+
+    it('P-623: cancel racing the end of a job: either the map and the unit stay, or neither does', async () => {
+      for (const delay of [0, 5, 20, 40]) {
+        const u = await newUser('pro');
+        live();
+        stubAi(() => new Promise<Response>((r) => setTimeout(() => r(extractReply([{ ref: 'c1', title: 'Sepse', excerpt: 'disfunção orgânica ameaçadora à vida' }])), delay)));
+        const { data } = (await (await post(u, '/generate-board', { kind: 'text', title: `Corrida ${delay}`, area: 'CM', text: TEXT })).json()) as { data: { jobId: string } };
+        for (let i = 0; i < 100 && (await job(u, data.jobId)).status === 'queued'; i++) await new Promise((r) => setTimeout(r, 2));
+        const cancel = await post(u, `/jobs/${data.jobId}/cancel`);
+        expect([200, 409]).toContain(cancel.status);
+        const end = await settle(u, data.jobId);
+        await new Promise((r) => setTimeout(r, 100)); // let the in-process run finish its last writes
+        const [boards] = await dbm.db.execute<{ n: number }>(sql`select count(*)::int as n from boards where user_id = ${u}`);
+        if (end.status === 'done') {
+          expect(cancel.status).toBe(409);
+          expect({ boards: boards!.n, units: await used(u, 'ai_generations') }).toEqual({ boards: 1, units: 1 });
+        } else {
+          expect(end).toMatchObject({ status: 'failed', error: 'canceled' });
+          expect({ boards: boards!.n, units: await used(u, 'ai_generations') }).toEqual({ boards: 0, units: 0 });
+        }
+        vi.unstubAllGlobals();
+      }
     });
   });
 
