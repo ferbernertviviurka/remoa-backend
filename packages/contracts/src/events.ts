@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { areas, boardAccess, cardTypes, challengeModes, grades, inputKinds, plans, sessionKinds, verdicts } from './enums';
-import { paywallReasons, billingPeriods, paymentMethods } from './billing';
+import { billingPeriods, paymentMethods } from './billing';
+import { paywallReasons, plansFromSources, upgradeSources } from './constants';
 import { disputeOutcomes } from './editorial';
 import { segments, startPaths } from './onboarding';
 import { friendStatuses, referralEntryPoints, referralRejectReasons, referralShareChannels, referralSides } from './referral';
@@ -16,9 +17,7 @@ const none = z.object({}).strict();
 const count = z.number().int().nonnegative();
 const ms = z.number().nonnegative();
 const authMethod = z.enum(['password', 'magic_link', 'google']);
-const upgradeSources = ['account_plan', 'usage_nudge', 'navbar_upgrade', 'plan_popover', 'map_slider_lock', 'library_lock', 'header_new_map_lock', 'referral'] as const;
-/** F15 `/planos?de=`: an upgrade_clicked source, a paywall reason, or 'direct' (missing or unknown `de`). */
-export const plansFromSources = [...upgradeSources, ...paywallReasons, 'direct'] as const;
+export { plansFromSources } from './constants'; // CCR-058: zod-free in ./constants (with upgradeSources)
 
 export const eventSchemas = {
   // F00

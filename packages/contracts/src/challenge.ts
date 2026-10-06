@@ -4,12 +4,12 @@ import { idSchema, subIdSchema, timestampSchema } from './common';
 import { gradeSchema, intervalPreviewSchema, queueFilterSchema } from './review';
 import { graderVerdictSchema } from './ai';
 import { caseStageSchema, maskPointSchema } from './card';
+import { REVIEW_SESSION_MAX } from './constants';
 
 /** Default and max items per session (PRD: 12 items in < 8 min; "Mais 5" starts a 5-item session). */
 export const SESSION_SIZE = 12;
 export const MAX_SKIPS_PER_ITEM = 2;
-/** Upper bound of `limit` (default stays SESSION_SIZE): the Revisar hub starts the whole filtered selection. */
-export const REVIEW_SESSION_MAX = 100;
+export { REVIEW_SESSION_MAX } from './constants'; // CCR-058: zod-free in ./constants
 
 /**
  * What the screen shows around the question. Never contains the answer: the answer card/label is left out of

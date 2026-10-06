@@ -6,34 +6,13 @@ import { idSchema, timestampSchema } from './common';
 import { localDateSchema } from './calendar';
 import type { EmailData, EmailTemplate } from './emails';
 import { storeInterests } from './store';
+import { notificationCategories, notificationTypes } from './constants';
 
-export const notificationTypes = [
-  'calendar_d1',
-  'calendar_d0',
-  'calendar_digest',
-  'review_reminder',
-  'map_ready',
-  'referral_reward',
-  'support_reply',
-  'purchase',
-  'waitlist_joined',
-  'inactivity',
-  'account',
-  'password_reset',
-  // CCR-035 (D-760): e-mail-only notices that used to be plain text outside notify().
-  'support_received',
-  'password_changed',
-  'welcome',
-  'onboarding_nudge',
-  'payment_receipt',
-  'admin_alert',
-  'dispute_resolved',
-] as const;
+export { notificationCategories, notificationTypes } from './constants'; // CCR-058: zod-free in ./constants
 export const notificationTypeSchema = z.enum(notificationTypes);
 export type NotificationType = z.infer<typeof notificationTypeSchema>;
 
-/** Chips on /notificacoes, in this order (Todas is "no category"). */
-export const notificationCategories = ['calendar', 'review', 'maps', 'referrals', 'support', 'account_billing', 'store'] as const;
+/** Chips on /notificacoes: `notificationCategories` order (Todas is "no category"). */
 export const notificationCategorySchema = z.enum(notificationCategories);
 export type NotificationCategory = z.infer<typeof notificationCategorySchema>;
 

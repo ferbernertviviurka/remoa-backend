@@ -1,16 +1,7 @@
 import { z } from 'zod';
+import { errorCodes } from './constants';
 
-export const errorCodes = [
-  'unauthorized',
-  'forbidden',
-  'not_found',
-  'validation',
-  'quota_exceeded',
-  'rate_limited',
-  'conflict',
-  'ai_unavailable',
-  'internal',
-] as const;
+export { errorCodes }; // CCR-058: zod-free in ./constants
 export const errorCodeSchema = z.enum(errorCodes);
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 

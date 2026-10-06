@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./mocks": "./src/mocks/index.ts", "./events": "./src/events.ts", "./referral": "./src/referral.ts", "./cache": "./src/cache.ts", "./medical-schools": "./src/medical-schools.ts" },
+  "exports": { ".": "./src/index.ts", "./mocks": "./src/mocks/index.ts", "./events": "./src/events.ts", "./referral": "./src/referral.ts", "./cache": "./src/cache.ts", "./medical-schools": "./src/medical-schools.ts", "./constants": "./src/constants.ts" },
   "sideEffects": ["./src/mocks/*.ts"],
   "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests" },
   "dependencies": { "zod": "^3.25.76" },

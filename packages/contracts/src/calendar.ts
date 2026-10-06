@@ -3,50 +3,12 @@
 // coerces them to Date); local fields (`date`, `startTime`, `endTime`) are in the event's `timezone` (= profile timezone at save).
 import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
+import { CALENDAR_LIMITS, calendarColors } from './constants';
 
-export const CALENDAR_LIMITS = {
-  titleMin: 2,
-  titleMax: 120,
-  locationMax: 160,
-  descriptionMax: 2000,
-  labelNameMin: 2,
-  labelNameMax: 40,
-  /** Labels per user, defaults included. */
-  labels: 20,
-  coverMaxBytes: 5 * 1024 * 1024,
-  /** GET /events?from&to: inclusive span. Visible range ± 1 month fits (FR-22). */
-  rangeMaxDays: 100,
-  upcomingDefault: 4,
-  upcomingMax: 10,
-  /** Duplicar = +7 days (FR-12). */
-  duplicateDays: 7,
-  /** Soft-deleted events (and their cover) are purged after this (calendar.cleanup). */
-  deletedRetentionDays: 30,
-  /** "Sem fim" lasts this long on the week grid. */
-  defaultDurationMinutes: 60,
-} as const;
+export { CALENDAR_LIMITS, CALENDAR_PALETTE, CALENDAR_REMINDER_RULES, calendarColors } from './constants'; // CCR-058: zod-free in ./constants
 
-/**
- * FR-13 / Q-051, profile timezone: d1 at 18:00 the day before; d0 at 07:00, or 1 h before the start when it starts before 08:00,
- * never before 05:00. All-day events use the same hours. A send time already past when (re)planned = `skipped`.
- */
-export const CALENDAR_REMINDER_RULES = { d1Hour: 18, d0Hour: 7, earlyStartBeforeHour: 8, earlyLeadMinutes: 60, notBeforeHour: 5 } as const;
-
-/** 8-colour label palette (FR-9). Keys are stored; hex lives here and in docs/DESIGN.md "Paleta de etiquetas" (D-741). */
-export const calendarColors = ['orange', 'amber', 'purple', 'teal', 'gray', 'blue', 'pink', 'green'] as const;
 export const calendarColorSchema = z.enum(calendarColors);
 export type CalendarColor = z.infer<typeof calendarColorSchema>;
-/** `text` on `bg` and on white is >= 4.5:1; `dot` is the bar/dot/cover colour and never carries meaning alone (the name is always shown). */
-export const CALENDAR_PALETTE: Record<CalendarColor, { dot: string; text: string; bg: string }> = {
-  orange: { dot: '#C2410C', text: '#9A3412', bg: '#FFEDD5' },
-  amber: { dot: '#CA8A04', text: '#854D0E', bg: '#FEF3C7' },
-  purple: { dot: '#6D5BD0', text: '#3F3579', bg: '#F3F2FB' },
-  teal: { dot: '#0F766E', text: '#0F766E', bg: '#CCFBF1' },
-  gray: { dot: '#8F8AAE', text: '#5F5B7A', bg: '#EEEDF6' },
-  blue: { dot: '#2563EB', text: '#1E40AF', bg: '#DBEAFE' },
-  pink: { dot: '#BE185D', text: '#9D174D', bg: '#FCE7F3' },
-  green: { dot: '#15803D', text: '#166534', bg: '#DCFCE7' },
-};
 
 /**
  * D-740: default labels are per-user rows seeded lazily (insert … on conflict do nothing on (user_id, system_key)) on the first

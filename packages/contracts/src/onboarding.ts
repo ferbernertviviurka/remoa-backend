@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { areas, isAreaAvailable } from './enums';
 import { timestampSchema } from './common';
+import { MAX_GOALS } from './constants';
 
 /** Year / situation. Append-only (rows stored); UI order lives in the frontend. G20 (D-841): `not_med` = "Não estudo medicina". */
 export const segments = ['y3_4', 'y5_6', 'graduated', 'y1_2', 'cursinho', 'resident', 'working', 'not_med'] as const;
@@ -16,7 +17,7 @@ export const goals = [
 export const goalSchema = z.enum(goals);
 export type Goal = z.infer<typeof goalSchema>;
 /** CCR-017 (D-570): objectives are multi-select. Duplicates collapse, order kept; `goals[0]` is mirrored to profiles.goal. */
-export const MAX_GOALS = 5;
+export { MAX_GOALS } from './constants'; // CCR-058: zod-free in ./constants
 export const goalsSchema = z
   .array(goalSchema)
   .max(MAX_GOALS)

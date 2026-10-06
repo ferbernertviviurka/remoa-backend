@@ -2,16 +2,18 @@ import { z } from 'zod';
 import { plans, subscriptionStatuses } from './enums';
 import { idSchema, timestampSchema } from './common';
 import { supportAuthorTypes } from './support';
+import { paywallReasons, quotaKeys } from './constants';
+
+// CCR-058: zod-free in ./constants
+export { annualDiscountPercent, annualSavings, formatBRL, monthlyEquivalent, paywallReasons, PLAN_LIMITS, planDefinition, planFeatureKeys, quotaKeys } from './constants';
+export type { PlanDefinition, PlanFeatureKey } from './constants';
 
 export const planSchema = z.enum(plans);
 
 /** Metered quotas = columns of `usage_counters`. */
-export const quotaKeys = ['ai_grades', 'ai_generations', 'boards', 'cards'] as const;
 export const quotaKeySchema = z.enum(quotaKeys);
 export type QuotaKey = z.infer<typeof quotaKeySchema>;
 
-/** `anki` = per-account Anki import cap (D-648); the server answers `quota_exceeded` 'anki'. */
-export const paywallReasons = ['ai_quota', 'boards', 'cards', 'pdf', 'anki'] as const;
 export type PaywallReason = (typeof paywallReasons)[number];
 
 export const usageCountersSchema = z.object({
@@ -56,17 +58,6 @@ export const entitlementsSchema = z.object({
   referralPending: z.boolean().optional(),
 });
 
-/**
- * D-647 plan table, shared by server (enforcement) and pricing page (display). null = unlimited.
- * Windows: ai_grades per local study day; ai_generations per calendar month; boards/cards = live totals;
- * newCardsPerDay per study day; ankiImportMaxCards per file; ankiImports per account (lifetime, completed imports).
- */
-export const PLAN_LIMITS = {
-  free: { limits: { ai_grades: 20, ai_generations: 0, boards: 2, cards: 50 }, newCardsPerDay: 10, ankiImportMaxCards: 200, ankiImports: 1 },
-  pro: { limits: { ai_grades: 50, ai_generations: 5, boards: null, cards: null }, newCardsPerDay: null, ankiImportMaxCards: null, ankiImports: null },
-  /** D-375/D-647: lifetime one-time purchase = Pro + unlimited AI grades and PDF maps. Never renews, never lapses. */
-  founder: { limits: { ai_grades: null, ai_generations: null, boards: null, cards: null }, newCardsPerDay: null, ankiImportMaxCards: null, ankiImports: null },
-} as const satisfies Record<z.infer<typeof planSchema>, Pick<Entitlements, 'limits' | 'newCardsPerDay' | 'ankiImportMaxCards' | 'ankiImports'>>;
 export const PRO_GRACE_DAYS = 7;
 export const PRICES_BRL = { monthly: 39, annual: 349 } as const;
 /** D-375: Founder (lifetime) fallback/mock price in centavos; the real one comes from STRIPE_PRICE_LIFETIME. */
@@ -112,15 +103,6 @@ export const redirectUrlSchema = z.object({ url: z.string().url() });
 export type RedirectUrl = z.infer<typeof redirectUrlSchema>;
 
 // --- F15 planos e checkout (D-183–D-187) ------------------------------------
-/** F15 FR-4 matrix rows, in display order. Values derive from PLAN_LIMITS (still the single source). */
-export const planFeatureKeys = ['boards', 'cards', 'ai_grades', 'ai_generations', 'anki_imports', 'anki_import_cards', 'new_cards_per_day'] as const;
-export type PlanFeatureKey = (typeof planFeatureKeys)[number];
-/** null = unlimited. ai_grades = correções por IA/dia; ai_generations = mapas de PDF/mês (0 = não incluso); anki_imports = importações Anki na conta; anki_import_cards = cards por arquivo (F06). */
-export type PlanDefinition = Record<PlanFeatureKey, number | null>;
-export const planDefinition = (plan: z.infer<typeof planSchema>): PlanDefinition => {
-  const p = PLAN_LIMITS[plan];
-  return { ...p.limits, anki_imports: p.ankiImports, anki_import_cards: p.ankiImportMaxCards, new_cards_per_day: p.newCardsPerDay };
-};
 
 const cents = z.number().int().nonnegative();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -153,19 +135,6 @@ export const publicPriceBookSchema = z.object({
   variant: z.enum(['29', '49']).optional(),
 });
 export type PublicPriceBook = z.infer<typeof publicPriceBookSchema>;
-type Amounts = { monthly: { amount: number }; annual: { amount: number } };
-
-/** FR-2: round((1 − annual ÷ (monthly × 12)) × 100); 0 when there is nothing to compare. */
-export const annualDiscountPercent = ({ monthly, annual }: Amounts) =>
-  monthly.amount > 0 ? Math.max(0, Math.round((1 - annual.amount / (monthly.amount * 12)) * 100)) : 0;
-/** FR-5 "Economize R$ X por ano", in centavos. */
-export const annualSavings = ({ monthly, annual }: Amounts) => Math.max(0, monthly.amount * 12 - annual.amount);
-/** FR-5 annual shown per month, in centavos (rounded). */
-export const monthlyEquivalent = ({ annual }: Amounts) => Math.round(annual.amount / 12);
-
-const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
-/** Centavos → "R$ 39,00" (Intl uses a no-break space after R$). */
-export const formatBRL = (amountCents: number) => brl.format(amountCents / 100);
 
 const pad = (n: number) => String(n).padStart(2, '0');
 /** Next charge as a local date (YYYY-MM-DD in `tz`); day clamps to the month's end (Jan 31 → Feb 28/29), like Stripe. */
