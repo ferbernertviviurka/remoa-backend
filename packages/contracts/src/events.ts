@@ -7,6 +7,7 @@ import { friendStatuses, referralEntryPoints, referralRejectReasons, referralSha
 import { supportTicketTypes } from './support';
 import { calendarReminderKinds, calendarSystemLabels, calendarViews } from './calendar';
 import { notificationPrefKeys, notificationTypes } from './notifications';
+import { aiStatuses } from './ai';
 import { accountSections, completenessItems, identityProviders, passwordLabels, preferencesSchema, reminderHourSchema, themes } from './account';
 
 // Rule (F11): events carry counts and enums only, never answer text or card content.
@@ -58,6 +59,9 @@ export const eventSchemas = {
   paywall_viewed: z.object({ reason: z.enum(paywallReasons) }).strict(),
   // F05
   ai_graded: z.object({ verdict: z.enum(verdicts), latencyMs: ms, costCents: z.number().nonnegative(), model: z.string().min(1).max(64) }).strict(),
+  // G22 (CCR-071): server only (log line with `event`), never prompt, answer or card text
+  ai_call: z.object({ fn: z.enum(['grade', 'rubric', 'extract']), model: z.string().min(1).max(80), latencyMs: ms, status: z.enum(aiStatuses) }).strict(),
+  ai_error: z.object({ fn: z.enum(['grade', 'rubric', 'extract']), type: z.string().regex(/^[a-z_]{1,40}$/) }).strict(),
   board_generated_from_pdf: z.object({ pages: count, cards: count, edges: count, durationMs: ms }).strict(),
   rubric_generated: none,
   // F06

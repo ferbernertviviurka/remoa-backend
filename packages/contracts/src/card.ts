@@ -176,6 +176,8 @@ const draftBase = z.object({
   front: z.string().nullable(),
   back: z.string().nullable(),
   source: z.string().nullable(),
+  /** G22 (CCR-070): verbatim passage of the input the card came from; AI drafts without one found in the text are dropped by the server. */
+  sourceExcerpt: z.string().max(2000).optional(),
 });
 export const maskDraftSchema = maskSchema.pick({ polygon: true, label: true });
 export type MaskDraft = z.infer<typeof maskDraftSchema>;
