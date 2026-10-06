@@ -9,3 +9,4 @@ export * from './admin';
 export * from './store';
 export * from './notifications';
 export * from './calendar';
+export * from './blog';

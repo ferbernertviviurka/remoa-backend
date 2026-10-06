@@ -1,6 +1,6 @@
 // G18 F24 HTTP: /v1/emails/{webhook,unsubscribe} (public, signed), /v1/auth/send-email (Supabase hook, signed) and /v1/dev/emails (never in production).
 import { Hono, type Context } from 'hono';
-import { env } from '@remoa/config';
+import { env, isProduction } from '@remoa/config';
 import { EMAIL_CLASS, emailTemplateSchema } from '@remoa/contracts';
 import { emailSamples, emails, render, sampleData, sampleLinks } from '@remoa/emails';
 import { fail, type Env } from '../app';
@@ -104,7 +104,7 @@ const versionsOf = () => {
 };
 
 export const devEmailsRoutes = new Hono<Env>()
-  .use('*', async (c, next) => (env().production ? fail({ code: 'not_found', message: 'route not found' }) : next()))
+  .use('*', async (c, next) => (isProduction() ? fail({ code: 'not_found', message: 'route not found' }) : next()))
   .get('/', (c) => c.json({ ok: true, data: versionsOf() }))
   .get('/:template/:version', async (c) => {
     const t = emailTemplateSchema.safeParse(c.req.param('template'));

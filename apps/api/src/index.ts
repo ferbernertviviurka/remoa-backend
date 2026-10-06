@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { createClient } from '@supabase/supabase-js';
 import { createApp, supabaseVerifier } from './app';
 import { ensureBucket } from './storage/storage';
+import { syncLegalVersions } from './account/legal';
 import { createLogger } from '@remoa/log';
 import { createMockStripe, createStripe, installStripe } from './billing/stripe';
 import { grade as mockGrader } from '@remoa/contracts/mocks';
@@ -42,6 +43,8 @@ const app = createApp({
   verifyToken: supabaseVerifier(supabase),
 });
 
+// P-430: the DB trigger records a sign-up acceptance only for the versions in legal_versions; publish the configured ones.
+syncLegalVersions().catch((e) => createLogger({ requestId: 'boot' }).error('legal versions not synced', { error: String(e) }));
 ensureBucket().catch((e) => createLogger({ requestId: 'boot' }).error('storage bucket unavailable', { error: String(e) }));
 
 const port = Number(process.env.PORT ?? 4000);

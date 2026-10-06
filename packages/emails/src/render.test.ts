@@ -69,7 +69,7 @@ describe.each(emailSamples)('$template / $version', ({ template, version }) => {
 
   it('links absolutos so os passados; toda img tem alt', async () => {
     const { html, text } = await out;
-    const given = new Set(urls(JSON.stringify({ data, links })));
+    const given = new Set([...urls(JSON.stringify({ data, links })), `${links.appUrl}/email/logo.png`]);
     for (const u of [...urls(html), ...urls(text)]) expect(given.has(u.replace(/&amp;/g, '&')), u).toBe(true);
     for (const h of hrefs(html)) expect(h).toMatch(/^https?:\/\//);
     for (const tag of html.match(/<img\b[^>]*>/g) ?? []) expect(tag).toMatch(/\balt="/);
@@ -107,7 +107,7 @@ describe('regras gerais', () => {
   it('capa opcional: com imagem usa img com alt, sem imagem usa faixa', async () => {
     const d = sampleData('calendar-reminder', 'd1');
     const links = sampleLinks('calendar-reminder');
-    expect((await render('calendar-reminder', d, links)).html).not.toContain('<img');
+    expect((await render('calendar-reminder', d, links)).html).not.toMatch(/<img[^>]*Capa do compromisso/);
     const withCover = await render('calendar-reminder', { ...d, coverUrl: 'https://cdn.exemplo.test/capa.webp' } as typeof d, links);
     expect(withCover.html).toMatch(/<img[^>]*alt="Capa do compromisso/);
   });

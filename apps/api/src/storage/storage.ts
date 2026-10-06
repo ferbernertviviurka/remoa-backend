@@ -1,6 +1,7 @@
 import {
   CopyObjectCommand, CreateBucketCommand, DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client,
 } from '@aws-sdk/client-s3';
+import { env as configEnv } from '@remoa/config';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 // D-047: one S3 client. Production = Cloudflare R2, local = Supabase Storage's S3 endpoint.
@@ -61,15 +62,19 @@ export const deleteObject = (Key: string) => client().send(new DeleteObjectComma
 export const copyObject = (from: string, Key: string) =>
   client().send(new CopyObjectCommand({ Bucket: Bucket(), Key, CopySource: `${Bucket()}/${from.split('/').map(encodeURIComponent).join('/')}` }));
 
-/** Deletes every object under `Prefix` (account purge, F08). Returns how many were removed. */
-export async function deletePrefix(Prefix: string) {
+/** Deletes every object under `Prefix` (account purge, F08; blog cleanup in the public bucket, F27). Returns how many were removed. */
+export async function deletePrefix(Prefix: string, Bucket_ = Bucket()) {
   let n = 0;
   for (let token: string | undefined; ; ) {
-    const page = await client().send(new ListObjectsV2Command({ Bucket: Bucket(), Prefix, ContinuationToken: token }));
+    const page = await client().send(new ListObjectsV2Command({ Bucket: Bucket_, Prefix, ContinuationToken: token }));
     const Objects = (page.Contents ?? []).map((o) => ({ Key: o.Key! }));
-    if (Objects.length) await client().send(new DeleteObjectsCommand({ Bucket: Bucket(), Delete: { Objects } }));
+    if (Objects.length) await client().send(new DeleteObjectsCommand({ Bucket: Bucket_, Delete: { Objects } }));
     n += Objects.length;
     token = page.NextContinuationToken;
     if (!token) return n;
   }
 }
+
+/** G19 F27 (D-914): blog images go to the PUBLIC bucket (S3_PUBLIC_BUCKET), served by R2_PUBLIC_BASE_URL. Immutable: keys carry the asset id. */
+export const putPublicBytes = (Key: string, Body: Buffer, ContentType: string) =>
+  client().send(new PutObjectCommand({ Bucket: configEnv().s3PublicBucket, Key, Body, ContentType, CacheControl: 'public, max-age=31536000, immutable' }));

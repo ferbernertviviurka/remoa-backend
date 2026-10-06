@@ -31,6 +31,8 @@ const profileOf = (userId: string, r: ProfileRow | undefined): Profile => ({
   sex: sexSchema.safeParse(r?.sex).data ?? null,
   phone: r?.phone ?? null,
   address: addressSchema.safeParse(r?.address).data ?? null,
+  school: r?.school ?? null,
+  schoolId: r?.schoolId ?? null,
 });
 
 /** Consecutive study days (04:00 rollover, profile tz) with attempts, ending today or yesterday. null = never answered. */
@@ -91,7 +93,11 @@ export async function getAccount(userId: string, auth: AuthData, now = new Date(
 
 /** FR-6/FR-8. `name` is already normalized by the contract schema; normalized again so direct callers are safe too. */
 export const updateProfile: UpdateProfile = async (userId, input) => {
-  const set = { ...input, ...syncGoals(input), ...(input.name !== undefined && { name: normalizeName(input.name) }), updatedAt: new Date() };
+  const { institution, ...rest } = input;
+  const set = {
+    ...rest,
+    ...(institution !== undefined && { school: institution?.name ?? null, schoolId: institution?.schoolId ?? null }), // G20 D-851
+    ...syncGoals(input), ...(input.name !== undefined && { name: normalizeName(input.name) }), updatedAt: new Date() };
   const { db, profiles } = await dbm();
   // CCR-037 (P-323): a new timezone moves every pending calendar reminder (18:00 / 07:00 local) in the same transaction.
   const row = await db.transaction(async (tx) => {

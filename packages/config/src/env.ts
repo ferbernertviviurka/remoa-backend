@@ -35,6 +35,24 @@ export type Env = {
   /** P-304: razão social and address printed in every e-mail footer (optional, Q-057). */
   emailFooterLegalName: string | undefined;
   emailFooterAddress: string | undefined;
+  // --- G19 / F27 blog + legal (D-914) ---
+  /** Public site origin (canonical, sitemap, preview links), no trailing slash. */
+  siteUrl: string;
+  /** HMAC key of the 24 h preview links (>= 32 chars). */
+  blogPreviewSecret: string;
+  /** Public bucket of blog images (separate from the private S3_BUCKET). Local: a public Supabase Storage bucket. */
+  s3PublicBucket: string;
+  /** CDN origin of that bucket, no trailing slash: image URL = `${r2PublicBaseUrl}/${key}`. */
+  r2PublicBaseUrl: string;
+  /** The web's on-demand revalidation endpoint; default `${siteUrl}/api/revalidate`. */
+  revalidateUrl: string;
+  /** Bearer sent to revalidateUrl (>= 32 chars, same value in the web). */
+  revalidateSecret: string;
+  /** Optional IndexNow key (Q-067); unset = no ping. */
+  indexNowKey: string | undefined;
+  /** Current legal document versions (same values as the web's LEGAL_*_VERSION). */
+  legalTermsVersion: string;
+  legalPrivacyVersion: string;
 };
 
 /** Local-only fallbacks (never used in production; D-733). */
@@ -43,6 +61,11 @@ const DEV = {
   emailFrom: 'Remoa <dev@localhost.test>',
   emailUnsubscribeSecret: 'dev-only-email-unsubscribe-secret-not-for-production',
   cronSecret: 'dev-only-cron-secret-not-for-production-000000',
+  blogPreviewSecret: 'dev-only-blog-preview-secret-not-for-production',
+  revalidateSecret: 'dev-only-revalidate-secret-not-for-production-00',
+  s3PublicBucket: 'blog',
+  r2PublicBaseUrl: 'http://127.0.0.1:54321/storage/v1/object/public/blog',
+  legalVersion: 'dev',
 };
 
 const MIN_SECRET = 32;
@@ -65,12 +88,15 @@ export class EnvError extends Error {
 
 type Source = Record<string, string | undefined>;
 
+/** Production check without validating the rest of the env (fail-closed gates such as dev-only routes). */
+export const isProduction = (source: Source = process.env): boolean => source.NODE_ENV !== 'development' && source.NODE_ENV !== 'test';
+
 export function parseEnv(source: Source = process.env): Env {
   const get = (k: string) => {
     const v = source[k]?.trim();
     return v ? v : undefined;
   };
-  const production = source.NODE_ENV !== 'development' && source.NODE_ENV !== 'test';
+  const production = isProduction(source);
   const problems: string[] = [];
   const need = (name: string, v: string | undefined, devDefault?: string) => {
     if (v !== undefined) return v;
@@ -136,6 +162,23 @@ export function parseEnv(source: Source = process.env): Env {
   const emailFooterAddress = get('EMAIL_FOOTER_ADDRESS');
   if ((emailFooterLegalName?.length ?? 0) + (emailFooterAddress?.length ?? 0) > 290) problems.push('EMAIL_FOOTER_LEGAL_NAME + EMAIL_FOOTER_ADDRESS must have at most 290 characters');
 
+  const siteUrl = checkUrl('SITE_URL', need('SITE_URL', get('SITE_URL'), DEV.appUrl));
+  const blogPreviewSecret = checkSecret('BLOG_PREVIEW_SECRET', need('BLOG_PREVIEW_SECRET', get('BLOG_PREVIEW_SECRET'), DEV.blogPreviewSecret));
+  const s3PublicBucket = need('S3_PUBLIC_BUCKET', get('S3_PUBLIC_BUCKET'), DEV.s3PublicBucket);
+  if (s3PublicBucket && s3PublicBucket === get('S3_BUCKET')) problems.push('S3_PUBLIC_BUCKET must differ from S3_BUCKET (blog images would land in the private bucket)');
+  const r2PublicBaseUrl = checkUrl('R2_PUBLIC_BASE_URL', need('R2_PUBLIC_BASE_URL', get('R2_PUBLIC_BASE_URL'), DEV.r2PublicBaseUrl));
+  const revalidateUrl = checkUrl('REVALIDATE_URL', get('REVALIDATE_URL') ?? (siteUrl && `${siteUrl.replace(/\/+$/, '')}/api/revalidate`));
+  const revalidateSecret = checkSecret('REVALIDATE_SECRET', need('REVALIDATE_SECRET', get('REVALIDATE_SECRET'), DEV.revalidateSecret));
+  const indexNowKey = get('INDEXNOW_KEY');
+  if (indexNowKey && !/^[A-Za-z0-9-]{8,128}$/.test(indexNowKey)) problems.push('INDEXNOW_KEY must be 8-128 letters, digits or hyphens');
+  const version = (name: string) => {
+    const v = need(name, get(name), DEV.legalVersion);
+    if (v && !/^[A-Za-z0-9._-]{1,32}$/.test(v)) problems.push(`${name} must be 1-32 letters, digits, ".", "_" or "-"`);
+    return v;
+  };
+  const legalTermsVersion = version('LEGAL_TERMS_VERSION');
+  const legalPrivacyVersion = version('LEGAL_PRIVACY_VERSION');
+
   if (problems.length) throw new EnvError(problems);
   return {
     production,
@@ -153,6 +196,15 @@ export function parseEnv(source: Source = process.env): Env {
     cronSecret,
     emailFooterLegalName,
     emailFooterAddress,
+    siteUrl,
+    blogPreviewSecret,
+    s3PublicBucket,
+    r2PublicBaseUrl,
+    revalidateUrl,
+    revalidateSecret,
+    indexNowKey,
+    legalTermsVersion,
+    legalPrivacyVersion,
   };
 }
 

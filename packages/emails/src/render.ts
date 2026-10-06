@@ -19,7 +19,7 @@ export const templateClass = (template: EmailTemplate): EmailClass => EMAIL_CLAS
 /** `links` come from sendEmail (appUrl always; reminder/list also unsubscribe, preferences and, for reminders, pause). */
 export async function render<T extends EmailTemplate>(template: T, data: EmailData<T>, links: EmailLinks): Promise<RenderedEmail> {
   const { subject, preheader, footer, body } = build(template, data, links);
-  const el = createElement(Layout, { preheader, footer, children: body });
+  const el = createElement(Layout, { preheader, footer, children: body, appUrl: links.appUrl });
   const [html, text] = await Promise.all([
     reactEmailRender(el),
     // links por extenso: "texto [url]"; o preheader oculto tem data-skip-in-text

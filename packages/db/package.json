@@ -13,11 +13,13 @@
     "generate": "drizzle-kit generate",
     "migrate": "drizzle-kit migrate",
     "seed": "tsx --env-file=../../.env src/seed.ts",
+    "seed:blog": "tsx --env-file=../../.env src/seed-blog.ts",
     "seed:maps": "tsx --env-file=../../.env src/seed-maps-run.ts",
     "make-admin": "tsx --env-file=../../.env src/make-admin.ts"
   },
   "dependencies": {
     "@remoa/ai": "workspace:^",
+    "@remoa/blog": "workspace:*",
     "@remoa/contracts": "workspace:*",
     "drizzle-orm": "^0.45.3",
     "postgres": "^3.4.9"

@@ -8,15 +8,18 @@ config({ path: '../../.env' });
 const DAY = 86_400_000;
 
 describe('notice jobs (G18)', () => {
-  it('registers the five crons', () => {
+  it('registers the crons (G18 + F27 blog)', () => {
     expect(Object.fromEntries(Object.entries(noticeJobs).map(([k, j]) => [k, j.cron]))).toEqual({
       'calendar.dispatch-reminders': '*/5 * * * *',
       'review.reminder': '*/15 * * * *',
       'inactivity.check': '0 13 * * *',
       'notifications.retention': '30 6 * * *',
       'calendar.cleanup': '45 6 * * *',
+      'sitemap.daily': '0 6 * * *',
+      'blog.publish-scheduled': '*/5 * * * *',
+      'blog.cleanup': '15 7 * * *',
     });
-    expect(noticeFunctions).toHaveLength(5);
+    expect(noticeFunctions).toHaveLength(8);
   });
 });
 

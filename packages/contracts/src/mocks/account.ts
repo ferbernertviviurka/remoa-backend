@@ -41,7 +41,7 @@ const proEntitlements: Entitlements = {
 
 /** Free, 60% complete (no photo, reminder off). */
 export const accountFreeFixture: AccountSnapshot = {
-  profile: { userId: fixtureUserId, name: 'Ana Souza', avatarKey: null, avatarColor: 2, goal: 'enamed_2027_1', goals: ['enamed_2027_1'], stage: 'y5_6', timezone: 'America/Sao_Paulo', userType: 'aluno', sex: null, phone: null, address: null },
+  profile: { userId: fixtureUserId, name: 'Ana Souza', avatarKey: null, avatarColor: 2, goal: 'enamed_2027_1', goals: ['enamed_2027_1'], stage: 'y5_6', timezone: 'America/Sao_Paulo', userType: 'aluno', sex: null, phone: '+5511912345678', address: null, school: null, schoolId: null },
   email: 'ana@remoa.test',
   pendingEmail: null,
   emailConfirmed: true,
@@ -92,7 +92,9 @@ export const getAccount: Api.GetAccount = async () => ok(structuredClone(account
 export const updateProfile: Api.UpdateProfile = async (_u, input) => {
   const p = parseWith(updateProfileInputSchema, input);
   if (!p.ok) return p;
-  Object.assign(account.profile, p.data, syncGoals(p.data));
+  const { institution, ...rest } = p.data;
+  Object.assign(account.profile, rest, syncGoals(rest));
+  if (institution !== undefined) Object.assign(account.profile, { school: institution?.name ?? null, schoolId: institution?.schoolId ?? null });
   recompute();
   return ok(structuredClone(account.profile));
 };

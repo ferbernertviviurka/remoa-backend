@@ -42,4 +42,18 @@ describe('api', () => {
     expect(typeof line.ms).toBe('number');
     expect(lines.join('')).not.toContain('bad-secret-token');
   });
+
+  it('never logs a blog preview token (F27 T11)', async () => {
+    const lines: string[] = [];
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => (lines.push(String(chunk)), true));
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => (lines.push(String(chunk)), true));
+    try {
+      await app.request('/v1/public/blog/preview/eyJwIjoieCJ9.segredo-do-preview');
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
+    expect(lines.join('')).toContain('/v1/public/blog/preview/:token');
+    expect(lines.join('')).not.toContain('segredo-do-preview');
+  });
 });

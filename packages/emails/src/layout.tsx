@@ -50,7 +50,7 @@ function Footer({ kind, preferencesUrl, unsubscribeUrl, reason, stopLabel, legal
   );
 }
 
-export function Layout({ preheader, footer, children }: { preheader: string; footer: FooterProps; children: ReactNode }) {
+export function Layout({ preheader, footer, children, appUrl }: { preheader: string; footer: FooterProps; children: ReactNode; appUrl?: string }) {
   return (
     <Html lang="pt-BR">
       <Head>
@@ -63,7 +63,11 @@ export function Layout({ preheader, footer, children }: { preheader: string; foo
           <td align="center" style={{ padding: '28px 14px' }}>
             <table {...tbl} width={600} style={{ width: '100%', maxWidth: 600 }}><tbody>
               <tr><td style={{ padding: '4px 8px 18px' }}>
-                <span style={{ fontFamily: head, fontSize: 28, fontWeight: 800, letterSpacing: '-1.4px', color: c.brand }}>{emails.brand}</span>
+                {appUrl ? (
+                  <img src={`${appUrl.replace(/\/+$/, '')}/email/logo.png`} width={127} height={28} alt="Remoa" style={{ display: 'block', border: 0, height: 28, width: 127, fontFamily: head, fontSize: 28, fontWeight: 800, letterSpacing: '-1.4px', color: c.brand }} />
+                ) : (
+                  <span style={{ fontFamily: head, fontSize: 28, fontWeight: 800, letterSpacing: '-1.4px', color: c.brand }}>{emails.brand}</span>
+                )}
               </td></tr>
               <tr><td {...bg(c.card)} style={{ background: c.card, border: `1px solid ${c.border}`, borderRadius: 24, padding: '38px 36px 32px' }}>{children}</td></tr>
               <tr><Footer {...footer} /></tr>

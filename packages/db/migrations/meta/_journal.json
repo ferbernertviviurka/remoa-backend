@@ -204,6 +204,27 @@
       "when": 1791223432502,
       "tag": "0028_g18_profile_timezone_server_only",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791244682268,
+      "tag": "0029_g19_blog_legal",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791247587163,
+      "tag": "0030_g19_legal_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1791248226008,
+      "tag": "0031_g20_profile_school",
+      "breakpoints": true
     }
   ]
 }

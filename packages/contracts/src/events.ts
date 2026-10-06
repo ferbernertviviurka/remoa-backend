@@ -209,6 +209,12 @@ export const eventSchemas = {
   calendar_tour_finished: z.object({ how: z.enum(['finish', 'skip', 'create']) }).strict(),
   calendar_reminder_toggled: z.object({ kind: z.enum(calendarReminderKinds), on: z.boolean() }).strict(),
   calendar_home_card_clicked: z.object({ target: z.enum(['banner', 'card']) }).strict(),
+  // G19 F25 blog and legal pages (CCR-045, CCR-047): never post text or the search term (D-938).
+  blog_post_viewed: z.object({ slug: z.string().min(1).max(120), template: z.string().min(1).max(40), category: z.string().min(1).max(120).optional() }).strict(),
+  blog_cta_clicked: z.object({ slug: z.string().min(1).max(120), position: z.string().min(1).max(40) }).strict(),
+  blog_search_used: z.object({ resultCount: count, queryLength: count }).strict(),
+  landing_blog_clicked: z.object({ position: z.number().int().min(0).max(4) }).strict(),
+  legal_page_viewed: z.object({ document: z.enum(['terms', 'privacy']) }).strict(),
 } as const;
 
 export type EventName = keyof typeof eventSchemas;

@@ -9,7 +9,10 @@ export const profiles = pgTable('profiles', {
   userId: uuid('user_id').primaryKey().references(() => authUsers.id, { onDelete: 'cascade' }),
   name: text('name'),
   role: roleEnum('role').notNull().default('student'),
+  /** G20 (D-843): institution as shown (list name or free text). Server-owned since 0031 (PATCH /v1/account/profile `institution`). */
   school: text('school'),
+  /** G20: MEDICAL_SCHOOLS id (@remoa/contracts); null = free text or not given. Server-owned (no column GRANT). No FK: static list. */
+  schoolId: text('school_id'),
   year: integer('year'),
   goal: text('goal'),
   /** CCR-017 (D-570): every objective picked (goalSchema values); `goal` mirrors goals[0]. Server-owned (no column GRANT). */
@@ -23,7 +26,7 @@ export const profiles = pgTable('profiles', {
   address: jsonb('address'),
   /** F10: council registration stamped on approved rubrics. */
   crm: text('crm'),
-  /** F13: y3_4 | y5_6 | graduated (stageSchema). */
+  /** F13: segments value (stageSchema), incl. G20 `not_med`. */
   stage: text('stage'),
   /** F13: processed 512 px WebP key; server-owned (no GRANT to authenticated). */
   avatarKey: text('avatar_key'),
@@ -38,6 +41,10 @@ export const profiles = pgTable('profiles', {
   /** F19: set by the admin (withAdmin 'user.suspend'); blocks every /v1/* call. Server-owned (no column GRANT). */
   suspendedAt: timestamp('suspended_at', { withTimezone: true }),
   suspendedReason: text('suspended_reason'),
+  /** G19 FR-45 (D-913): versions accepted at sign-up (handle_new_user) or later (POST /v1/account/legal/accept). Server-owned. */
+  termsAcceptedVersion: text('terms_accepted_version'),
+  privacyAcceptedVersion: text('privacy_accepted_version'),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }),
   ...timestamps,
 }, (t) => [
   check('profiles_avatar_color', sql`${t.avatarColor} between 0 and 4`),

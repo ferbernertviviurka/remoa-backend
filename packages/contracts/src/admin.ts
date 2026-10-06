@@ -40,8 +40,13 @@ export const adminActions = [
   'waitlist.view',
   /** CCR-030: every GET /v1/admin/store-waitlist (counts only). Reason = ADMIN_AUTO_REASONS.storeWaitlistView, target route. */
   'store_waitlist.view',
+  /** CCR-040 (G19 blog). unpublish/delete take a typed reason; the rest use BLOG_AUTO_REASONS (contracts/blog). */
+  'blog.create', 'blog.update', 'blog.duplicate', 'blog.publish', 'blog.schedule', 'blog.unpublish', 'blog.delete',
+  'blog.restore_revision', 'blog.upload_image', 'blog.category_upsert', 'blog.preview_link', 'sitemap.regenerate',
+  /** Written by the blog.publish-scheduled job (actor system), not by withAdmin. */
+  'blog.auto_publish',
 ] as const;
-export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route'] as const;
+export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route', 'blog_post', 'blog_category', 'blog_asset', 'sitemap'] as const;
 /** List filters. `deleting` = account in the 7-day grace (F13); `pending` = e-mail not confirmed. */
 export const adminUserStatuses = ['active', 'pending', 'suspended', 'deleting'] as const;
 export const adminUserOrigins = ['direct', 'referral'] as const;

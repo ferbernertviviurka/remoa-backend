@@ -191,7 +191,7 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
       return { area, cards: cardsByArea.get(area) ?? 0, dueToday: dueByArea.get(area) ?? 0, attempts: x?.n ?? 0, accuracy: x ? ratio(x.n, x.hits) : null };
     }),
     hardCards: hardRows.map((h) => ({ cardId: h.c.id, boardId: h.c.boardId, boardTitle: titles.get(h.c.boardId) ?? '', title: cardTitles.get(h.c.id) ?? '', r: h.r, lapses: h.lapses })),
-    maps: [...byBoard].map(([boardId, b]) => {
+    maps: [...byBoard].sort(([ia], [ib]) => (titles.get(ia) ?? '').localeCompare(titles.get(ib) ?? '') || (ia < ib ? -1 : 1)).map(([boardId, b]) => { // stable order (title, id): card load order varied between runs
       const q = queueOf.get(boardId) ?? { due: 0, new: 0, weak: 0 };
       const x = perBoard.get(boardId);
       return { boardId, title: titles.get(boardId) ?? '', area: b.area, cards: b.cards, states: b.states, ...q, retention30: x ? ratio(x.n, x.hits) : null };
