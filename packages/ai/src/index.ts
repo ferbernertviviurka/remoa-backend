@@ -10,3 +10,10 @@ export { cleanDeep, cleanText } from './text';
 export { ocrPdf } from './ocr';
 export { runOfflineEval } from './eval';
 export { graderCases } from './eval-cases';
+export { CHALLENGE_PROMPT_IDS, type ChallengePromptId, type ChallengePrompt, lintPrompt, loadChallengePrompt, renderChallengePrompt } from './challenge-prompts';
+export { CHALLENGE_TASKS, type ChallengeTask, type ChallengeLimits, challengeChainFor, challengeLimits, challengeModelFor } from './challenge-config';
+export {
+  type ChallengeVerdict, type Evidence, type Letter, type ModelGrade, type Prefiltered, type PrefilterReason,
+  LEAK_FALLBACK_FEEDBACK, LEAK_FALLBACK_HINT, LETTERS, evidenceIsLiteral, finalVerdict, isDuplicateStem, isManipulation, keepDistinctStems,
+  leaksAnswer, literalEvidence, numbersGrounded, prefilterAnswer, remapLetters, scrubLeak, shuffleAlternatives, stemSimilarity, ungroundedNumbers,
+} from './challenge-guards';
