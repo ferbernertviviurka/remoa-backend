@@ -3,7 +3,7 @@ import { CONTENT_LIMITS, countContentWords, pathModules, type CardFile, type Evi
 import { topoOrder } from './graph';
 import { MATRIZ_COMPETENCIAS, MATRIZ_DOMINIOS } from './matriz';
 import { aviso, erro, type Bundle, type Issue } from './load';
-import { TARGETS, tally, type Metas } from './targets';
+import { CARD_RANGE, TARGETS, tally, type Metas } from './targets';
 
 /** FR-4: share of cards per level, inclusive bounds in %. */
 export const LEVEL_BANDS = { 1: [30, 40], 2: [40, 45], 3: [15, 25] } as const;
@@ -97,7 +97,7 @@ function cardRules(c: CardFile, evidence: Evidence[]): Issue[] {
   return out;
 }
 
-export type LintOptions = { targets?: Record<string, Metas> };
+export type LintOptions = { targets?: Record<string, Metas>; range?: { min: number; max: number } };
 
 /** All issues of a loaded map (reading/schema problems included). Errors fail `content:lint`; warnings only print. */
 export function lintBundle(b: Bundle, opts: LintOptions = {}): Issue[] {
@@ -109,6 +109,8 @@ export function lintBundle(b: Bundle, opts: LintOptions = {}): Issue[] {
 
   const targets = opts.targets ?? TARGETS;
   if (map.mapa.slug !== b.slug) out.push(erro('mapa.slug', `slug "${map.mapa.slug}" diferente da pasta "${b.slug}"`));
+  const { min, max } = opts.range ?? CARD_RANGE;
+  if (map.cards.length < min || map.cards.length > max) out.push(erro('cards', `${map.cards.length} cards (esperado ${min}–${max}, F31)`));
   const goal = targets[map.mapa.slug];
   if (!goal) out.push(erro('mapa.slug', 'slug fora da tabela de metas (FR-2, targets.ts)'));
   else {

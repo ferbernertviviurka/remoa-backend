@@ -16,6 +16,9 @@ export const TARGETS: Record<string, Metas> = {
   'etica-declaracao-de-obito': { cards: 80, casos: 6, fluxogramas: 3, imagens: 4, macetes: 8, pegadinhas: 10 },
 };
 
+/** Goal of F31: every map has 80 to 120 cards (`content:lint` errors outside it). */
+export const CARD_RANGE = { min: 80, max: 120 };
+
 /** What a map actually has, in the same keys as `metas` (lint and report). */
 export function tally(map: MapFile): Metas {
   const of = (t: string) => map.cards.filter((c) => c.tipo === t).length;

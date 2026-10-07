@@ -115,7 +115,7 @@ export const commands: Record<string, Command> = {
     },
   },
   verify: {
-    help: 'verify <slug...> [--only id,id]   IA confere cada card contra a evidência (FR-22); só cards novos ou mudados; -> <slug>/verificacao.json',
+    help: 'verify <slug...> [--only id,id]   IA confere cada card contra a evidência (FR-22); só cards novos ou mudados; -> <slug>/verificacao.json (AI_TIMEOUT_MS_VERIFY=240000 recomendado: 20 cards por chamada)',
     run: (a) => import('./verify').then((m) => m.run(a)),
   },
   dossier: {

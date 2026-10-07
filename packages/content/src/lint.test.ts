@@ -8,7 +8,7 @@ import { TARGETS } from './targets';
 import { evidenceOf, rawMap, SLUG, TEST_TARGETS, writeFixture, type RawMap } from './test-fixture';
 
 type Card = RawMap['cards'][number] & Record<string, unknown>;
-const lint = (opts: Parameters<typeof writeFixture>[0] = {}, slug = SLUG) => lintBundle(loadBundle(slug, writeFixture(opts)), { targets: TEST_TARGETS });
+const lint = (opts: Parameters<typeof writeFixture>[0] = {}, slug = SLUG) => lintBundle(loadBundle(slug, writeFixture(opts)), { targets: TEST_TARGETS, range: { min: 1, max: 120 } });
 /** Lint a copy of the minimal map after `edit` mutates it (evidence follows the edited cards unless given). */
 const lintWith = (edit: (m: RawMap & { cards: Card[] }) => void, evidence?: object[]) => {
   const m = rawMap() as RawMap & { cards: Card[] };
@@ -30,6 +30,12 @@ describe('content:lint', () => {
     const b = loadBundle('_template');
     expect(b.template).toBe(true);
     expect(errors(lintBundle(b))).toEqual([]);
+  });
+
+  it('card count outside 80-120 is an error (default range)', () => {
+    const b = loadBundle(SLUG, writeFixture());
+    expect(errors(lintBundle(b, { targets: TEST_TARGETS }))).toEqual([expect.stringMatching(/^cards: 10 cards \(esperado 80–120/)]);
+    expect(errors(lintBundle(b, { targets: TEST_TARGETS, range: { min: 1, max: 5 } }))).toEqual([expect.stringMatching(/10 cards \(esperado 1–5/)]);
   });
 
   it('schema errors carry the card id in the path', () => {

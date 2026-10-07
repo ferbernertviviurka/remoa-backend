@@ -106,7 +106,7 @@ export async function verifyBundle(
     const batch = todo.slice(i, i + BATCH);
     try {
       run.calls++;
-      const r = await generateJson(replySchema, { fn: 'verify', system: SYSTEM, user: verifyUser(batch, b.evidence), temperature: 0, fetchImpl: o.fetchImpl });
+      const r = await generateJson(replySchema, { fn: 'verify', system: SYSTEM, user: verifyUser(batch, b.evidence), temperature: 0, fetchImpl: o.fetchImpl, timeoutMs: Number(process.env.AI_TIMEOUT_MS_VERIFY) || undefined });
       const ids = new Set(batch.map((c) => c.id));
       for (const v of r.data.resultados) if (ids.has(v.cardId)) out.set(v.cardId, { ...v, hash: hashes.get(v.cardId)! });
       const got = new Set(r.data.resultados.map((v) => v.cardId));
