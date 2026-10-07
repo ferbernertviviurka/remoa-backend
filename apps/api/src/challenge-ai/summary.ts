@@ -13,6 +13,7 @@ import {
 import { AiError, generateJson, loadChallengePrompt, numbersGrounded, renderChallengePrompt, type ChallengePrompt } from '@remoa/ai';
 import { createLogger } from '@remoa/log';
 import { reserveAi } from '../billing/quota';
+import { invalidate } from '../cache';
 import { asServer, run } from '../db';
 import { cardText, dbStore as mapStore, serializeMap, type MapContext, type ScopeCard } from './generate';
 
@@ -249,12 +250,14 @@ export const dbStore: SummaryStore = {
       // `authenticated` can only read map_summaries: the insert runs as the server role inside this transaction
       await asServer(tx, tx.insert(s.mapSummaries).values({ ...row, userId }).getSQL());
     });
+    await invalidate('summary.changed', { userId, mapId: row.boardId });
   },
   async remove(userId, boardId, ids) {
     if (!ids.length) return;
     await run(userId, async (tx, s) => {
       await asServer(tx, tx.delete(s.mapSummaries).where(and(eq(s.mapSummaries.userId, userId), eq(s.mapSummaries.boardId, boardId), inArray(s.mapSummaries.id, [...ids]))).getSQL());
     });
+    await invalidate('summary.changed', { userId, mapId: boardId });
   },
 };
 

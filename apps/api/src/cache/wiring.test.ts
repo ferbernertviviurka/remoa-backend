@@ -23,6 +23,8 @@ const WIRING: Record<string, string[]> = {
   'boards/boards.ts': ['map.changed', 'card.changed'], 'boards/copy.ts': ['map.changed'], 'imports/imports.ts': ['map.changed'], 'matrix/matrix.ts': ['map.changed'], 'ai/service.ts': ['map.changed', 'card.changed'],
   'cards/cards.ts': ['card.changed'], 'editorial/editorial.ts': ['card.changed', 'catalog.changed', 'map.changed', 'profile.changed'],
   'review/record-attempt.ts': ['review.answered'], 'review/study.ts': ['card.changed'], 'challenge/session.ts': ['review.answered'],
+  'challenge-ai/generate.ts': ['question.changed'], 'challenge-ai/summary.ts': ['summary.changed'], 'challenge-ai/session.ts': ['challenge.finished'],
+  'routes/challenge-ai.ts': ['challenge.finished'],
   'calendar/events.ts': ['calendar.changed'], 'calendar/labels.ts': ['calendar.changed'], 'calendar/settings.ts': ['calendar.changed'], 'calendar/reminders/dispatch.ts': ['calendar.changed'],
   'billing/webhook.ts': ['plan.changed'], 'billing/credits.ts': ['referral.changed'],
   'referral/attribution.ts': ['referral.changed'], 'referral/invites.ts': ['referral.changed'], 'referral/qualify.ts': ['referral.changed'], 'referral/sweep.ts': ['referral.changed'],

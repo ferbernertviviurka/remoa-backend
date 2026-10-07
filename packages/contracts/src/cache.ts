@@ -60,6 +60,9 @@ export type CacheEventCtx = {
   'map.changed': U & { mapId?: string }; // create, rename, delete, duplicate, import, reorder
   'card.changed': U & { mapId?: string };
   'review.answered': U;
+  'question.changed': U & { mapId?: string }; // question bank: generate, archive (F32)
+  'summary.changed': U & { mapId?: string }; // map summary saved or pruned (F32)
+  'challenge.finished': U; // AI challenge session, attempt or score (F32)
   'calendar.changed': U; // event or label, reminders job
   'notification.changed': U;
   'prefs.changed': U;
@@ -83,6 +86,9 @@ export const cacheEventTags: { [E in CacheEvent]: (ctx: CacheEventCtx[E]) => Cac
   'map.changed': ({ userId, mapId }) => [T.user(userId, 'maps'), T.user(userId, 'stats'), T.user(userId, 'review'), ...(mapId ? [T.map(userId, mapId)] : [])],
   'card.changed': ({ userId, mapId }) => [T.user(userId, 'stats'), T.user(userId, 'review'), ...(mapId ? [T.map(userId, mapId)] : [])],
   'review.answered': ({ userId }) => [T.user(userId, 'review'), T.user(userId, 'stats'), T.user(userId, 'progress')],
+  'question.changed': ({ userId, mapId }) => [T.user(userId, 'stats'), ...(mapId ? [T.map(userId, mapId)] : [])],
+  'summary.changed': ({ userId, mapId }) => [T.user(userId, 'stats'), ...(mapId ? [T.map(userId, mapId)] : [])],
+  'challenge.finished': ({ userId }) => [T.user(userId, 'review'), T.user(userId, 'stats'), T.user(userId, 'progress')],
   'calendar.changed': ({ userId }) => [T.user(userId, 'calendar')],
   'notification.changed': ({ userId }) => [T.user(userId, 'notif')],
   'prefs.changed': ({ userId }) => [T.user(userId, 'notif'), T.user(userId, 'profile')],

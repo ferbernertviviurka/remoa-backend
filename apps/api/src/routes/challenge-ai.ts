@@ -13,6 +13,7 @@ import { challengeLimits } from '@remoa/ai';
 import type { Tx } from '@remoa/db';
 import type { Env } from '../app';
 import { fail } from '../app';
+import { invalidate } from '../cache';
 import { asServer, pgArray, run } from '../db';
 import { generateQuestions, type GenerateInput, type GenerateOutput } from '../challenge-ai/generate';
 import {
@@ -420,28 +421,39 @@ export const dbData: DataPort = {
   }),
 
   // `answer_hash` here is the session's hash (same as the pending row), so "the same answer again" is found by recordAttempt
-  saveGraded: (userId, itemId, g) => run(userId, async (tx) => {
-    const [r] = await asServer<Raw>(tx, sql`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, verdict, covered, missing, critical_error,
-        manipulation, feedback, hint, used_hint, confidence, graded_by, model, prompt_version, latency_ms, rating)
-      values (${itemId}, ${userId}, ${g.attemptNo}, ${JSON.stringify(g.answer)}::jsonb, ${sessionAnswerHash(g.answer)}, ${g.verdict}, ${pgArray(g.covered, 'text')},
-        ${pgArray(g.missing, 'text')}, ${g.criticalError}, ${g.manipulation}, ${g.feedback}, ${g.hint}, ${g.usedHint}, ${g.confidence}, ${g.gradedBy}, ${g.model},
-        ${g.promptVersion}, ${g.latencyMs === null ? null : Math.round(g.latencyMs)}, ${g.rating})
-      on conflict do nothing returning id`);
-    return r ? String(r.id) : null;
-  }),
+  saveGraded: async (userId, itemId, g) => {
+    const id = await run(userId, async (tx) => {
+      const [r] = await asServer<Raw>(tx, sql`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, verdict, covered, missing, critical_error,
+          manipulation, feedback, hint, used_hint, confidence, graded_by, model, prompt_version, latency_ms, rating)
+        values (${itemId}, ${userId}, ${g.attemptNo}, ${JSON.stringify(g.answer)}::jsonb, ${sessionAnswerHash(g.answer)}, ${g.verdict}, ${pgArray(g.covered, 'text')},
+          ${pgArray(g.missing, 'text')}, ${g.criticalError}, ${g.manipulation}, ${g.feedback}, ${g.hint}, ${g.usedHint}, ${g.confidence}, ${g.gradedBy}, ${g.model},
+          ${g.promptVersion}, ${g.latencyMs === null ? null : Math.round(g.latencyMs)}, ${g.rating})
+        on conflict do nothing returning id`);
+      return r ? String(r.id) : null;
+    });
+    await invalidate('challenge.finished', { userId });
+    return id;
+  },
 
-  saveScore: (userId, sessionId, score) => run(userId, async (tx) => {
-    await asServer(tx, sql`update challenge_sessions set score = ${JSON.stringify(score)}::jsonb where id = ${sessionId} and user_id = ${userId}`);
-  }),
+  saveScore: async (userId, sessionId, score) => {
+    await run(userId, async (tx) => {
+      await asServer(tx, sql`update challenge_sessions set score = ${JSON.stringify(score)}::jsonb where id = ${sessionId} and user_id = ${userId}`);
+    });
+    await invalidate('challenge.finished', { userId });
+  },
 
-  dispute: (userId, attemptId) => run(userId, async (tx) => {
-    const [a] = await exec(tx, sql`select graded_by, disputed from challenge_attempts where id = ${attemptId} and user_id = ${userId}`);
-    if (!a) return err('not_found', 'attempt_not_found');
-    if (a.graded_by === 'pending') return err('conflict', 'only_graded_answers');
-    // the append-only trigger lets exactly this UPDATE through (disputed false -> true); no grade, verdict or text is touched
-    if (!a.disputed) await asServer(tx, sql`update challenge_attempts set disputed = true where id = ${attemptId} and user_id = ${userId} and not disputed and graded_by <> 'pending'`);
-    return ok({ attemptId, disputed: true as const });
-  }),
+  dispute: async (userId, attemptId) => {
+    const result = await run(userId, async (tx) => {
+      const [a] = await exec(tx, sql`select graded_by, disputed from challenge_attempts where id = ${attemptId} and user_id = ${userId}`);
+      if (!a) return err('not_found', 'attempt_not_found');
+      if (a.graded_by === 'pending') return err('conflict', 'only_graded_answers');
+      // the append-only trigger lets exactly this UPDATE through (disputed false -> true); no grade, verdict or text is touched
+      if (!a.disputed) await asServer(tx, sql`update challenge_attempts set disputed = true where id = ${attemptId} and user_id = ${userId} and not disputed and graded_by <> 'pending'`);
+      return ok({ attemptId, disputed: true as const });
+    });
+    if (result.ok) await invalidate('challenge.finished', { userId });
+    return result;
+  },
 
   // FR-18: only the columns `authenticated` may read (no correct_key, expected_answer, key_points, explanation, distractor_notes), latest versions only
   bank: (userId, q) => run(userId, async (tx) => {
@@ -461,7 +473,11 @@ export const dbData: DataPort = {
 };
 
 export const dbIo = (): Io => ({
-  tx: (userId, fn) => run(userId, (tx) => fn(sessionStore(tx))),
+  tx: async (userId, fn) => {
+    const result = await run(userId, (tx) => fn(sessionStore(tx)));
+    await invalidate('challenge.finished', { userId });
+    return result;
+  },
   data: dbData,
   grade: gradeAnswer,
   gradeBatch,

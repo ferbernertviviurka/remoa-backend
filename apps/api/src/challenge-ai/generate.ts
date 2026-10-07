@@ -14,6 +14,7 @@ import {
 } from '@remoa/ai';
 import { createLogger } from '@remoa/log';
 import { refundAt, reserveAi } from '../billing/quota';
+import { invalidate } from '../cache';
 import { asServer, dbm, pgArray, run, uuids } from '../db';
 
 // --- Map context ---------------------------------------------------------------------------------------------------
@@ -366,6 +367,7 @@ export const dbStore: QuestionStore = {
       // `authenticated` has no grant on the answer columns: the insert runs as the server role inside this transaction
       await asServer(tx, tx.insert(s.questionBank).values(rows.map((r) => ({ ...r, userId }))).getSQL());
     });
+    await invalidate('question.changed', { userId, mapId: rows[0]!.boardId ?? undefined });
   },
 };
 

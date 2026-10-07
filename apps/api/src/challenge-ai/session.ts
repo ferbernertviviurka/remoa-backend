@@ -8,6 +8,7 @@ import {
 } from '@remoa/contracts';
 import { challengeLimits, shuffleAlternatives } from '@remoa/ai';
 import type { Tx } from '@remoa/db';
+import { invalidate } from '../cache';
 import { asServer, pgArray, uuids } from '../db';
 import { shuffle } from '../challenge/build';
 
@@ -393,6 +394,7 @@ export function sessionStore(tx: Tx): SessionStore {
         select x.id, s.id, s.user_id, x.position, x.kind, x.card_id, x.sub_id, x.bank_id, x.type, x.payload_public, x.reference_ref, x.shuffle_map
         from s, jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) as x(id uuid, position int, kind text, card_id uuid, sub_id text, bank_id uuid,
           type text, payload_public jsonb, reference_ref jsonb, shuffle_map jsonb)`);
+      await invalidate('challenge.finished', { userId: s.userId });
     },
     async session(userId, sessionId, lock) {
       const [r] = await asServer<Raw>(tx, sql`select s.id, s.user_id, s.board_id, s.format, s.status, s.position, s.expires_at, s.params,
@@ -422,12 +424,14 @@ export function sessionStore(tx: Tx): SessionStore {
     },
     async expire(userId, sessionId) {
       await asServer(tx, sql`update challenge_sessions set status = 'expired' where id = ${sessionId} and user_id = ${userId} and status = 'active'`);
+      await invalidate('challenge.finished', { userId });
     },
     async moveTo(userId, sessionId, position, finishedAt) {
       const fin = finishedAt?.toISOString() ?? null;
       await asServer(tx, sql`update challenge_sessions set position = ${position},
           status = case when ${fin}::timestamptz is null then status else 'finished' end, finished_at = coalesce(${fin}::timestamptz, finished_at)
         where id = ${sessionId} and user_id = ${userId} and status = 'active'`);
+      await invalidate('challenge.finished', { userId });
     },
     async lastAttempt(userId, itemId) {
       const [r] = await exec(sql`select id, attempt_no, answer_hash from challenge_attempts where item_id = ${itemId} and user_id = ${userId}
@@ -438,6 +442,7 @@ export function sessionStore(tx: Tx): SessionStore {
       const [r] = await asServer<Raw>(tx, sql`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, graded_by)
         values (${a.itemId}, ${a.userId}, ${a.attemptNo}, ${JSON.stringify(a.answer)}::jsonb, ${a.answerHash}, 'pending')
         on conflict do nothing returning id`);
+      await invalidate('challenge.finished', { userId: a.userId });
       return r ? { id: String(r.id) } : null;
     },
   };
