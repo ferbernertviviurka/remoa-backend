@@ -210,7 +210,8 @@ async function claimSpoken(userId: string, input: Spoken, hasGrader: boolean): P
     const a: Answered = { inputKind: input.inputKind, durationMs: input.durationMs, answerText: input.text, verdict: null, suggestedGrade: null, gradeLocked: false, fallback: null };
     const done = async (fallback: Answered['fallback'] = null) => ({ type: 'done' as const, output: await answerNow(tx, s, row, items, idx, { ...a, fallback }) });
     if (selfGraded(row)) return done(); // D-577: text is kept (D-123) but never graded or charged
-    const [card] = await tx.select({ rubric: s.cards.rubric }).from(s.cards).where(eq(s.cards.id, item.cardId));
+    // F17 (D-1516): the board's area rides on the same query; an OUTRO map is graded without the medical persona
+    const [card] = await tx.select({ rubric: s.cards.rubric, area: s.boards.area }).from(s.cards).innerJoin(s.boards, eq(s.boards.id, s.cards.boardId)).where(eq(s.cards.id, item.cardId));
     const rubric = rubricSchema.safeParse(card?.rubric);
     if (item.grading === 'none' || !rubric.success) return done('no_rubric');
     if (!hasGrader) return done('grader_error'); // no grader wired (prod before F05): do not burn quota
@@ -223,7 +224,7 @@ async function claimSpoken(userId: string, input: Spoken, hasGrader: boolean): P
     const claimId = crypto.randomUUID();
     items[idx] = { ...item, x: { ...item.x, grading: { id: claimId, at: new Date().toISOString() } } };
     await final(save(tx, s, row.id, items)); // a rollback here gives the unit back by itself (D-1104)
-    return { type: 'live' as const, held, claimId, input: { prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text } };
+    return { type: 'live' as const, held, claimId, input: { prompt: item.prompt, canonical: item.canonical, rubric: rubric.data, neighbors: item.x.nb, answer: input.text, ...(card?.area === 'OUTRO' && { generic: true }) } };
   });
 }
 
