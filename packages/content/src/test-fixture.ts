@@ -38,7 +38,7 @@ export function rawMap() {
   ];
   return {
     mapa: {
-      slug: SLUG, titulo: 'Mapa de teste', area: 'Clínica Médica', dominios: ['Domínio X'], competencias: ['Competência Y'], marcoTemporal: 'ENAMED 2026',
+      slug: SLUG, titulo: 'Mapa de teste', area: 'Clínica Médica', dominios: ['D09'], competencias: ['C02'], marcoTemporal: 'ENAMED 2026',
       revisarAte: '2027-03-23', versao: '2026.1', status: 'seed_draft', aviso: CONTENT_DISCLAIMER, metas: { ...TEST_TARGETS[SLUG]! }, selos: ['top10_enamed'],
     },
     cards,

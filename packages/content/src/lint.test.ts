@@ -86,6 +86,14 @@ describe('content:lint', () => {
     expect(many.some((i) => i.level === 'aviso' && /fluxograma: 0%/.test(i.message))).toBe(true);
   });
 
+  it('Matriz: ids unknown to the Enamed Matrix are errors; empty lists only warn', () => {
+    const r = lintWith((m) => { m.mapa.dominios = ['D09', 'D22']; m.mapa.competencias = ['Competência Y']; });
+    expect(errors(r)).toEqual([expect.stringContaining('"D22"'), expect.stringContaining('"Competência Y"')]);
+    const e = lintWith((m) => { m.mapa.dominios = []; });
+    expect(errors(e)).toEqual([]);
+    expect(e.some((i) => i.level === 'aviso' && i.where === 'mapa.dominios')).toBe(true);
+  });
+
   it('FR-9: prerequisite must have a smaller ordem', () => {
     expect(has(lintWith((m) => void (m.cards[0]!.preRequisitos = ['t-m1-001'])), /pré-requisito t-m1-001 tem ordem 2, não menor que 1/)).toBe(true);
   });

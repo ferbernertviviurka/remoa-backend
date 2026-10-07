@@ -1,6 +1,7 @@
 // FR-31 `content:lint`: the rules the schema cannot see (they depend on the whole map or on the template being partial, D-1464).
 import { CONTENT_LIMITS, countContentWords, pathModules, type CardFile, type Evidence, type MapFile } from '@remoa/contracts';
 import { topoOrder } from './graph';
+import { MATRIZ_COMPETENCIAS, MATRIZ_DOMINIOS } from './matriz';
 import { aviso, erro, type Bundle, type Issue } from './load';
 import { TARGETS, tally, type Metas } from './targets';
 
@@ -114,6 +115,11 @@ export function lintBundle(b: Bundle, opts: LintOptions = {}): Issue[] {
     for (const k of Object.keys(goal) as (keyof Metas)[]) if (map.mapa.metas[k] !== goal[k]) out.push(erro(`mapa.metas.${k}`, `${map.mapa.metas[k]} no arquivo, ${goal[k]} na tabela do FR-2`));
     const done = tally(map);
     for (const k of Object.keys(goal) as (keyof Metas)[]) if (done[k] < goal[k]) out.push(erro(`metas.${k}`, `${done[k]} de ${goal[k]} (FR-2)`));
+  }
+
+  for (const [k, ids] of [['dominios', MATRIZ_DOMINIOS], ['competencias', MATRIZ_COMPETENCIAS]] as const) {
+    for (const id of map.mapa[k]) if (!(id in ids)) out.push(erro(`mapa.${k}`, `"${id}" não existe na Matriz do Enamed (use ids como ${k === 'dominios' ? 'D09' : 'C02'}, MATRIZ.md)`));
+    if (!map.mapa[k].length) out.push(aviso(`mapa.${k}`, 'vazio: declare quais itens da Matriz o mapa cobre'));
   }
 
   for (const m of pathModules) if (!map.cards.some((c) => c.modulo === m)) out.push(erro('cards', `módulo ${m} sem cards (FR-1)`));
