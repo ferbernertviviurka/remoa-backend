@@ -42,7 +42,7 @@ describe('F30 FR-36: the public item never carries reference material', () => {
   it('bank list rows and summaries have no reference either', () => {
     const row = {
       id: id(5), boardId: id(8), type: 'objective', difficulty: 'medium', stem: 'Enunciado', source: 'ai', status: 'draft',
-      enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: new Date(),
+      enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: false, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: new Date(),
     };
     expect(questionBankItemPublicSchema.safeParse(row).success).toBe(true);
     expect(questionBankItemPublicSchema.safeParse({ ...row, correctKey: 'A' }).success).toBe(false);

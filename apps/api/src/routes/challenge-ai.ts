@@ -84,6 +84,8 @@ export const editQuestionSchema = z.object({
   stem: z.string().trim().min(1).max(2000),
   difficulty: z.enum(questionDifficulties).optional(),
 }).strict();
+/** FR-17: the student confirms a topic that already exists in the closed ENAMED list. */
+export const confirmTopicSchema = z.object({ topicId: idSchema }).strict();
 export const reportResultSchema = z.object({ itemId: idSchema, reported: z.literal(true) }).strict();
 
 /** GET /bank query. Strict: an unknown parameter is a 422. */
@@ -116,6 +118,7 @@ export type ChallengeAiService = {
   bank(userId: string, query: BankQuery): Promise<Result<unknown>>;
   archive(userId: string, bankId: string): Promise<Result<unknown>>;
   edit(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
+  confirmTopic(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
   report(userId: string, itemId: string): Promise<Result<unknown>>;
   summarize(input: GenerateSummaryInput): Promise<Result<unknown>>;
   summaries(userId: string, boardId: string): Promise<Result<unknown>>;
@@ -162,6 +165,8 @@ export type DataPort = {
   archive(userId: string, bankId: string): Promise<{ id: string; status: 'archived' } | null>;
   /** Inserts a new row that supersedes this one. `'numbers'` when the new stem adds a dose the stored question does not have. */
   edit(userId: string, bankId: string, stem: string, difficulty?: string): Promise<unknown | 'numbers' | null>;
+  /** Sets the topic only when it is a taxonomy topic of the question's area. `'closed'` = not in that list. */
+  confirmTopic(userId: string, bankId: string, topicId: string): Promise<unknown | 'closed' | null>;
   /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
   report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
 };
@@ -395,6 +400,13 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       if (row === 'numbers') return err('validation', 'ungrounded_number');
       return row ? ok(row) : err('not_found', 'question_not_found');
     },
+    confirmTopic: async (userId, bankId, body) => {
+      const parsed = parseWith(confirmTopicSchema, body);
+      if (!parsed.ok) return parsed;
+      const row = await io.data.confirmTopic(userId, bankId, parsed.data.topicId);
+      if (row === 'closed') return err('validation', 'topic_not_in_list');
+      return row ? ok(row) : err('not_found', 'question_not_found');
+    },
     report: async (userId, itemId) => {
       const row = await io.data.report(userId, itemId);
       return row ? ok(row) : err('not_found', 'item_not_found');
@@ -421,6 +433,15 @@ const toStored = (r: Raw): StoredAttempt => ({
   manipulation: Boolean(r.manipulation), covered: strs(r.covered), missing: strs(r.missing), criticalError: Boolean(r.critical_error),
   confidence: r.confidence === null || r.confidence === undefined ? null : Number(r.confidence), model: (r.model as string | null) ?? null,
   promptVersion: (r.prompt_version as string | null) ?? null, rating: (r.rating as Grade | null) ?? null, disputed: Boolean(r.disputed),
+});
+
+/** Public bank row. The name is the taxonomy label, never the answer. */
+const publicBank = (r: Raw) => ({
+  id: r.id, boardId: r.board_id, type: r.type, difficulty: r.difficulty, stem: r.stem, source: r.source, status: r.status,
+  enamedAreaId: r.enamed_area_id, enamedDomainId: r.enamed_domain_id, enamedTopicId: r.enamed_topic_id,
+  enamedTopicName: typeof r.enamed_topic_name === 'string' && r.enamed_topic_name ? r.enamed_topic_name : null,
+  enamedConfirmed: Boolean(r.enamed_confirmed),
+  stats: json(r.stats), createdAt: r.created_at,
 });
 
 export const dbData: DataPort = {
@@ -535,11 +556,11 @@ export const dbData: DataPort = {
     if (q.type) where.push(sql`q.type = ${q.type}`);
     where.push(q.status ? sql`q.status = ${q.status}` : sql`q.status <> 'archived'`);
     const rows = await exec(tx, sql`select q.id, q.board_id, q.type, q.difficulty, q.stem, q.source, q.status, q.enamed_area_id, q.enamed_domain_id, q.enamed_topic_id,
-        q.stats, q.created_at from question_bank q where ${sql.join(where, sql` and `)} order by q.created_at desc, q.id limit ${q.limit} offset ${q.offset}`);
-    return rows.map((r) => ({
-      id: r.id, boardId: r.board_id, type: r.type, difficulty: r.difficulty, stem: r.stem, source: r.source, status: r.status, enamedAreaId: r.enamed_area_id,
-      enamedDomainId: r.enamed_domain_id, enamedTopicId: r.enamed_topic_id, stats: json(r.stats), createdAt: r.created_at,
-    }));
+        q.enamed_confirmed, t.name as enamed_topic_name, q.stats, q.created_at
+      from question_bank q
+      left join enamed_taxonomy t on t.id = q.enamed_topic_id
+      where ${sql.join(where, sql` and `)} order by q.created_at desc, q.id limit ${q.limit} offset ${q.offset}`);
+    return rows.map(publicBank);
   }),
 
   cardDue: async (userId, cardId, subId, now) => {
@@ -603,16 +624,37 @@ export const dbData: DataPort = {
           enamed_topic_id, enamed_confidence, enamed_confirmed, source, prompt_id, prompt_version, model, 'draft', version + 1, id
         from question_bank q
         where q.id = ${id} and q.user_id = ${userId}
-        returning id, board_id, type, difficulty, stem, source, status, enamed_area_id, enamed_domain_id, enamed_topic_id, stats, created_at`);
+        returning id, board_id, type, difficulty, stem, source, status, enamed_area_id, enamed_domain_id, enamed_topic_id, enamed_confirmed,
+          (select name from enamed_taxonomy where id = question_bank.enamed_topic_id) as enamed_topic_name, stats, created_at`);
       return row ?? null;
     });
     if (written === 'numbers' || !written) return written;
     await invalidate('question.changed', { userId, mapId: written.board_id ? String(written.board_id) : undefined });
-    return {
-      id: written.id, boardId: written.board_id, type: written.type, difficulty: written.difficulty, stem: written.stem, source: written.source,
-      status: written.status, enamedAreaId: written.enamed_area_id, enamedDomainId: written.enamed_domain_id, enamedTopicId: written.enamed_topic_id,
-      stats: json(written.stats), createdAt: written.created_at,
-    };
+    return publicBank(written);
+  },
+
+  confirmTopic: async (userId, id, topicId) => {
+    const written = await run(userId, async (tx) => {
+      const [mine] = await exec(tx, sql`select id from question_bank q
+        where q.id = ${id} and q.user_id = ${userId} and q.status <> 'archived'
+          and not exists (select 1 from question_bank n where n.supersedes_id = q.id)`);
+      if (!mine) return null;
+      const [row] = await asServer<Raw>(tx, sql`update question_bank q
+        set enamed_topic_id = t.id,
+            enamed_domain_id = case when d.kind = 'domain' then d.id else q.enamed_domain_id end,
+            enamed_confirmed = true
+        from enamed_taxonomy t
+        left join enamed_taxonomy d on d.id = t.parent_id
+        where q.id = ${id} and q.user_id = ${userId}
+          and t.id = ${topicId} and t.kind = 'topic'
+          and (q.enamed_area_id is null or t.area = (select area from enamed_taxonomy where id = q.enamed_area_id))
+        returning q.id, q.board_id, q.type, q.difficulty, q.stem, q.source, q.status, q.enamed_area_id, q.enamed_domain_id, q.enamed_topic_id,
+          q.enamed_confirmed, t.name as enamed_topic_name, q.stats, q.created_at`);
+      return row ?? ('closed' as const);
+    });
+    if (!written || written === 'closed') return written;
+    await invalidate('question.changed', { userId, mapId: written.board_id ? String(written.board_id) : undefined });
+    return publicBank(written);
   },
 
   report: async (userId, itemId) => {
@@ -766,6 +808,13 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       const body = parseWith(emptyBody, (await readJson(c)) ?? {});
       if (!body.ok) return errorResponse(body.error);
       return sendPublic(c, 'archive', archiveResultSchema, await service.archive(c.get('userId'), id));
+    })
+    .post('/bank/:id/confirm', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('question not found');
+      const body = parseWith(confirmTopicSchema, (await readJson(c)) ?? null);
+      if (!body.ok) return errorResponse(body.error);
+      return sendPublic(c, 'confirm', questionBankItemPublicSchema, await service.confirmTopic(c.get('userId'), id, body.data));
     })
     .post('/bank/:id', async (c) => {
       const id = paramId(c.req.param('id'));
