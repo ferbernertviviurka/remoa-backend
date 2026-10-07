@@ -147,7 +147,7 @@ export async function getBoardView(
     const boardQ = tx
       .select({
         id: s.boards.id, userId: s.boards.userId, title: s.boards.title, area: s.boards.area, matrixItemId: s.boards.matrixItemId, status: s.boards.status, version: s.boards.version,
-        temporalMark: s.boards.temporalMark, reviewerId: s.boards.reviewerId, sourceBoardId: s.boards.sourceBoardId, copiedFromLinkAt: s.boards.copiedFromLinkAt,
+        temporalMark: s.boards.temporalMark, path: s.boards.path, reviewerId: s.boards.reviewerId, sourceBoardId: s.boards.sourceBoardId, copiedFromLinkAt: s.boards.copiedFromLinkAt,
         archivedAt: s.boards.archivedAt, access: s.boards.access, shareToken: s.boards.shareToken, createdAt: s.boards.createdAt, updatedAt: s.boards.updatedAt,
         matrixItemIds: sql<string[]>`coalesce((select array_agg(bm.matrix_item_id order by bm.created_at, bm.matrix_item_id) from board_matrix_items bm where bm.board_id = boards.id), '{}')`,
         cardsAt: sql<string | null>`(select max(c.updated_at)::text from cards c where c.board_id = boards.id)`,
@@ -192,7 +192,7 @@ export async function getBoardView(
     const cards = cardRows.map(({ x, y, payload, width, height, ...c }) => ({ ...c, position: { x, y }, size: sizeOf({ width, height }), preview: cardPreview(c.type, payload) }));
     const edges = edgeRows.filter((e) => live.has(e.fromCardId) && live.has(e.toCardId));
     const changelog = published?.changelog ?? null;
-    return ok({ etag, notModified: false as const, data: { board: { ...toBoard(board), changelog, matrixItemIds: board.matrixItemIds }, cards, edges } as unknown as BoardGraph });
+    return ok({ etag, notModified: false as const, data: { board: { ...toBoard(board), path: board.path, changelog, matrixItemIds: board.matrixItemIds }, cards, edges } as unknown as BoardGraph });
   });
 }
 
