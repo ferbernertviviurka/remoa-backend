@@ -41,7 +41,7 @@ export function publishGate(map: MapFile, verify: VerifyResult[], decisions: Con
 export type Put = (key: string, body: Buffer, contentType: string) => Promise<void>;
 export type BuildOptions = LintOptions & {
   ownerId: string;
-  /** Uploads the WebP variants (S3/R2); without it only the rows are written (P-651). */
+  /** Uploads the WebP variants (S3/R2); without it only the rows are written (P-671). */
   put?: Put;
   /** Anything but seed_draft is refused (FR-28). */
   status?: 'seed_draft' | 'seed_approved';
