@@ -62,6 +62,7 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     dispute: vi.fn(async () => ok({ attemptId: ID, disputed: true })),
     bank: vi.fn(async () => ok([])),
     archive: vi.fn(async () => ok({ id: ID, status: 'archived' as const })),
+    edit: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado novo', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
     report: vi.fn(async () => ok({ itemId: ID, reported: true as const })),
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
@@ -229,6 +230,10 @@ describe('rotas /v1/challenge-ai: entrada estrita', () => {
     const hidden = await send(leaked, 'POST', `/bank/${ID}/archive`, {});
     expect(hidden.status).toBe(500);
     expect(await hidden.text()).not.toContain(SECRET);
+    const edited = await send(app, 'POST', `/bank/${ID}`, { stem: 'Enunciado novo', difficulty: 'easy' });
+    expect(edited.status).toBe(200);
+    expect(JSON.parse(await edited.text()).data).toMatchObject({ stem: 'Enunciado novo', status: 'draft' });
+    expect(service.edit).toHaveBeenCalledWith(USER, ID, { stem: 'Enunciado novo', difficulty: 'easy' });
   });
 
   it('bank filters are parsed and passed on (board, area, difficulty, type, status)', async () => {
@@ -348,6 +353,7 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     cardDue: async () => o.card ?? null,
     afterGrade: async (_u, spec) => { mem.grades.push(spec); },
     archive: async () => null,
+    edit: async () => null,
     report: async () => null,
   };
   let units = o.units ?? 100;

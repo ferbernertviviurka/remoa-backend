@@ -9,7 +9,7 @@ import {
   type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey,
   type AppError, type ChallengeConfig, type ErrorCode, type GradedBy, type Grade, type Result, type Verdict,
 } from '@remoa/contracts';
-import { challengeLimits } from '@remoa/ai';
+import { challengeLimits, numbersGrounded } from '@remoa/ai';
 import type { Tx } from '@remoa/db';
 import type { Env } from '../app';
 import { fail } from '../app';
@@ -78,6 +78,11 @@ export type GenerationMeta = z.infer<typeof generationMetaSchema>;
 
 export const disputeResultSchema = z.object({ attemptId: idSchema, disputed: z.literal(true) }).strict();
 export const archiveResultSchema = z.object({ id: idSchema, status: z.literal('archived') }).strict();
+/** FR-18: a new version. The answer stays on the server; only the stem and the difficulty change. */
+export const editQuestionSchema = z.object({
+  stem: z.string().trim().min(1).max(2000),
+  difficulty: z.enum(questionDifficulties).optional(),
+}).strict();
 export const reportResultSchema = z.object({ itemId: idSchema, reported: z.literal(true) }).strict();
 
 /** GET /bank query. Strict: an unknown parameter is a 422. */
@@ -109,6 +114,7 @@ export type ChallengeAiService = {
   dispute(userId: string, attemptId: string): Promise<Result<unknown>>;
   bank(userId: string, query: BankQuery): Promise<Result<unknown>>;
   archive(userId: string, bankId: string): Promise<Result<unknown>>;
+  edit(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
   report(userId: string, itemId: string): Promise<Result<unknown>>;
   summarize(input: GenerateSummaryInput): Promise<Result<unknown>>;
   summaries(userId: string, boardId: string): Promise<Result<unknown>>;
@@ -152,6 +158,8 @@ export type DataPort = {
   /** Applies the schedule the grader already decided, and counts the final verdict on a bank question. Never throws into the answer. */
   afterGrade(userId: string, spec: AfterGrade): Promise<void>;
   archive(userId: string, bankId: string): Promise<{ id: string; status: 'archived' } | null>;
+  /** Inserts a new row that supersedes this one. `'numbers'` when the new stem adds a dose the stored question does not have. */
+  edit(userId: string, bankId: string, stem: string, difficulty?: string): Promise<unknown | 'numbers' | null>;
   /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
   report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
 };
@@ -375,6 +383,13 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       const row = await io.data.archive(userId, bankId);
       return row ? ok(row) : err('not_found', 'question_not_found');
     },
+    edit: async (userId, bankId, body) => {
+      const parsed = parseWith(editQuestionSchema, body);
+      if (!parsed.ok) return parsed;
+      const row = await io.data.edit(userId, bankId, parsed.data.stem, parsed.data.difficulty);
+      if (row === 'numbers') return err('validation', 'ungrounded_number');
+      return row ? ok(row) : err('not_found', 'question_not_found');
+    },
     report: async (userId, itemId) => {
       const row = await io.data.report(userId, itemId);
       return row ? ok(row) : err('not_found', 'item_not_found');
@@ -557,6 +572,34 @@ export const dbData: DataPort = {
     return { id: String(r.id), status: 'archived' as const };
   },
 
+  edit: async (userId, id, stem, difficulty) => {
+    const written = await run(userId, async (tx) => {
+      const [prev] = await asServer<Raw>(tx, sql`select to_jsonb(q) as row from question_bank q
+        where q.id = ${id} and q.user_id = ${userId} and q.status <> 'archived'
+          and not exists (select 1 from question_bank n where n.supersedes_id = q.id)`);
+      if (!prev) return null;
+      if (!numbersGrounded([stem], [JSON.stringify(prev.row)])) return 'numbers' as const;
+      const [row] = await asServer<Raw>(tx, sql`insert into question_bank (
+          user_id, board_id, board_version, card_ids, type, difficulty, stem, alternatives, correct_key, expected_answer, key_points,
+          explanation, distractor_notes, evidences, enamed_area_id, enamed_domain_id, enamed_competency_id, enamed_topic_id,
+          enamed_confidence, enamed_confirmed, source, prompt_id, prompt_version, model, status, version, supersedes_id)
+        select user_id, board_id, board_version, card_ids, type, coalesce(${difficulty ?? null}, difficulty), ${stem}, alternatives, correct_key,
+          expected_answer, key_points, explanation, distractor_notes, evidences, enamed_area_id, enamed_domain_id, enamed_competency_id,
+          enamed_topic_id, enamed_confidence, enamed_confirmed, source, prompt_id, prompt_version, model, 'draft', version + 1, id
+        from question_bank q
+        where q.id = ${id} and q.user_id = ${userId}
+        returning id, board_id, type, difficulty, stem, source, status, enamed_area_id, enamed_domain_id, enamed_topic_id, stats, created_at`);
+      return row ?? null;
+    });
+    if (written === 'numbers' || !written) return written;
+    await invalidate('question.changed', { userId, mapId: written.board_id ? String(written.board_id) : undefined });
+    return {
+      id: written.id, boardId: written.board_id, type: written.type, difficulty: written.difficulty, stem: written.stem, source: written.source,
+      status: written.status, enamedAreaId: written.enamed_area_id, enamedDomainId: written.enamed_domain_id, enamedTopicId: written.enamed_topic_id,
+      stats: json(written.stats), createdAt: written.created_at,
+    };
+  },
+
   report: async (userId, itemId) => {
     const queued = await run(userId, async (tx) => {
       const [item] = await exec(tx, sql`select card_id, bank_id from challenge_items where id = ${itemId} and user_id = ${userId}`);
@@ -703,6 +746,11 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       const body = parseWith(emptyBody, (await readJson(c)) ?? {});
       if (!body.ok) return errorResponse(body.error);
       return sendPublic(c, 'archive', archiveResultSchema, await service.archive(c.get('userId'), id));
+    })
+    .post('/bank/:id', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('question not found');
+      return sendPublic(c, 'edit', questionBankItemPublicSchema, await service.edit(c.get('userId'), id, (await readJson(c)) ?? null));
     })
     .post('/items/:id/report', async (c) => {
       const id = paramId(c.req.param('id'));
