@@ -14,6 +14,7 @@ vi.mock('../onboarding/emails', () => ({ sendOnboardingEmails: vi.fn(async () =>
 vi.mock('../admin/overview/metrics', () => ({ refreshRecentMetrics: m.metrics }));
 vi.mock('../billing/trial-notice', () => ({ sweepTrialNotices: m.trial }));
 vi.mock('../billing/stripe', () => ({ createStripe: vi.fn(), installStripe: vi.fn() }));
+vi.mock('../ai/service', () => ({ failStaleJobs: vi.fn(async () => 0) }));
 
 import { runDaily, runHourly } from './maintenance';
 import { maintenanceDaily, maintenanceHourly } from '../inngest/maintenance';
