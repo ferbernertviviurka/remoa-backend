@@ -358,6 +358,7 @@ export async function listSeeds(onlyId?: string) {
     return {
       id: b.id, title: b.title, area: b.area, temporalMark: b.temporalMark, version: b.version, badges: b.badges,
       slug: b.path?.slug ?? null, modules: b.path?.modulos ?? [], contentVersion: b.path?.versao ?? null,
+      topicArea: b.path?.area ?? null,
       cardCount: n, estimatedMinutes: Math.ceil(n * MINUTES_PER_CARD), levels: [...(count.get(b.id)?.levels ?? [])].sort(),
       approvedBy: v?.approved_by ?? null, reviewerName: v?.reviewer_name ?? null, reviewerCrm: v?.reviewer_crm ?? null, approvedAt: v?.approved_at ? new Date(v.approved_at) : null,
     };
