@@ -25,6 +25,7 @@ import type { createMockStripe, StripePort } from './billing/stripe';
 import { boardsRoutes } from './routes/boards';
 import { cardsRoutes } from './routes/cards';
 import { challengeRoutes, type GradeStream } from './routes/challenge';
+import { challengeAiRoutes } from './routes/challenge-ai';
 import { coverageRoutes } from './routes/coverage';
 import { homeRoutes } from './routes/home';
 import { importsRoutes } from './routes/imports';
@@ -165,6 +166,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.use('/v1/coverage/*', requireUser).route('/v1/coverage', coverageRoutes);
   app.use('/v1/review/*', requireUser).route('/v1/review', reviewRoutes);
   app.use('/v1/challenge/*', requireUser).route('/v1/challenge', challengeRoutes({ grade, stream }));
+  app.use('/v1/challenge-ai/*', requireUser).route('/v1/challenge-ai', challengeAiRoutes()); // G25 F32
   app.use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
   app.use('/v1/imports/*', requireUser).route('/v1/imports', importsRoutes(createImports({ anki: anki ?? ankiPort }))); // F06 Anki import
   app.use('/v1/ai/*', requireUser).route('/v1/ai', aiRoutes);
