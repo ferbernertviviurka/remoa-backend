@@ -22,6 +22,7 @@
     "ai:report": "pnpm --silent --filter @remoa/ai exec tsx --env-file-if-exists=../../.env scripts/eval.ts --report",
     "ai:doctor": "pnpm --silent --filter @remoa/ai exec tsx --env-file-if-exists=../../.env scripts/doctor.ts",
     "ai:smoke": "pnpm --silent --filter @remoa/ai exec tsx --env-file-if-exists=../../.env scripts/smoke.ts",
+    "ai:prompts:lint": "pnpm --silent --filter @remoa/ai exec tsx scripts/prompts-lint.ts",
     "content:lint": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts lint",
     "content:images": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts images",
     "content:build": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts build",

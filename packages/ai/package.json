@@ -13,7 +13,8 @@
     "test:coverage": "vitest run --coverage",
     "eval": "tsx scripts/eval.ts",
     "doctor": "tsx scripts/doctor.ts",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "prompts:lint": "tsx scripts/prompts-lint.ts"
   },
   "dependencies": {
     "@dagrejs/dagre": "1.1.4",
