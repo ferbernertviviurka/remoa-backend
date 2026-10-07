@@ -66,6 +66,39 @@ const boardOrNotFound = async (tx: Parameters<Parameters<typeof run>[1]>[0], s: 
 export const isLinkableItem = async (tx: Tx, id: string) =>
   (await tx.execute(sql`select 1 from matrix_items m where m.id = ${id} and not exists (select 1 from matrix_items c where c.parent_id = m.id)`)).length > 0;
 
+type EnamedBoardMeta = { path?: unknown; temporalMark?: string | null; badges?: string[] | null };
+
+/** F07/F31: trail maps and ENAMED-tagged seeds should move the student's Matriz coverage when copied. */
+export function boardHasEnamedCoverage(meta: EnamedBoardMeta): boolean {
+  const slug = (meta.path as { slug?: string } | null | undefined)?.slug;
+  if (slug) return true;
+  if (meta.badges?.includes('top10_enamed')) return true;
+  if (meta.temporalMark?.toLowerCase().includes('enamed')) return true;
+  return false;
+}
+
+/** Links leaf matrix topics by title similarity when the copy has no links yet (seed copy, shared copy without vínculos). */
+export async function attachMatrixLinksByTitle(
+  tx: Tx,
+  s: Parameters<Parameters<typeof run>[1]>[1],
+  boardId: string,
+  area: 'CM',
+  title: string,
+) {
+  const [has] = await tx.select({ id: s.boardMatrixItems.matrixItemId }).from(s.boardMatrixItems).where(eq(s.boardMatrixItems.boardId, boardId)).limit(1);
+  if (has) return;
+  const rows = await tx.execute<{ id: string }>(sql`
+    select m.id from matrix_items m
+    where m.area = ${area}::area
+      and not exists (select 1 from matrix_items c where c.parent_id = m.id)
+      and word_similarity(lower(${title}), lower(m.title)) >= 0.35
+    order by word_similarity(lower(${title}), lower(m.title)) desc, m.code
+    limit 3`);
+  if (!rows.length) return;
+  await tx.insert(s.boardMatrixItems).values(rows.map((r) => ({ boardId, matrixItemId: r.id }))).onConflictDoNothing();
+  await tx.update(s.boards).set({ matrixItemId: rows[0]!.id }).where(and(eq(s.boards.id, boardId), sql`${s.boards.matrixItemId} is null`));
+}
+
 export const linkBoardMatrix: LinkBoardMatrix = async (userId, link) => {
   const r = await guard(() =>
     run(userId, async (tx, s) => {
