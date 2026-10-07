@@ -92,6 +92,23 @@ async function shareStatements(r: Reserved, pid: number | undefined, used: Set<s
     await (r.unsafe(s.q, s.args as never[], { prepare: true }) as unknown as { describe: () => Promise<unknown> }).describe().catch(() => undefined);
   }
 }
+/**
+ * D-1123: prepares every statement run() has learned so far on every pooled connection, all connections at once (boot warm-up: no
+ * request is waiting yet, unlike warmIdle). The driver waits for each Describe, so it costs ~1 round trip per statement, in parallel.
+ */
+export async function warmStatements() {
+  const c = (await dbm()).db.$client;
+  const held = await Promise.all(Array.from({ length: c.options.max }, () => c.reserve()));
+  try {
+    await Promise.all(held.map(async (r) => {
+      const q = r.unsafe('select 1');
+      await q;
+      await shareStatements(r, (q as unknown as { state?: { pid?: number } }).state?.pid, new Set(), Infinity);
+    }));
+  } finally {
+    for (const r of held) r.release();
+  }
+}
 const runCtx = new AsyncLocalStorage<RunCtx>();
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 /** Resolves once every query already started in this tick is on its connection (call order = wire order from here on). */
@@ -195,8 +212,7 @@ export const run = async <T>(userId: string, fn: (tx: Tx, s: typeof import('@rem
 /**
  * D-1096: opens every pooled connection at boot. A new connection costs ~6 round trips (TCP, TLS, auth, type fetch: ~0,75 s with the
  * database 124 ms away), which the first requests after a deploy otherwise paid. Recycling is rare and staggered (6–12 h, D-1103).
- * ponytail (D-1106): statements are not pre-prepared here; the first use of each one on each connection still pays one Describe trip
- * (minutes after a deploy, P-541). A boot list of hot statements is the upgrade if deploys get frequent or p99 after one matters.
+ * D-1123: the statements themselves are prepared at boot by `warmUp()` (warmup.ts) before /health turns 200.
  */
 export async function warmPool() {
   const c = (await dbm()).db.$client;

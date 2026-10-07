@@ -17,6 +17,16 @@ describe('api', () => {
     expect(body.ai.status).toMatch(/^(ok|degraded|off|mock|pending)$/);
   });
 
+  it('D-1123: /health is 503 until the boot warm-up is done, then 200 (Railway healthcheck)', async () => {
+    let warm = false;
+    const booting = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async () => null, ready: () => warm });
+    const before = await booting.request('/health');
+    expect(before.status).toBe(503);
+    expect(await before.json()).toEqual({ ok: false, warming: true });
+    warm = true;
+    expect((await booting.request('/health')).status).toBe(200);
+  });
+
   it('CORS: every WEB_ORIGIN in the list is echoed with credentials; others are not; timing headers stay exposed', async () => {
     const multi = createApp({ webOrigin: ['https://remoa.com.br', 'https://www.remoa.com.br'], verifyToken: async () => null });
     for (const origin of ['https://remoa.com.br', 'https://www.remoa.com.br']) {

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1144.0",
+    "@remoa/ai": "workspace:*",
     "@remoa/contracts": "workspace:*",
     "postgres": "^3.4.9",
     "sharp": "^0.35.5",

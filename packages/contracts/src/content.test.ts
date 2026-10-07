@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -6,15 +6,18 @@ import {
   AREA_OPTIONS, areas, boardSchema, cardSchema, contentReviewDecisionSchema, didacticsSchema, evidenceSchema, mapFileSchema, verifyResultSchema,
 } from './index';
 
-const template = parse(readFileSync(fileURLToPath(new URL('../../../../docs/content/enamed/_template/mapa.yaml', import.meta.url)), 'utf8'));
+// docs/ lives in the remoa repo around remoa-backend; a standalone checkout (CI) skips the template tests (P-673).
+const templateFile = fileURLToPath(new URL('../../../../docs/content/enamed/_template/mapa.yaml', import.meta.url));
+const hasDocs = existsSync(templateFile);
+const template = hasDocs ? parse(readFileSync(templateFile, 'utf8')) : null;
 
 describe('F31 content contracts', () => {
-  it('docs/content/enamed/_template/mapa.yaml passes MapFile', () => {
+  it.skipIf(!hasDocs)('docs/content/enamed/_template/mapa.yaml passes MapFile', () => {
     const r = mapFileSchema.safeParse(template);
     expect(r.success ? [] : r.error.issues).toEqual([]);
   });
 
-  it('enforces shape limits and references', () => {
+  it.skipIf(!hasDocs)('enforces shape limits and references', () => {
     const card = template.cards[0];
     const bad = (patch: object) => mapFileSchema.safeParse({ ...template, cards: [{ ...card, ...patch }] }).success;
     expect(bad({ frente: 'x'.repeat(181) })).toBe(false);
