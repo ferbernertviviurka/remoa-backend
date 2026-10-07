@@ -3,7 +3,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   aiAnswerInputSchema, aiAnswerItemInputSchema, aiAnswerResultSchema, aiChallengeItemPublicSchema, aiChallengeItemServerSchema,
-  aiChallengeSessionPublicSchema, aiItemTypes, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeSessionStatuses, err,
+  aiChallengeSessionPublicSchema, aiItemTypes, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, err,
   generateSummaryInputSchema, gradedBy as gradedByValues, grades, idSchema, mapSummaryPublicSchema, ok, parseWith, questionBankItemPublicSchema,
   questionDifficulties, questionStatuses, questionTypes, verdicts,
   type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey,
@@ -18,13 +18,14 @@ import { asServer, pgArray, run } from '../db';
 import { generateQuestions, type GenerateInput, type GenerateOutput } from '../challenge-ai/generate';
 import {
   answerHash as gradeAnswerHash, gradeAnswer, gradeBatch, publicResult,
-  type GradeDeps, type GradeErrorCode, type GradeInput, type GradeOutcome, type GradedAttempt, type PriorAttempt,
+  type CardDue, type GradeDeps, type GradeErrorCode, type GradeInput, type GradeOutcome, type GradedAttempt, type PriorAttempt, type Schedule,
 } from '../challenge-ai/grade';
 import {
   acceptAnswer, advance, answerHash as sessionAnswerHash, getSession, recordAttempt, sessionStore, startSession,
   type ItemRow, type SessionRow, type SessionStore,
 } from '../challenge-ai/session';
 import { generateSummary, listSummaries, type GenerateSummaryInput } from '../challenge-ai/summary';
+import { recordAttempt as recordReview } from '../review/record-attempt';
 
 // G25 (F32) T6: HTTP for "Desafio com IA" and "Resumo com IA" (FR-36–FR-52, D-1605, D-1611).
 // The services already exist; this file wires them. Three rules hold for every handler:
@@ -127,6 +128,12 @@ export type Reference = {
 
 export type ScoreRow = { correct: number; partial: number; incorrect: number; pending: number };
 
+/** What a final verdict does to the card and to the bank row. `schedule` is null while the student can still retry. */
+export type AfterGrade = {
+  cardId: string | null; subId: string; bankId: string | null; itemType: (typeof aiItemTypes)[number];
+  schedule: Schedule | null; rating: Grade | null; verdict: Verdict | null; attemptId: string; elapsedMs?: number; now: Date;
+};
+
 /** The SQL that the existing services do not have: reading the reference, history, the graded row, score, dispute, bank list. */
 export type DataPort = {
   attempts(userId: string, itemId: string): Promise<StoredAttempt[]>;
@@ -140,6 +147,10 @@ export type DataPort = {
   /** D-1605: flips `disputed` false -> true and nothing else. */
   dispute(userId: string, attemptId: string): Promise<Result<{ attemptId: string; disputed: true }>>;
   bank(userId: string, q: BankQuery): Promise<unknown[]>;
+  /** FR-32: `new` when the card was never reviewed, `due` when the review date has passed, `not_due` otherwise. */
+  cardDue(userId: string, cardId: string, subId: string, now: Date): Promise<CardDue>;
+  /** Applies the schedule the grader already decided, and counts the final verdict on a bank question. Never throws into the answer. */
+  afterGrade(userId: string, spec: AfterGrade): Promise<void>;
   archive(userId: string, bankId: string): Promise<{ id: string; status: 'archived' } | null>;
   /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
   report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
@@ -253,8 +264,9 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
 
       const ref = await io.data.reference(userId, session, item);
       if (!ref) return err('conflict', 'reference_unavailable');
+      const card = item.cardId ? await io.data.cardDue(userId, item.cardId, item.subId || '', now) : null;
       const outcome = await io.grade({
-        userId, mode: modeOf(session), item: withReference(item, ref), answer: body.answer, card: null, history: attempts.map(toPrior),
+        userId, mode: modeOf(session), item: withReference(item, ref), answer: body.answer, card, history: attempts.map(toPrior),
         context: { assunto: ref.assunto, publico: PUBLICO, neighbors: ref.neighbors, evidence: ref.evidence },
         elapsedMs: body.elapsedMs, pending: { attemptNo: rec.attemptNo },
         gradingsLastHour: item.cardId ? await io.data.recentAiGradings(userId, item.cardId) : undefined,
@@ -270,8 +282,13 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       let attemptId = rec.attemptId;
       if (g.gradedBy !== 'pending') {
         const saved = await io.data.saveGraded(userId, item.id, g);
-        if (saved) attemptId = saved;
-        else {
+        if (saved) {
+          attemptId = saved;
+          if (g.verdict && !g.canRetry) await io.data.afterGrade(userId, {
+            cardId: item.cardId, subId: item.subId || '', bankId: item.bankId, itemType: item.type, schedule: g.schedule, rating: g.rating,
+            verdict: g.verdict, attemptId: saved, elapsedMs: body.elapsedMs, now,
+          });
+        } else {
           // another request graded this attempt first: its row is the answer
           const won = gradedOf(await io.data.attempts(userId, item.id), rec.attemptNo);
           if (won) return ok(storedResult(won, session));
@@ -303,7 +320,8 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
           jobs.push({
             row: w.row,
             input: {
-              userId, mode: modeOf(s), item: withReference(toServerItem(w.row), ref), answer: w.pend.answer, card: null, history: w.mine.map(toPrior),
+              userId, mode: modeOf(s), item: withReference(toServerItem(w.row), ref), answer: w.pend.answer,
+              card: w.row.cardId ? await io.data.cardDue(userId, w.row.cardId, w.row.subId || '', now) : null, history: w.mine.map(toPrior),
               context: { assunto: ref.assunto, publico: PUBLICO, neighbors: ref.neighbors, evidence: ref.evidence }, pending: { attemptNo: w.pend.attemptNo },
             },
           });
@@ -312,7 +330,15 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
         for (let i = 0; i < jobs.length; i += size) {
           const chunk = jobs.slice(i, i + size);
           const outs = await io.gradeBatch(chunk.map((j) => j.input), { requestId });
-          for (const [k, o] of outs.entries()) if (o.ok && o.data.gradedBy !== 'pending') await io.data.saveGraded(userId, chunk[k]!.row.id, o.data);
+          for (const [k, o] of outs.entries()) {
+            if (!o.ok || o.data.gradedBy === 'pending') continue;
+            const row = chunk[k]!.row;
+            const saved = await io.data.saveGraded(userId, row.id, o.data);
+            if (saved && o.data.verdict && !o.data.canRetry) await io.data.afterGrade(userId, {
+              cardId: row.cardId, subId: row.subId || '', bankId: row.bankId, itemType: row.type, schedule: o.data.schedule, rating: o.data.rating,
+              verdict: o.data.verdict, attemptId: saved, now,
+            });
+          }
         }
         attempts = await io.data.sessionAttempts(userId, sessionId);
       }
@@ -485,6 +511,41 @@ export const dbData: DataPort = {
       enamedDomainId: r.enamed_domain_id, enamedTopicId: r.enamed_topic_id, stats: json(r.stats), createdAt: r.created_at,
     }));
   }),
+
+  cardDue: async (userId, cardId, subId, now) => {
+    const [r] = await run(userId, (tx) => exec(tx, sql`select reps, due from fsrs_state
+      where user_id = ${userId} and card_id = ${cardId} and sub_id = ${subId}`));
+    if (!r || Number(r.reps) === 0) return 'new';
+    return new Date(String(r.due)) <= now ? 'due' : 'not_due';
+  },
+
+  afterGrade: async (userId, spec) => {
+    const { schedule, cardId, verdict, rating } = spec;
+    if (schedule && cardId && rating && verdict) {
+      if (schedule.apply) {
+        const mode = (challengeModes as readonly string[]).includes(spec.itemType) ? spec.itemType as (typeof challengeModes)[number] : 'hidden_card';
+        const reviewed = await recordReview({
+          id: spec.attemptId, userId, cardId, subId: spec.subId || null, sessionId: null, mode,
+          inputKind: spec.itemType === 'objective' ? 'mcq' : 'text', answerText: null, verdict: null, grade: rating, gradeOverridden: false,
+          durationMs: spec.elapsedMs ?? 0, createdAt: spec.now,
+        });
+        if (!reviewed.ok) return;
+      } else if (schedule.anticipate) {
+        await run(userId, (tx) => tx.execute(sql`update fsrs_state set due = now()
+          where user_id = ${userId} and card_id = ${cardId} and sub_id = ${spec.subId} and due > now()`));
+        await invalidate('review.answered', { userId });
+      }
+    }
+    if (spec.bankId && verdict) {
+      await run(userId, (tx) => asServer(tx, sql`update question_bank set stats = jsonb_build_object(
+          'seen', coalesce((stats->>'seen')::int, 0) + 1,
+          'correct', coalesce((stats->>'correct')::int, 0) + (${verdict} = 'correct')::int,
+          'partial', coalesce((stats->>'partial')::int, 0) + (${verdict} = 'partial')::int,
+          'incorrect', coalesce((stats->>'incorrect')::int, 0) + (${verdict} = 'incorrect')::int
+        ) where id = ${spec.bankId} and user_id = ${userId}`));
+      await invalidate('question.changed', { userId });
+    }
+  },
 
   archive: async (userId, id) => {
     const [r] = await run(userId, (tx) => asServer<Raw>(tx, sql`update question_bank set status = 'archived'

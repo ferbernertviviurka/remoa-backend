@@ -9,11 +9,12 @@ import {
 import type { Env } from '../app';
 import { createApp } from '../app';
 import { answerHash as sessionHash, type BankRow, type ItemRow, type SessionRow, type SessionStore } from '../challenge-ai/session';
+import type { CardDue } from '../challenge-ai/grade';
 import { gradeAnswer, gradeBatch, type GradeDeps } from '../challenge-ai/grade';
 import type { Reservation } from '../billing/quota';
 import {
   AI_CALLS_PER_MINUTE, bankQuerySchema, challengeAiRoutes, challengeReportSchema, createChallengeAiService, takeAiSlot,
-  type ChallengeAiService, type DataPort, type Io, type Reference, type StoredAttempt,
+  type AfterGrade, type ChallengeAiService, type DataPort, type Io, type Reference, type StoredAttempt,
 } from './challenge-ai';
 
 // Route tests with a mocked service (public-schema guard) and service tests over in-memory stores (the real session and grade modules).
@@ -271,11 +272,11 @@ describe('rotas /v1/challenge-ai: quem chama e quanto', () => {
 
 type Mem = {
   sessions: (SessionRow & { finishedAt: Date | null })[]; items: ItemRow[]; rows: (StoredAttempt & { answerHash: string })[]; disputes: string[]; scores: unknown[];
-  refs: Map<string, Reference>;
+  grades: AfterGrade[]; refs: Map<string, Reference>;
 };
 
-function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replies?: (Veredito | Error)[]; units?: number; limitBatch?: number } = {}) {
-  const mem: Mem = { sessions: [], items: [], rows: [], disputes: [], scores: [], refs: new Map(Object.entries(o.refs ?? {})) };
+function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replies?: (Veredito | Error)[]; units?: number; limitBatch?: number; card?: CardDue } = {}) {
+  const mem: Mem = { sessions: [], items: [], rows: [], disputes: [], scores: [], grades: [], refs: new Map(Object.entries(o.refs ?? {})) };
   const counts = (id: string) => {
     const its = mem.items.filter((i) => i.sessionId === id);
     return { total: its.length, aiUnits: its.filter((i) => ['discursive', 'hidden_card', 'edge', 'case'].includes(i.type)).length };
@@ -344,6 +345,8 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
       return ok({ attemptId: id, disputed: true as const });
     },
     bank: async () => [],
+    cardDue: async () => o.card ?? null,
+    afterGrade: async (_u, spec) => { mem.grades.push(spec); },
     archive: async () => null,
     report: async () => null,
   };
@@ -462,6 +465,34 @@ describe('answers (serviço): só o resultado público', () => {
     expect(next.data.position).toBe(1);
     expect(next.data.current.type).toBe('discursive');
     expect(JSON.stringify(next)).not.toContain(SECRET);
+  });
+
+  it('a final grade moves a due card and only brings a not-due card forward when the answer is wrong', async () => {
+    const cardId = randomUUID();
+    const due = objective({ cardIds: [cardId] });
+    const f = fixture({ bank: [due], refs: { [due.id]: ref({ correctKey: 'B' }) }, card: 'due' });
+    const { app, sessionId, firstItem } = await started(f, [due], { preset: 'mock' });
+    const shown = (f.mem.items[0]!.shuffleMap as { kind: 'alternatives'; shown: Record<string, string> }).shown;
+    const right = Object.keys(shown).find((k) => shown[k] === 'B')!;
+    const res = await send(app, 'POST', `/sessions/${sessionId}/answers`, { itemId: firstItem, answer: { kind: 'choice', key: right } });
+    expect(res.status).toBe(200);
+    expect(f.mem.grades).toEqual([expect.objectContaining({ cardId, verdict: 'correct', rating: 'good', schedule: { apply: true, anticipate: false, delay: false } })]);
+
+    const later = objective({ cardIds: [cardId] });
+    const miss = fixture({ bank: [later], refs: { [later.id]: ref({ correctKey: 'B' }) }, card: 'not_due' });
+    const opened = await started(miss, [later], { preset: 'mock' });
+    const letters = (miss.mem.items[0]!.shuffleMap as { kind: 'alternatives'; shown: Record<string, string> }).shown;
+    const wrong = Object.keys(letters).find((k) => letters[k] !== 'B')!;
+    await send(opened.app, 'POST', `/sessions/${opened.sessionId}/answers`, { itemId: opened.firstItem, answer: { kind: 'choice', key: wrong } });
+    expect(miss.mem.grades).toEqual([expect.objectContaining({ schedule: { apply: false, anticipate: true, delay: false }, verdict: 'incorrect' })]);
+
+    const held = objective({ cardIds: [cardId] });
+    const keep = fixture({ bank: [held], refs: { [held.id]: ref({ correctKey: 'B' }) }, card: 'not_due' });
+    const kept = await started(keep, [held], { preset: 'mock' });
+    const keys = (keep.mem.items[0]!.shuffleMap as { kind: 'alternatives'; shown: Record<string, string> }).shown;
+    const okLetter = Object.keys(keys).find((k) => keys[k] === 'B')!;
+    await send(kept.app, 'POST', `/sessions/${kept.sessionId}/answers`, { itemId: kept.firstItem, answer: { kind: 'choice', key: okLetter } });
+    expect(keep.mem.grades[0]!.schedule).toEqual({ apply: false, anticipate: false, delay: false });
   });
 
   it('a wrong answer on Treino keeps the item open with a hint; the same answer again returns the stored verdict without a new row', async () => {

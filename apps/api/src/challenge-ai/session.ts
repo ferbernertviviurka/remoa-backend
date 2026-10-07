@@ -28,6 +28,8 @@ export type EdgeRow = { id: string; from: string; to: string; label: string | nu
 export type BankRow = {
   id: string; type: QuestionType; stem: string; alternatives: { key: AlternativeKey; text: string }[] | null; correctKey: AlternativeKey | null;
   status: string;
+  /** Cards the question cites. The first one is the card whose schedule the grade can move (FR-32). */
+  cardIds?: string[];
 };
 export type SessionRow = {
   id: string; userId: string; boardId: string | null; format: ChallengeFormat; status: 'active' | 'finished' | 'expired'; position: number;
@@ -214,15 +216,16 @@ function bankItems(sessionId: string, cfg: ChallengeConfig, ids: string[], rows:
     const q = byId.get(id);
     if (!q || q.status === 'archived') return err('not_found', 'question_not_found');
     if (cfg.questionType && cfg.questionType !== 'mixed' && q.type !== cfg.questionType) return err('validation', 'question_type_mismatch');
+    const cardId = q.cardIds?.[0] ?? null;
     if (q.type === 'discursive') {
-      cs.push({ cardId: null, subId: null, shuffleMap: null, body: { type: 'discursive', stem: clip(q.stem) } });
+      cs.push({ cardId, subId: null, shuffleMap: null, body: { type: 'discursive', stem: clip(q.stem) } });
       continue;
     }
     if (!q.alternatives || !q.correctKey) return err('internal', 'objective_without_alternatives');
     const byKey = Object.fromEntries(q.alternatives.map((a) => [a.key, a.text])) as Record<AlternativeKey, string>;
     const s = shuffleAlternatives(byKey, q.correctKey, `${sessionId}:${id}`);
     cs.push({
-      cardId: null, subId: null, shuffleMap: { kind: 'alternatives', shown: s.from },
+      cardId, subId: null, shuffleMap: { kind: 'alternatives', shown: s.from },
       body: { type: 'objective', stem: clip(q.stem), alternatives: ALTERNATIVE_KEYS.map((key) => ({ key, text: s.alternativas[key] })) },
     });
   }
@@ -373,11 +376,12 @@ export function sessionStore(tx: Tx): SessionStore {
       };
     },
     async bankQuestions(userId, ids) {
-      const rows = await asServer<Raw>(tx, sql`select id, type, stem, alternatives, correct_key, status from question_bank
+      const rows = await asServer<Raw>(tx, sql`select id, type, stem, alternatives, correct_key, status, card_ids from question_bank
         where user_id = ${userId} and id = any(${uuids(ids)})`);
       return rows.map((r) => ({
         id: String(r.id), type: r.type as QuestionType, stem: String(r.stem), alternatives: (json(r.alternatives) as BankRow['alternatives']) ?? null,
         correctKey: (r.correct_key as AlternativeKey | null) ?? null, status: String(r.status),
+        cardIds: Array.isArray(r.card_ids) ? r.card_ids.map(String) : [],
       }));
     },
     async createSession(s, items) {
