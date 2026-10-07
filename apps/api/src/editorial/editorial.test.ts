@@ -306,6 +306,26 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
     expect(version!.snapshot).toMatchObject({ reviewerName: 'Revisor', reviewerCrm: '123456-SP' });
   });
 
+  it('publish F31 (P-672): a trail board needs every card from the verified build; the edition keeps didactics, sources and trail order', async () => {
+    const reviewer = await newUser('reviewer');
+    const author = await newUser();
+    const path = { slug: `t-${uuid().slice(0, 8)}`, modulos: ['M1'], area: 'Clínica Médica', dominios: [], competencias: [], revisarAte: '2027-01-01', versao: '2026.1', aviso: 'x' };
+    const [trail] = await dbm.db.insert(dbm.boards).values({ userId: author, title: 'Trilha', status: 'seed_draft', path: path as never }).returning();
+    const didactics = { nivel: 1 as const, modulo: 'M1' as const, risco: 'nenhum' as const };
+    const sources = [{ doc: 'doc-a', local: 's1', versao: '2026', acesso: '2026-10-01' }];
+    await dbm.db.insert(dbm.cards).values({ boardId: trail!.id, title: 'Do build', status: 'approved', pathOrder: 1, didactics, sources });
+    const [loose] = await dbm.db.insert(dbm.cards).values({ boardId: trail!.id, title: 'Fora do build', status: 'approved' }).returning();
+    const publish = () => call(reviewer, 'POST', '/editorial/publish', { boardId: trail!.id, changelog: 'Primeira', temporalMark: 'Enamed 2026.2' });
+
+    const blocked = await publish();
+    expect(blocked.status).toBe(422);
+    expect(blocked.json.error?.message).toBe('trail card outside the verified build');
+    await dbm.db.update(dbm.cards).set({ pathOrder: 2 }).where(eq(dbm.cards.id, loose!.id));
+    expect((await publish()).status).toBe(200);
+    const [version] = await dbm.db.select().from(dbm.boardVersions).where(eq(dbm.boardVersions.boardId, trail!.id));
+    expect((version!.snapshot as { cards: unknown[] }).cards).toContainEqual(expect.objectContaining({ title: 'Do build', pathOrder: 1, didactics, sources }));
+  });
+
   it('decide: only a reviewer with name and valid CRM approves; admin is refused; a decided item stays decided', async () => {
     const { item, card } = await seedWithPending();
     const admin = await newUser('admin');

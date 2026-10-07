@@ -27,7 +27,7 @@ export function normalizeCrm(raw: string | null | undefined): string | null {
 }
 
 // Edition snapshot (publishBoard) stores every column of the live cards and edges, so these lists stay complete (FR-17 exception, D-1066).
-const CARD_COLS = ['id', 'boardId', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order', 'reviewerId', 'deletedAt', 'suspendedAt', 'sourceCardId', 'createdAt', 'updatedAt'] as const;
+const CARD_COLS = ['id', 'boardId', 'type', 'shape', 'title', 'front', 'frontAssetId', 'back', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order', 'reviewerId', 'deletedAt', 'suspendedAt', 'sourceCardId', 'didactics', 'sources', 'pathOrder', 'createdAt', 'updatedAt'] as const;
 const EDGE_COLS = ['id', 'boardId', 'fromCardId', 'toCardId', 'label', 'question', 'createdAt', 'updatedAt'] as const;
 
 type Signer = { userId: string; name: string; crm: string };
@@ -267,10 +267,13 @@ export async function publishBoard(userId: string, body: unknown) {
   const { db, boards, cards, edges, boardVersions } = await dbm();
   const published = await db.transaction(async (tx) => {
     // D-498: only seed boards publish (seed_draft → first edition, seed_approved → next edition). A student's private board is 404.
-    const [board] = await tx.select(pick(boards, 'id', 'version')).from(boards).where(and(eq(boards.id, input.data.boardId), sql`${boards.status} <> 'private'`, sql`${boards.archivedAt} is null`)).for('update');
+    const [board] = await tx.select(pick(boards, 'id', 'version', 'path')).from(boards).where(and(eq(boards.id, input.data.boardId), sql`${boards.status} <> 'private'`, sql`${boards.archivedAt} is null`)).for('update');
     if (!board) return err('not_found', 'not found');
     const allCards = await tx.select(pick(cards, ...CARD_COLS)).from(cards).where(and(eq(cards.boardId, board.id), sql`${cards.deletedAt} is null`));
     if (allCards.some((c) => c.status !== 'approved')) return err('validation', 'cards still draft');
+    // F31 P-672: a trail board publishes only cards that came through `content:build`, which writes them only with content:verify
+    // green (every card verified, no contradiz, ≥ 98% sustenta). The physician's "aprovo" is the per-card approval above (with CRM).
+    if (board.path && allCards.some((c) => c.pathOrder === null)) return err('validation', 'trail card outside the verified build');
     const allEdges = await tx.select(pick(edges, ...EDGE_COLS)).from(edges).where(eq(edges.boardId, board.id));
     const next = board.version + 1;
     const [version] = await tx.insert(boardVersions).values({
