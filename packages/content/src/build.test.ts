@@ -59,7 +59,7 @@ describe.skipIf(!sql)('content:build (DB)', () => {
     edit?.(m);
     return loadBundle(slug, writeFixture({ map: m, slug }));
   };
-  const opts = (ownerId: string, extra: Partial<BuildOptions> = {}): BuildOptions => ({ ownerId, targets: { [slug]: TEST_TARGETS[SLUG]! }, verify: allVerified, ...extra });
+  const opts = (ownerId: string, extra: Partial<BuildOptions> = {}): BuildOptions => ({ ownerId, targets: { [slug]: TEST_TARGETS[SLUG]! }, range: { min: 1, max: 120 }, verify: allVerified, ...extra });
   const counts = async (tx: postgres.TransactionSql, boardId: string) => (await tx`
     select (select count(*)::int from boards where path->>'slug' = ${slug}) boards,
       (select count(*)::int from cards where board_id = ${boardId}) cards,
