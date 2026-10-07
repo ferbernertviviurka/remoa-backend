@@ -34,6 +34,17 @@ export const PLAN_LIMITS = {
   founder: { limits: { ai_grades: null, ai_generations: null, boards: null, cards: null }, newCardsPerDay: null, ankiImportMaxCards: null, ankiImports: null },
 } as const satisfies Record<Plan, Pick<Entitlements, 'limits' | 'newCardsPerDay' | 'ankiImportMaxCards' | 'ankiImports'>>;
 
+/**
+ * F30 (D-1601, D-1607): "Desafio com IA" and "Resumo com IA" quotas. null = unlimited. ai_question_batches per local day (profile
+ * timezone, midnight); ai_summaries per calendar month. Beside PLAN_LIMITS, not inside it: PLAN_LIMITS[plan] is spread into
+ * Entitlements objects, which these keys are not part of. Read through planDefinition.
+ */
+export const PLAN_CHALLENGE_AI_LIMITS = {
+  free: { ai_question_batches: 2, ai_summaries: 1 },
+  pro: { ai_question_batches: 10, ai_summaries: 20 },
+  founder: { ai_question_batches: null, ai_summaries: null },
+} as const satisfies Record<Plan, Record<(typeof CHALLENGE_AI_QUOTA_KEYS)[number], number | null>>;
+
 /** Upper bound of `limit` (default stays SESSION_SIZE): the Revisar hub starts the whole filtered selection. */
 export const REVIEW_SESSION_MAX = 100;
 
@@ -124,6 +135,8 @@ export function readErrorBody(body: unknown): { code: (typeof errorCodes)[number
 // --- billing (F15) ----------------------------------------------------------------------------------------------------
 /** Metered quotas = columns of `usage_counters`. */
 export const quotaKeys = ['ai_grades', 'ai_generations', 'boards', 'cards'] as const;
+/** F30 (D-1601): AI quotas of "Desafio com IA" and "Resumo com IA", also `usage_counters` columns (like ai_rubrics, outside QuotaKey). */
+export const CHALLENGE_AI_QUOTA_KEYS = ['ai_question_batches', 'ai_summaries'] as const;
 /** `anki` = per-account Anki import cap (D-648); the server answers `quota_exceeded` 'anki'. */
 export const paywallReasons = ['ai_quota', 'boards', 'cards', 'pdf', 'anki'] as const;
 /** `upgrade_clicked` sources. */
@@ -147,11 +160,15 @@ export const formatBRL = (amountCents: number) => brl.format(amountCents / 100);
 /** F15 FR-4 matrix rows, in display order. Values derive from PLAN_LIMITS (still the single source). */
 export const planFeatureKeys = ['boards', 'cards', 'ai_grades', 'ai_generations', 'anki_imports', 'anki_import_cards', 'new_cards_per_day'] as const;
 export type PlanFeatureKey = (typeof planFeatureKeys)[number];
-/** null = unlimited. ai_grades = correções por IA/dia; ai_generations = mapas de PDF/mês (0 = não incluso); anki_imports = importações Anki na conta; anki_import_cards = cards por arquivo (F06). */
-export type PlanDefinition = Record<PlanFeatureKey, number | null>;
+/**
+ * null = unlimited. ai_grades = correções por IA/dia; ai_generations = mapas de PDF/mês (0 = não incluso); anki_imports = importações Anki na conta;
+ * anki_import_cards = cards por arquivo (F06); ai_question_batches = lotes de perguntas geradas/dia; ai_summaries = resumos/mês (F30, D-1601).
+ * The challenge AI keys are not matrix rows (planFeatureKeys).
+ */
+export type PlanDefinition = Record<PlanFeatureKey | (typeof CHALLENGE_AI_QUOTA_KEYS)[number], number | null>;
 export const planDefinition = (plan: Plan): PlanDefinition => {
   const p = PLAN_LIMITS[plan];
-  return { ...p.limits, anki_imports: p.ankiImports, anki_import_cards: p.ankiImportMaxCards, new_cards_per_day: p.newCardsPerDay };
+  return { ...p.limits, ...PLAN_CHALLENGE_AI_LIMITS[plan], anki_imports: p.ankiImports, anki_import_cards: p.ankiImportMaxCards, new_cards_per_day: p.newCardsPerDay };
 };
 
 export const usageTones = ['normal', 'warn', 'full'] as const;

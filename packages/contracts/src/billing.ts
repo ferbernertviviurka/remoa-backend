@@ -5,7 +5,7 @@ import { supportAuthorTypes } from './support';
 import { paywallReasons, quotaKeys } from './constants';
 
 // CCR-058: zod-free in ./constants
-export { annualDiscountPercent, annualSavings, formatBRL, monthlyEquivalent, paywallReasons, PLAN_LIMITS, planDefinition, planFeatureKeys, quotaKeys, TRIAL_DAYS, TRIAL_NOTICE_DAYS } from './constants';
+export { annualDiscountPercent, annualSavings, formatBRL, monthlyEquivalent, paywallReasons, PLAN_CHALLENGE_AI_LIMITS, PLAN_LIMITS, planDefinition, planFeatureKeys, quotaKeys, TRIAL_DAYS, TRIAL_NOTICE_DAYS } from './constants';
 export type { PlanDefinition, PlanFeatureKey } from './constants';
 
 export const planSchema = z.enum(plans);

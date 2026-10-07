@@ -12,8 +12,11 @@ export const OFFLINE_DRAFT_SOURCE = 'Dividido do texto sem IA, não revisado';
 /** ok = the model answered; fallback = the local grader answered instead (marked, quota given back); error = nothing usable. */
 export const aiStatuses = ['ok', 'fallback', 'error'] as const;
 export type AiStatus = (typeof aiStatuses)[number];
-/** Metered AI counters. ai_rubrics has its own counter with the ai_grades number of the plan (D-1412). */
-export const aiQuotaKeys = ['ai_grades', 'ai_rubrics', 'ai_generations'] as const;
+/**
+ * Metered AI counters. ai_rubrics has its own counter with the ai_grades number of the plan (D-1412).
+ * F30 (D-1601): ai_question_batches (per local day) and ai_summaries (per calendar month), numbers in PlanDefinition.
+ */
+export const aiQuotaKeys = ['ai_grades', 'ai_rubrics', 'ai_generations', 'ai_question_batches', 'ai_summaries'] as const;
 export const aiQuotaSchema = z.object({
   key: z.enum(aiQuotaKeys),
   used: z.number().int().nonnegative(),
@@ -22,7 +25,7 @@ export const aiQuotaSchema = z.object({
   remaining: z.number().int().nonnegative().nullable(),
   /** used >= 80% of limit: show the "perto do limite" notice. */
   nearLimit: z.boolean(),
-  /** Local day (YYYY-MM-DD, profile timezone, midnight rollover) or first day of the month for ai_generations. */
+  /** Local day (YYYY-MM-DD, profile timezone, midnight rollover) or first day of the month for ai_generations and ai_summaries. */
   period: z.string(),
 });
 export type AiQuota = z.infer<typeof aiQuotaSchema>;

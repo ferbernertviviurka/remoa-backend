@@ -22,6 +22,8 @@ const COUNTER: Record<AiKey, { col: ReturnType<typeof sql.identifier>; period: (
   ai_grades: { col: sql.identifier('ai_grades'), period: (d) => d }, // per local day
   ai_rubrics: { col: sql.identifier('ai_rubrics'), period: (d) => d }, // per local day (D-1412)
   ai_generations: { col: sql.identifier('ai_generations'), period: (d) => sql`date_trunc('month', ${d})::date` }, // per calendar month
+  ai_question_batches: { col: sql.identifier('ai_question_batches'), period: (d) => d }, // per local day (D-1601)
+  ai_summaries: { col: sql.identifier('ai_summaries'), period: (d) => sql`date_trunc('month', ${d})::date` }, // per calendar month (D-1601)
 };
 
 /** D-167: one rule for display and blocking: live cards of non-archived boards. */
@@ -40,7 +42,7 @@ export async function overTotal(exec: Pick<Tx, 'execute'>, userId: string, key: 
 }
 
 /** Plan limit of one key (null = unlimited), from PlanDefinition. ai_rubrics = the plan's ai_grades number on its own counter (D-1412). */
-export const limitFor = async (userId: string, key: QuotaKey | 'ai_rubrics', now = new Date(), tx?: Tx) =>
+export const limitFor = async (userId: string, key: QuotaKey | AiKey, now = new Date(), tx?: Tx) =>
   planDefinition((await planOf(userId, now, tx)).plan)[key === 'ai_rubrics' ? 'ai_grades' : key];
 
 export const quotaView = (key: AiKey, used: number, limit: number | null, period: string): AiQuota => ({
