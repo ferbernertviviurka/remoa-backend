@@ -1,6 +1,7 @@
 export * from './common';
 export * from './content';
 export * from './study';
+export * from './challenge-ai';
 export * from './billing';
 export * from './account';
 export * from './referral';

@@ -288,6 +288,13 @@
       "when": 1791332206562,
       "tag": "0040_f31_trail",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791379630601,
+      "tag": "0041_g25_challenge_ai",
+      "breakpoints": true
     }
   ]
 }

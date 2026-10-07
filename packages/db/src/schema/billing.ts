@@ -27,6 +27,9 @@ export const usageCounters = pgTable('usage_counters', {
   aiGenerations: integer('ai_generations').notNull().default(0),
   /** G22 (D-1412): rubric drafts, own counter (was sharing ai_grades); same daily number as ai_grades in PlanDefinition. */
   aiRubrics: integer('ai_rubrics').notNull().default(0),
+  /** F30 (D-1601): generated question batches (per local day) and map summaries (rows on the 1st of the month). */
+  aiQuestionBatches: integer('ai_question_batches').notNull().default(0),
+  aiSummaries: integer('ai_summaries').notNull().default(0),
   boards: integer('boards').notNull().default(0),
   cards: integer('cards').notNull().default(0),
   ...timestamps,
