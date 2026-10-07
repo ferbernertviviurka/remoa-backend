@@ -445,11 +445,12 @@ const publicBank = (r: Raw) => ({
 });
 
 export const dbData: DataPort = {
+  // covered, missing and hint have no SELECT grant for authenticated (D-1633). The grader reads them as the server role.
   attempts: (userId, itemId) => run(userId, async (tx) =>
-    (await exec(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where item_id = ${itemId} and user_id = ${userId} order by attempt_no, created_at`)).map(toStored)),
+    (await asServer<Raw>(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where item_id = ${itemId} and user_id = ${userId} order by attempt_no, created_at`)).map(toStored)),
 
   sessionAttempts: (userId, sessionId) => run(userId, async (tx) =>
-    (await exec(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where user_id = ${userId}
+    (await asServer<Raw>(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where user_id = ${userId}
       and item_id in (select id from challenge_items where session_id = ${sessionId} and user_id = ${userId}) order by attempt_no, created_at`)).map(toStored)),
 
   items: (userId, sessionId) => run(userId, async (tx) =>
