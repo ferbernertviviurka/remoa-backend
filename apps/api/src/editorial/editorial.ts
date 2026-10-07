@@ -1,6 +1,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { err, ok, parseWith, reviewDecisionSchema, resolveDisputeInputSchema, publishVersionInputSchema } from '@remoa/contracts';
 import { pick } from '../pick';
+import { planOf } from '../billing/plan';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
 import { dbm, uuids } from '../db';
 import { firstNameOf } from '../notifications/names';
@@ -295,9 +296,15 @@ export async function listDrafts(userId: string) {
   return ok(rows.map((b) => ({ id: b.id, title: b.title })));
 }
 
-export async function listSeeds() {
+/** F31 FR-37: study time is an estimate (1,5 min per card), shown as "~N min". */
+const MINUTES_PER_CARD = 1.5;
+
+/** Published ready-made maps only (`seed_approved`): a `seed_draft` never reaches a student (rule 6). `onlyId` = the Ver screen. */
+export async function listSeeds(onlyId?: string) {
   const { db, boards } = await dbm();
-  const rows = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark')).from(boards).where(and(eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`)).orderBy(asc(boards.area), asc(boards.title));
+  const rows = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark', 'version', 'badges', 'path')).from(boards)
+    .where(and(eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`, onlyId ? eq(boards.id, onlyId) : undefined))
+    .orderBy(asc(boards.area), asc(boards.title));
   // Rule 6 provenance: who signed the latest published edition (snapshot written by publishBoard).
   const ids = rows.map((b) => b.id);
   const signed = ids.length
@@ -305,11 +312,53 @@ export async function listSeeds() {
         select distinct on (board_id) board_id, snapshot->>'reviewerName' as reviewer_name, snapshot->>'reviewerCrm' as reviewer_crm, approved_at
         from board_versions where board_id = any(${uuids(ids)}) order by board_id, version desc`)
     : [];
+  const stats = ids.length
+    ? await db.execute<{ board_id: string; n: number; levels: number[] }>(sql`
+        select board_id, count(*)::int as n,
+          coalesce(array_agg(distinct (didactics->>'nivel')::int) filter (where didactics is not null), '{}') as levels
+        from cards where board_id = any(${uuids(ids)}) and deleted_at is null group by board_id`)
+    : [];
   const by = new Map([...signed].map((r) => [r.board_id, r]));
+  const count = new Map([...stats].map((r) => [r.board_id, r]));
   return ok(rows.map((b) => {
     const v = by.get(b.id);
-    return { id: b.id, title: b.title, area: b.area, temporalMark: b.temporalMark, reviewerName: v?.reviewer_name ?? null, reviewerCrm: v?.reviewer_crm ?? null, approvedAt: v?.approved_at ? new Date(v.approved_at) : null };
+    const n = count.get(b.id)?.n ?? 0;
+    return {
+      id: b.id, title: b.title, area: b.area, temporalMark: b.temporalMark, version: b.version, badges: b.badges,
+      slug: b.path?.slug ?? null, modules: b.path?.modulos ?? [], contentVersion: b.path?.versao ?? null,
+      cardCount: n, estimatedMinutes: Math.ceil(n * MINUTES_PER_CARD), levels: [...(count.get(b.id)?.levels ?? [])].sort(),
+      reviewerName: v?.reviewer_name ?? null, reviewerCrm: v?.reviewer_crm ?? null, approvedAt: v?.approved_at ? new Date(v.approved_at) : null,
+    };
   }));
+}
+
+/** FR-37 "Ver": the map read-only, in trail order. */
+export async function seedDetail(boardId: string) {
+  const meta = await listSeeds(boardId);
+  if (!meta.ok || !meta.data[0]) return err('not_found', 'not found');
+  const { db, cards } = await dbm();
+  const rows = await db.select(pick(cards, 'id', 'type', 'title', 'front', 'back', 'order', 'pathOrder', 'didactics', 'sources')).from(cards)
+    .where(and(eq(cards.boardId, boardId), sql`${cards.deletedAt} is null`))
+    .orderBy(sql`${cards.pathOrder} asc nulls last`, asc(cards.order));
+  return ok({ ...meta.data[0], cards: rows });
+}
+
+/**
+ * FR-30 "Reportar erro": a student flags a seed card, or their copy of it (`source_card_id`, the report points at the original).
+ * Goes to the F10 queue as `user_disagree` without attempt; the reviewer settles it with /dispute. ponytail: review_queue has no
+ * reporter column, so the decision cannot notify the student yet (P-660); needs a migration, so it waits for the architect.
+ */
+export async function reportCard(userId: string, cardId: unknown, note: unknown) {
+  if (typeof cardId !== 'string' || !/^[0-9a-f-]{36}$/i.test(cardId) || typeof note !== 'string' || !note.trim() || note.length > 1000) return err('validation', 'report');
+  const { db, reviewQueue } = await dbm();
+  const [row] = await db.execute<{ id: string; status: string; owner: string; source_card_id: string | null }>(sql`
+    select c.id, b.status::text as status, b.user_id as owner, c.source_card_id
+    from cards c join boards b on b.id = c.board_id where c.id = ${cardId}::uuid and c.deleted_at is null`);
+  if (!row) return err('not_found', 'not found');
+  const target = row.status === 'seed_approved' ? row.id : row.status === 'private' && row.owner === userId ? row.source_card_id : null;
+  if (!target) return err('not_found', 'not found');
+  const [item] = await db.insert(reviewQueue).values({ cardId: target, status: 'pending', flagSource: 'user_disagree', note: note.trim() }).returning({ id: reviewQueue.id });
+  return ok({ id: item!.id });
 }
 
 /** Personal uploads stay with the author. Redistributable licenses travel with the copy. */
@@ -329,11 +378,18 @@ function copiedImage(card: { type: string; payload: unknown }, cardId: string, a
   };
 }
 
+const FREE_SEED_COPIES = 1;
+
 export async function copySeed(userId: string, boardId: string) {
-  const { db, boards, cards, edges, masks, assets } = await dbm();
-  const [source] = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark')).from(boards).where(and(eq(boards.id, boardId), eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`));
+  const { db, boards, cards, edges, masks, assets, cardPrereqs } = await dbm();
+  const [source] = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark', 'path')).from(boards).where(and(eq(boards.id, boardId), eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`));
   if (!source) return err('not_found', 'not found');
-  const srcCards = await db.select(pick(cards, 'id', 'type', 'shape', 'title', 'front', 'back', 'frontAssetId', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order')).from(cards).where(and(eq(cards.boardId, source.id), sql`${cards.deletedAt} is null`));
+  const srcCards = await db.select(pick(cards, 'id', 'type', 'shape', 'title', 'front', 'back', 'frontAssetId', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order', 'pathOrder', 'didactics', 'sources')).from(cards).where(and(eq(cards.boardId, source.id), sql`${cards.deletedAt} is null`));
+  // Q-170 (provisional, P-661): Pro and Founder copy any ready-made map; Free gets ONE sample copy (on top of the plan's map limit).
+  if ((await planOf(userId)).plan === 'free') {
+    const [had] = await db.execute<{ n: number }>(sql`select count(*)::int as n from boards where user_id = ${userId} and source_board_id is not null`);
+    if ((had?.n ?? 0) >= FREE_SEED_COPIES) return err('quota_exceeded', 'boards');
+  }
   const boardQuota = await assertQuota(userId, 'boards');
   if (!boardQuota.ok) return boardQuota;
   const cardLimit = await limitFor(userId, 'cards');
@@ -349,7 +405,7 @@ export async function copySeed(userId: string, boardId: string) {
   }
   const keep = (id: string | null) => (id && allowed.has(id) ? id : null);
   const [copy] = await db.insert(boards).values({
-    userId, title: source.title, area: source.area, status: 'private', sourceBoardId: source.id, temporalMark: source.temporalMark,
+    userId, title: source.title, area: source.area, status: 'private', sourceBoardId: source.id, temporalMark: source.temporalMark, path: source.path, // badges stay on the seed (D-1461)
   }).returning();
   const map = new Map<string, string>();
   const maskRows: { id: string; cardId: string; assetId: string; polygon: unknown; label: string | null }[] = [];
@@ -363,7 +419,7 @@ export async function copySeed(userId: string, boardId: string) {
       id, boardId: copy!.id, type: card.type, shape: card.shape, title: card.title, front: card.front, back: card.back,
       frontAssetId: keep(card.frontAssetId), backAssetId: keep(card.backAssetId),
       width: card.width, height: card.height, tags: card.tags,
-      payload: image.payload, rubric: card.rubric, source: card.source, x: card.x, y: card.y, status: card.status, order: card.order, sourceCardId: card.id, // a card reopened by a dispute travels as draft (rule 6)
+      payload: image.payload, rubric: card.rubric, source: card.source, x: card.x, y: card.y, status: card.status, order: card.order, sourceCardId: card.id, pathOrder: card.pathOrder, didactics: card.didactics, sources: card.sources, // a card reopened by a dispute travels as draft (rule 6)
     };
   });
   if (cardRows.length) await db.insert(cards).values(cardRows);
@@ -375,6 +431,13 @@ export async function copySeed(userId: string, boardId: string) {
     return from && to ? [{ boardId: copy!.id, fromCardId: from, toCardId: to, label: edge.label, question: edge.question }] : [];
   });
   if (edgeRows.length) await db.insert(edges).values(edgeRows);
+  const srcPrereqs = await db.select().from(cardPrereqs).where(sql`${cardPrereqs.cardId} = any(${uuids([...map.keys()])})`);
+  const prereqRows = srcPrereqs.flatMap((p) => {
+    const card = map.get(p.cardId);
+    const prereq = map.get(p.prereqCardId);
+    return card && prereq ? [{ cardId: card, prereqCardId: prereq }] : [];
+  });
+  if (prereqRows.length) await db.insert(cardPrereqs).values(prereqRows);
   await invalidate('map.changed', { userId, mapId: copy!.id });
   await maybeQualifyReferral(userId); // F18 (D-485): a copied seed can be the first map; never throws
   return ok({ id: copy!.id });
