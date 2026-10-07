@@ -76,6 +76,8 @@ export const generationMetaSchema = z
 export type GenerationMeta = z.infer<typeof generationMetaSchema>;
 
 export const disputeResultSchema = z.object({ attemptId: idSchema, disputed: z.literal(true) }).strict();
+export const archiveResultSchema = z.object({ id: idSchema, status: z.literal('archived') }).strict();
+export const reportResultSchema = z.object({ itemId: idSchema, reported: z.literal(true) }).strict();
 
 /** GET /bank query. Strict: an unknown parameter is a 422. */
 export const bankQuerySchema = z
@@ -105,6 +107,8 @@ export type ChallengeAiService = {
   finish(userId: string, sessionId: string, requestId: string): Promise<Result<unknown>>;
   dispute(userId: string, attemptId: string): Promise<Result<unknown>>;
   bank(userId: string, query: BankQuery): Promise<Result<unknown>>;
+  archive(userId: string, bankId: string): Promise<Result<unknown>>;
+  report(userId: string, itemId: string): Promise<Result<unknown>>;
   summarize(input: GenerateSummaryInput): Promise<Result<unknown>>;
   summaries(userId: string, boardId: string): Promise<Result<unknown>>;
 };
@@ -136,6 +140,9 @@ export type DataPort = {
   /** D-1605: flips `disputed` false -> true and nothing else. */
   dispute(userId: string, attemptId: string): Promise<Result<{ attemptId: string; disputed: true }>>;
   bank(userId: string, q: BankQuery): Promise<unknown[]>;
+  archive(userId: string, bankId: string): Promise<{ id: string; status: 'archived' } | null>;
+  /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
+  report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
 };
 
 export type Io = {
@@ -338,6 +345,14 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
 
     dispute: (userId, attemptId) => io.data.dispute(userId, attemptId),
     bank: async (userId, query) => ok(await io.data.bank(userId, query)),
+    archive: async (userId, bankId) => {
+      const row = await io.data.archive(userId, bankId);
+      return row ? ok(row) : err('not_found', 'question_not_found');
+    },
+    report: async (userId, itemId) => {
+      const row = await io.data.report(userId, itemId);
+      return row ? ok(row) : err('not_found', 'item_not_found');
+    },
     summarize: (input) => io.summarize(input),
     summaries: (userId, boardId) => io.summaries(userId, boardId),
   };
@@ -470,6 +485,34 @@ export const dbData: DataPort = {
       enamedDomainId: r.enamed_domain_id, enamedTopicId: r.enamed_topic_id, stats: json(r.stats), createdAt: r.created_at,
     }));
   }),
+
+  archive: async (userId, id) => {
+    const [r] = await run(userId, (tx) => asServer<Raw>(tx, sql`update question_bank set status = 'archived'
+      where id = ${id} and user_id = ${userId}
+        and not exists (select 1 from question_bank n where n.supersedes_id = question_bank.id)
+      returning id, board_id`));
+    if (!r) return null;
+    await invalidate('question.changed', { userId, mapId: r.board_id ? String(r.board_id) : undefined });
+    return { id: String(r.id), status: 'archived' as const };
+  },
+
+  report: async (userId, itemId) => {
+    const queued = await run(userId, async (tx) => {
+      const [item] = await exec(tx, sql`select card_id, bank_id from challenge_items where id = ${itemId} and user_id = ${userId}`);
+      if (!item) return null;
+      let cardId = item.card_id ? String(item.card_id) : null;
+      if (!cardId && item.bank_id) {
+        const [q] = await asServer<Raw>(tx, sql`select card_ids from question_bank where id = ${item.bank_id} and user_id = ${userId}`);
+        const ids = Array.isArray(q?.card_ids) ? q.card_ids : [];
+        cardId = typeof ids[0] === 'string' ? ids[0] : null;
+      }
+      if (!cardId) return null;
+      await tx.execute(sql`insert into review_queue (card_id, status, flag_source, note)
+        values (${cardId}::uuid, 'pending', 'user_disagree', 'Reportado no desafio com IA.')`);
+      return { itemId, reported: true as const };
+    });
+    return queued;
+  },
 };
 
 export const dbIo = (): Io => ({
@@ -592,6 +635,20 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       const q = parseWith(bankQuerySchema, c.req.query());
       if (!q.ok) return errorResponse(q.error);
       return sendPublic(c, 'bank', z.array(questionBankItemPublicSchema).max(100), await service.bank(c.get('userId'), q.data), { page: { limit: q.data.limit, offset: q.data.offset } });
+    })
+    .post('/bank/:id/archive', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('question not found');
+      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+      if (!body.ok) return errorResponse(body.error);
+      return sendPublic(c, 'archive', archiveResultSchema, await service.archive(c.get('userId'), id));
+    })
+    .post('/items/:id/report', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('item not found');
+      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+      if (!body.ok) return errorResponse(body.error);
+      return sendPublic(c, 'report', reportResultSchema, await service.report(c.get('userId'), id));
     })
     // FR-46: one `ai_summaries` unit is taken inside the service.
     .post('/summaries', async (c) => {

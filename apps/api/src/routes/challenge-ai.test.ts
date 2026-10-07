@@ -60,6 +60,8 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     finish: vi.fn(async () => ok({})),
     dispute: vi.fn(async () => ok({ attemptId: ID, disputed: true })),
     bank: vi.fn(async () => ok([])),
+    archive: vi.fn(async () => ok({ id: ID, status: 'archived' as const })),
+    report: vi.fn(async () => ok({ itemId: ID, reported: true as const })),
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
     ...over,
@@ -212,6 +214,22 @@ describe('rotas /v1/challenge-ai: entrada estrita', () => {
     expect(empty.status).toBe(200);
   });
 
+  it('archive and report return only the public flag, and a planted key is not sent', async () => {
+    const service = mockService();
+    const app = appFor(service);
+    const archived = await send(app, 'POST', `/bank/${ID}/archive`, {});
+    expect(archived.status).toBe(200);
+    expect(await archived.json()).toEqual({ ok: true, data: { id: ID, status: 'archived' } });
+    expect(service.archive).toHaveBeenCalledWith(USER, ID);
+    const reported = await send(app, 'POST', `/items/${ID}/report`, {});
+    expect(reported.status).toBe(200);
+    expect(await reported.json()).toEqual({ ok: true, data: { itemId: ID, reported: true } });
+    const leaked = appFor(mockService({ archive: vi.fn(async () => ok({ id: ID, status: 'archived', correctKey: SECRET })) }));
+    const hidden = await send(leaked, 'POST', `/bank/${ID}/archive`, {});
+    expect(hidden.status).toBe(500);
+    expect(await hidden.text()).not.toContain(SECRET);
+  });
+
   it('bank filters are parsed and passed on (board, area, difficulty, type, status)', async () => {
     const service = mockService();
     const area = randomUUID();
@@ -326,6 +344,8 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
       return ok({ attemptId: id, disputed: true as const });
     },
     bank: async () => [],
+    archive: async () => null,
+    report: async () => null,
   };
   let units = o.units ?? 100;
   const queue = [...(o.replies ?? [])];
