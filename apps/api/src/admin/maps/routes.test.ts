@@ -131,7 +131,7 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin/maps + seeds', () => {
 
     const student = await k.newUser('student', 'Aluno Curioso');
     expect((await k.call(`/v1/admin/seeds/${seed}/approve`, { method: 'POST', as: student.id, body: inst })).status).toBe(404);
-    expect((await post(`/seeds/${seed}/approve`, { ...inst, institutional: 'true' })).status).toBe(409); // only literal true; else physician path
+    expect((await post(`/seeds/${seed}/approve`, { ...inst, institutional: 'true' })).status).toBe(422); // only literal boolean true
     const plain = await mk('Seed sem trilha', null, 'Diretriz 2025');
     await k.dbm.db.insert(k.dbm.cards).values({ boardId: plain, title: 'X', status: 'draft', pathOrder: 1 });
     expect((await post(`/seeds/${plain}/approve`, inst)).status).toBe(409); // only boards with path
@@ -139,6 +139,10 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin/maps + seeds', () => {
     await k.dbm.db.insert(k.dbm.cards).values({ boardId: stray, title: 'Fora do build', status: 'draft' });
     expect((await post(`/seeds/${stray}/approve`, inst)).status).toBe(409); // card without path_order: rolled back
     expect((await k.dbm.db.select().from(k.dbm.cards).where(eq(k.dbm.cards.boardId, stray)))[0]!.status).toBe('draft');
+
+    const seedReasonOnly = await mk('Trilha só motivo', { ...path, slug: `${slug}-motivo` }, 'Diretriz 2025');
+    await k.dbm.db.insert(k.dbm.cards).values({ boardId: seedReasonOnly, title: 'C', status: 'draft', pathOrder: 1 });
+    expect((await post(`/seeds/${seedReasonOnly}/approve`, { reason: 'Validado por Remoa' })).status).toBe(200); // F31 trail without explicit flag
 
     const r = await post(`/seeds/${seed}/approve`, inst);
     expect(r.status).toBe(200);
