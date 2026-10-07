@@ -116,4 +116,54 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin/maps + seeds', () => {
     expect((await post(`/seeds/${priv}/approve`)).status).toBe(409);
     expect((await post(`/seeds/${crypto.randomUUID()}/approve`)).status).toBe(404);
   });
+  it('seeds: institutional approval ("Aprovado por Remoa") of a F31 ready-made map; non-admin 404; physician provenance unchanged', async () => {
+    const slug = `inst-${crypto.randomUUID().slice(0, 8)}`;
+    const path = { slug, modulos: ['M1'], area: 'Clínica Médica', dominios: [], competencias: [], revisarAte: '2027-01-01', versao: '2026.1', aviso: 'x' };
+    const mk = async (title: string, p: unknown, mark: string | null) =>
+      (await k.dbm.db.insert(k.dbm.boards).values({ userId: owner.id, title, status: 'seed_draft', area: 'CM', path: p as never, temporalMark: mark }).returning())[0]!.id;
+    const seed = await mk('Trilha Institucional', path, 'Diretriz 2025');
+    const [c1, c2] = await k.dbm.db.insert(k.dbm.cards).values([
+      { boardId: seed, title: 'A', status: 'draft', pathOrder: 1 }, { boardId: seed, title: 'B', status: 'draft', pathOrder: 2 },
+    ]).returning();
+    await k.dbm.db.insert(k.dbm.edges).values({ boardId: seed, fromCardId: c1!.id, toCardId: c2!.id, label: 'leva a' });
+    await k.dbm.db.insert(k.dbm.cards).values({ boardId: seed, title: 'apagado', status: 'draft', pathOrder: 3, deletedAt: new Date() });
+    const inst = { reason: 'Aprovação institucional dos mapas prontos', institutional: true };
+
+    const student = await k.newUser('student', 'Aluno Curioso');
+    expect((await k.call(`/v1/admin/seeds/${seed}/approve`, { method: 'POST', as: student.id, body: inst })).status).toBe(404);
+    expect((await post(`/seeds/${seed}/approve`, { ...inst, institutional: 'true' })).status).toBe(409); // only literal true; else physician path
+    const plain = await mk('Seed sem trilha', null, 'Diretriz 2025');
+    await k.dbm.db.insert(k.dbm.cards).values({ boardId: plain, title: 'X', status: 'draft', pathOrder: 1 });
+    expect((await post(`/seeds/${plain}/approve`, inst)).status).toBe(409); // only boards with path
+    const stray = await mk('Trilha com card solto', { ...path, slug: `${slug}-b` }, 'Diretriz 2025');
+    await k.dbm.db.insert(k.dbm.cards).values({ boardId: stray, title: 'Fora do build', status: 'draft' });
+    expect((await post(`/seeds/${stray}/approve`, inst)).status).toBe(409); // card without path_order: rolled back
+    expect((await k.dbm.db.select().from(k.dbm.cards).where(eq(k.dbm.cards.boardId, stray)))[0]!.status).toBe('draft');
+
+    const r = await post(`/seeds/${seed}/approve`, inst);
+    expect(r.status).toBe(200);
+    expect(r.json.data.audit).toMatchObject({ before: { status: 'seed_draft' }, after: { status: 'seed_approved', approvedBy: 'remoa', version: 2, cards: 2, temporalMark: 'Diretriz 2025', contentVersion: '2026.1' } });
+    const [b] = await k.dbm.db.select().from(k.dbm.boards).where(eq(k.dbm.boards.id, seed));
+    expect([b!.status, b!.version, b!.temporalMark, b!.reviewerId]).toEqual(['seed_approved', 2, 'Diretriz 2025', null]);
+    const live = await k.dbm.db.execute<{ status: string; reviewer_id: string | null }>(sql`select status, reviewer_id from cards where board_id = ${seed} and deleted_at is null`);
+    expect([...live].map((c) => [c.status, c.reviewer_id])).toEqual([['approved', null], ['approved', null]]);
+    const [v] = await k.dbm.db.select().from(k.dbm.boardVersions).where(eq(k.dbm.boardVersions.boardId, seed));
+    const snap = v!.snapshot as { cards: { status: string; pathOrder: number }[]; edges: unknown[]; approvedBy: string; reviewerName: null; reviewerCrm: null; temporalMark: string };
+    expect([v!.version, v!.reviewerId, snap.approvedBy, snap.reviewerName, snap.reviewerCrm, snap.temporalMark, snap.edges.length]).toEqual([2, null, 'remoa', null, null, 'Diretriz 2025', 1]);
+    expect(snap.cards.map((c) => [c.status, c.pathOrder]).sort()).toEqual([['approved', 1], ['approved', 2]]);
+    expect((await k.audit('seed.approve', seed)).map((x) => [x.result, x.denial])).toEqual([['denied', 'invalid_state'], ['success', null]]);
+    expect((await post(`/seeds/${seed}/approve`, inst)).status).toBe(409); // once
+
+    const pub = (await k.call('/v1/public/mapas-prontos')).json.data as { slug: string; approvedBy: string; reviewerName: string | null; reviewerCrm: string | null }[];
+    expect(pub.find((x) => x.slug === slug)).toMatchObject({ approvedBy: 'remoa', reviewerName: null, reviewerCrm: null });
+    expect((await k.call(`/v1/public/mapas-prontos/${slug}`)).json.data).toMatchObject({ approvedBy: 'remoa', reviewerCrm: null });
+    const lib = (await k.call('/v1/editorial/seeds', { as: student.id })).json.data as { id: string; approvedBy: string }[];
+    expect(lib.find((x) => x.id === seed)?.approvedBy).toBe('remoa');
+    expect((await k.call(`/v1/editorial/seeds/${seed}`, { as: student.id })).json.data).toMatchObject({ approvedBy: 'remoa', reviewerName: null });
+
+    // a physician edition (publishBoard snapshot, no approvedBy key) still reads as reviewer with name + CRM
+    const med = await k.board(owner.id, { title: 'Seed medica', status: 'seed_approved' });
+    await k.dbm.db.insert(k.dbm.boardVersions).values({ boardId: med, version: 1, snapshot: { cards: [], edges: [], reviewerName: 'Dra. Ana', reviewerCrm: '123456-SP' }, approvedAt: new Date() });
+    expect((await k.call(`/v1/editorial/seeds/${med}`, { as: student.id })).json.data).toMatchObject({ approvedBy: 'reviewer', reviewerName: 'Dra. Ana', reviewerCrm: '123456-SP' });
+  });
 });

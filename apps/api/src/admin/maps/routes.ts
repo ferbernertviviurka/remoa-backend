@@ -1,12 +1,13 @@
 // F19 FR-15 (D-461): /v1/admin/maps and /v1/admin/seeds. Listing and the drawer never carry card content; opening the graph needs a reason
-// (`map.open_readonly`, sensitive, read-only, audited with counts only). Seeds: approve needs a recorded reviewer with name + CRM (F10, D-495).
+// (`map.open_readonly`, sensitive, read-only, audited with counts only). Seeds: approve needs a recorded reviewer with name + CRM (F10, D-495),
+// or `{ institutional: true }` for a F31 ready-made map ("Aprovado por Remoa", decision of 2026-10-07).
 import { Hono, type Context } from 'hono';
 import { sql, type SQL } from 'drizzle-orm';
 import { adminErrors, adminMapListQuerySchema, err, ok, parseWith, type AdminAction, type AdminMapPage, type AdminMapRow, type Result } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { getBoard } from '../../boards/boards';
 import { dbm } from '../../db';
-import { normalizeCrm } from '../../editorial/editorial';
+import { approveInstitutional, normalizeCrm } from '../../editorial/editorial';
 import { notFound, reasonOf, registerExport, send, withAdmin, type AdminEnv, type AuditCapture } from '../core';
 import { dtReq, isUuid, likeOf, trailOf } from '../users/util';
 import { invalidate } from '../../cache';
@@ -76,13 +77,13 @@ async function mapOf(id: string) {
   return (r as Raw | undefined) ?? null;
 }
 
-type Fn = (tx: Tx, audit: AuditCapture, b: Raw) => Promise<Result<object>>;
+type Fn = (tx: Tx, audit: AuditCapture, b: Raw, body: unknown) => Promise<Result<object>>;
 const action = (name: AdminAction, fn: Fn) => async (c: C) => {
   const json: unknown = await c.req.json().catch(() => null);
   const id = c.req.param('id') ?? '';
   const b = await mapOf(id);
   if (!b) return notFound();
-  const r = await withAdmin(c, name, { reason: reasonOf(json), target: { type: 'board', id } }, (tx, audit) => fn(tx, audit, b));
+  const r = await withAdmin(c, name, { reason: reasonOf(json), target: { type: 'board', id } }, (tx, audit) => fn(tx, audit, b, json));
   if (r.ok && name !== 'map.open_readonly') {
     if (typeof b.owner_id === 'string') await invalidate('map.changed', { userId: b.owner_id, mapId: id });
     if (name.startsWith('seed.')) await invalidate('catalog.changed', {}); // a seed became (or stopped being) visible in the ready-made maps
@@ -125,9 +126,17 @@ async function reviewRecorded(tx: Tx, boardId: string) {
 }
 
 const seedAction = (name: 'seed.approve' | 'seed.unpublish', from: string, to: 'seed_approved' | 'seed_draft') =>
-  action(name, async (tx, audit, b) => {
+  action(name, async (tx, audit, b, body) => {
     const { boards } = await dbm();
     if (b.status !== from) return conflict();
+    // Institutional approval (2026-10-07): "Aprovado por Remoa", no physician; only F31 ready-made maps. Explicit `true` only.
+    if (to === 'seed_approved' && (body as { institutional?: unknown } | null)?.institutional === true) {
+      audit.before({ status: b.status, reviewerId: b.reviewer_id, version: b.version });
+      const r = await approveInstitutional(tx, b.id as string);
+      if (!r.ok) return conflict();
+      audit.after({ status: to, approvedBy: r.data.approvedBy, version: r.data.version, cards: r.data.cards, temporalMark: r.data.temporalMark, contentVersion: r.data.contentVersion });
+      return r;
+    }
     if (to === 'seed_approved' && !(await reviewRecorded(tx, b.id as string))) return conflict();
     audit.before({ status: b.status, reviewerId: b.reviewer_id });
     const rows = await tx.update(boards).set({ status: to, updatedAt: new Date() }).where(sql`${boards.id} = ${b.id as string} and ${boards.status} = ${from}`).returning({ id: boards.id });
