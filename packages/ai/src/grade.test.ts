@@ -183,3 +183,25 @@ describe('grader prompt hardening (G22 Phase 2)', () => {
     expect(r.verdict).toMatchObject({ verdict: 'incorrect', model: 'offline-grader', source: 'Manual sintético', sourceQuote: null });
   });
 });
+
+describe('generic grader (D-1470)', () => {
+  const reply = '{"verdict":"incorrect","matched":[],"missing":[],"criticalError":false,"sourceQuote":null,"feedback":"ok"}';
+  const system = async (i: GraderInput) => {
+    withKey();
+    let sent = '';
+    const spy = (async (_u: unknown, init?: RequestInit) => {
+      sent = String(JSON.parse(String(init?.body)).messages?.[0]?.content);
+      return Response.json({ model: 'm', choices: [{ message: { content: reply } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    }) as unknown as typeof fetch;
+    const r = await gradeWithMeta(i, spy);
+    return { sent, version: r.meta.promptVersion };
+  };
+  it('drops the medical persona when generic, keeps it otherwise', async () => {
+    const plain = await system({ ...input, answer: 'Revolução Francesa' });
+    expect(plain.sent).toContain('estudante de medicina');
+    expect(plain.version).toBe('grader/v4');
+    const g = await system({ ...input, answer: 'Revolução Francesa', generic: true });
+    expect(g.sent).not.toMatch(/medicina|clinicamente|droga|dose/);
+    expect(g.version).toBe('grader/v4-generic');
+  });
+});

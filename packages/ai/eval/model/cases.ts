@@ -69,6 +69,10 @@ export const modelCases: ModelCase[] = [
   { id: 'grader-correct', fn: 'grader', title: 'Correção: resposta certa', input: grader(CERTA), allowed: ['correct'], reps: 3 },
   { id: 'grader-partial', fn: 'grader', title: 'Correção: parcialmente certa', input: grader('Dar açúcar por via oral para o paciente.'), allowed: ['partial'], reps: 3 },
   { id: 'grader-wrong', fn: 'grader', title: 'Correção: errada (conduta contrária)', input: grader('Aplicar insulina regular por via intravenosa.'), allowed: ['incorrect'] },
+  { id: 'grader-outro', fn: 'grader', title: 'Correção: mapa de outro assunto (História, sem persona médica)', input: {
+    prompt: 'Que evento marca o início da Revolução Francesa?', canonical: 'Tomada da Bastilha, 14 de julho de 1789',
+    rubric: { points: [{ text: 'Tomada da Bastilha em 14 de julho de 1789', essential: true }], source: 'Livro de História', version: 1, status: 'draft', reviewerId: null },
+    neighbors: [], answer: 'A tomada da Bastilha, em 14 de julho de 1789.', generic: true }, allowed: ['correct'] },
   { id: 'grader-empty', fn: 'grader', title: 'Correção: vazia (corrigida localmente, sem chamada)', input: grader(' ... '), allowed: ['incorrect'], local: true },
   { id: 'grader-off-topic', fn: 'grader', title: 'Correção: fora do tema', input: grader('A capital da França é Paris.'), allowed: ['incorrect'] },
   { id: 'grader-long', fn: 'grader', title: 'Correção: muito longa (cortada em 4 000 caracteres)', input: grader(CERTA + ENROLACAO.repeat(40)), allowed: ['correct', 'partial'] },

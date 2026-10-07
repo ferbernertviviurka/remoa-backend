@@ -48,6 +48,8 @@ export const graderInputSchema = z.object({
   /** Neighbour cards/labels as plain text context. */
   neighbors: z.array(z.string()),
   answer: z.string().min(1).max(4000),
+  /** CCR-083 (D-1470): the card's board area is OUTRO, so the grader drops the medical persona. */
+  generic: z.boolean().optional(),
 });
 export type GraderInput = z.infer<typeof graderInputSchema>;
 
