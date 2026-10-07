@@ -6,6 +6,7 @@ export * from './card';
 export * from './review';
 export * from './review-hub';
 export * from './challenge';
+export * from './challenge-ai';
 export * from './ai';
 export * from './billing';
 export * from './matrix';

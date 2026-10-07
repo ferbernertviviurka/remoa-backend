@@ -9,6 +9,7 @@ import { supportTicketTypes } from './support';
 import { calendarReminderKinds, calendarSystemLabels, calendarViews } from './calendar';
 import { notificationPrefKeys, notificationTypes } from './notifications';
 import { aiStatuses } from './ai';
+import { aiItemTypes, challengeFormats, challengeScopeKinds, gradedBy, questionTypes, summaryFocuses, summarySizes } from './challenge-ai';
 import { accountSections, completenessItems, identityProviders, passwordLabels, preferencesSchema, reminderHourSchema, themes } from './account';
 
 // Rule (F11): events carry counts and enums only, never answer text or card content.
@@ -47,7 +48,11 @@ export const eventSchemas = {
   revisar_area_clicked: z.object({ area: z.enum(areas) }).strict(),
   revisar_hard_card_opened: none,
   // F04
-  challenge_started: z.object({ kind: z.enum(sessionKinds), items: count, modes: z.array(z.enum(challengeModes)) }).strict(),
+  // F04 shape, or F30 (D-1606) "Desafio com IA": format, scope kind, item count and question type (never the scope's card ids).
+  challenge_started: z.union([
+    z.object({ kind: z.enum(sessionKinds), items: count, modes: z.array(z.enum(challengeModes)) }).strict(),
+    z.object({ format: z.enum(challengeFormats), scope: z.enum(challengeScopeKinds), n: count, type: z.enum([...questionTypes, 'mixed', 'map']) }).strict(),
+  ]),
   answer_submitted: z
     .object({ mode: z.enum(challengeModes), inputKind: z.enum(inputKinds), verdict: z.enum(verdicts).nullable(), latencyMs: ms })
     .strict(),
@@ -221,6 +226,13 @@ export const eventSchemas = {
   blog_search_used: z.object({ resultCount: count, queryLength: count }).strict(),
   landing_blog_clicked: z.object({ position: z.number().int().min(0).max(4) }).strict(),
   legal_page_viewed: z.object({ document: z.enum(['terms', 'privacy']) }).strict(),
+  // F30 (G25, D-1606) Desafio com IA and Resumo com IA: counts and enums only, never the question, answer, feedback or summary text.
+  questions_generated: z.object({ n: count, kept: count, dropped: count, durationMs: ms }).strict(),
+  answer_graded: z.object({ type: z.enum(aiItemTypes), verdict: z.enum(verdicts).nullable(), gradedBy: z.enum(gradedBy), latencyMs: ms, hint: z.boolean() }).strict(),
+  manipulation_detected: z.object({ gradedBy: z.enum(['prefilter', 'ai']) }).strict(),
+  verdict_disputed: none,
+  summary_generated: z.object({ size: z.enum(summarySizes), focus: z.enum(summaryFocuses), cards: count }).strict(),
+  bank_opened: none,
 } as const;
 
 export type EventName = keyof typeof eventSchemas;
