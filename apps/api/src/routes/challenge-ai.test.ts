@@ -63,6 +63,7 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     bank: vi.fn(async () => ok([])),
     archive: vi.fn(async () => ok({ id: ID, status: 'archived' as const })),
     edit: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado novo', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: false, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
+    confirmTopic: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: true, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
     report: vi.fn(async () => ok({ itemId: ID, reported: true as const })),
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
@@ -373,6 +374,7 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     afterGrade: async (_u, spec) => { mem.grades.push(spec); },
     archive: async () => null,
     edit: async () => null,
+    confirmTopic: async () => null,
     report: async () => null,
   };
   let units = o.units ?? 100;
