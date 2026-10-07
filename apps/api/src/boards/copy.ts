@@ -11,6 +11,7 @@ import { resolveShared, cardAssetIds } from '../public/shared';
 import { CLONE_CARD_COLS, cloneBoardContent, duplicateBoard, toBoard } from './boards';
 import { maybeQualifyReferral } from '../referral/qualify';
 import { invalidate } from '../cache';
+import { attachMatrixLinksByTitle, boardHasEnamedCoverage } from '../matrix/matrix';
 
 const log = createLogger({ requestId: 'boards-copy' });
 const VARIANTS = ['w800', 'w1600'] as const;
@@ -26,7 +27,7 @@ export const copySharedBoard: CopySharedBoard = async (userId, input, { grant })
   if (!q.ok) return q;
   const cardLimit = await limitFor(userId, 'cards');
   const { db, boards: b, cards: c, edges: e, assets: a, boardMatrixItems: bm } = await dbm();
-  const [meta] = await db.select({ matrixItemId: b.matrixItemId }).from(b).where(eq(b.id, src.id));
+  const [meta] = await db.select({ matrixItemId: b.matrixItemId, temporalMark: b.temporalMark, path: b.path, badges: b.badges, area: b.area, title: b.title }).from(b).where(eq(b.id, src.id));
   const cards = await db.select(pick(c, ...CLONE_CARD_COLS)).from(c).where(and(eq(c.boardId, src.id), isNull(c.deletedAt))).orderBy(asc(c.order), asc(c.createdAt));
   if (await overTotal(db, userId, 'cards', cardLimit, cards.length)) return err('quota_exceeded', 'cards'); // before any object is copied
   const edges = await db.select({ fromCardId: e.fromCardId, toCardId: e.toCardId, label: e.label, question: e.question }).from(e).where(eq(e.boardId, src.id));
@@ -63,6 +64,7 @@ export const copySharedBoard: CopySharedBoard = async (userId, input, { grant })
         .values({ userId, title: src.title, area: src.area, matrixItemId: firstItem, sourceBoardId: src.id, copiedFromLinkAt: new Date() })
         .returning();
       if (items.length) await tx.insert(s.boardMatrixItems).values(items.map((i) => ({ boardId: copy!.id, matrixItemId: i.matrixItemId })));
+      else if (meta && boardHasEnamedCoverage(meta) && meta.area === 'CM') await attachMatrixLinksByTitle(tx, s, copy!.id, 'CM', meta.title);
       await cloneBoardContent(tx, s, copy!.id, cards, edges, {
         // student content, not Remoa's: no approval travels with it (rule 6); tags are personal
         status: () => 'draft',

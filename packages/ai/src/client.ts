@@ -159,8 +159,12 @@ export function costCents(tokensIn: number, tokensOut: number, model = ''): numb
   return cents > 0 ? Math.max(1, Math.round(cents)) : 0;
 }
 
+/** Blocked whatever the env says: Opus drained the OpenRouter credit, and the auto router may pick it. */
+const BLOCKED = /opus|^openrouter\/auto/i;
+
 /** Why a model may not be used here, or null. */
 export function refusal(model: string, c: AiConfig = aiConfig()): string | null {
+  if (BLOCKED.test(model)) return 'model blocked in packages/ai (Opus or the auto router)';
   const price = knownPrices.get(model);
   if (c.requireFree && !model.endsWith(':free')) return 'AI_REQUIRE_FREE=1 and the model id does not end in :free';
   if (c.requireFree && price && (price.prompt !== 0 || price.completion !== 0)) return 'AI_REQUIRE_FREE=1 and the catalog price is not zero';

@@ -4,7 +4,8 @@ import type { Tx } from '@remoa/db';
 import { pick } from '../pick';
 import { planOf } from '../billing/plan';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
-import { dbm, uuids } from '../db';
+import { dbm, run, uuids } from '../db';
+import { attachMatrixLinksByTitle, boardHasEnamedCoverage } from '../matrix/matrix';
 import { firstNameOf } from '../notifications/names';
 import { notify } from '../notifications/notify';
 import { maybeQualifyReferral } from '../referral/qualify';
@@ -358,6 +359,7 @@ export async function listSeeds(onlyId?: string) {
     return {
       id: b.id, title: b.title, area: b.area, temporalMark: b.temporalMark, version: b.version, badges: b.badges,
       slug: b.path?.slug ?? null, modules: b.path?.modulos ?? [], contentVersion: b.path?.versao ?? null,
+      topicArea: b.path?.area ?? null,
       cardCount: n, estimatedMinutes: Math.ceil(n * MINUTES_PER_CARD), levels: [...(count.get(b.id)?.levels ?? [])].sort(),
       approvedBy: v?.approved_by ?? null, reviewerName: v?.reviewer_name ?? null, reviewerCrm: v?.reviewer_crm ?? null, approvedAt: v?.approved_at ? new Date(v.approved_at) : null,
     };
@@ -414,7 +416,7 @@ const FREE_SEED_COPIES = 1;
 
 export async function copySeed(userId: string, boardId: string) {
   const { db, boards, cards, edges, masks, assets, cardPrereqs } = await dbm();
-  const [source] = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark', 'path')).from(boards).where(and(eq(boards.id, boardId), eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`));
+  const [source] = await db.select(pick(boards, 'id', 'title', 'area', 'temporalMark', 'path', 'badges')).from(boards).where(and(eq(boards.id, boardId), eq(boards.status, 'seed_approved'), sql`${boards.archivedAt} is null`));
   if (!source) return err('not_found', 'not found');
   const srcCards = await db.select(pick(cards, 'id', 'type', 'shape', 'title', 'front', 'back', 'frontAssetId', 'backAssetId', 'width', 'height', 'tags', 'payload', 'rubric', 'source', 'x', 'y', 'status', 'order', 'pathOrder', 'didactics', 'sources')).from(cards).where(and(eq(cards.boardId, source.id), sql`${cards.deletedAt} is null`));
   // Q-170 (provisional, P-661): Pro and Founder copy any ready-made map; Free gets ONE sample copy (on top of the plan's map limit).
@@ -431,9 +433,10 @@ export async function copySeed(userId: string, boardId: string) {
     return [p?.assetId, c.frontAssetId, c.backAssetId].filter((id): id is string => !!id);
   }))];
   const allowed = new Set<string>();
+  const trailSeed = !!source.path?.slug;
   if (assetIds.length) {
     const rows = await db.select({ id: assets.id, license: assets.license }).from(assets).where(sql`${assets.id} = any(${uuids(assetIds)})`);
-    for (const row of rows) if (shareable(row.license)) allowed.add(row.id);
+    for (const row of rows) if (shareable(row.license) || trailSeed) allowed.add(row.id);
   }
   const keep = (id: string | null) => (id && allowed.has(id) ? id : null);
   const [copy] = await db.insert(boards).values({
@@ -470,6 +473,9 @@ export async function copySeed(userId: string, boardId: string) {
     return card && prereq ? [{ cardId: card, prereqCardId: prereq }] : [];
   });
   if (prereqRows.length) await db.insert(cardPrereqs).values(prereqRows);
+  if (boardHasEnamedCoverage(source) && source.area === 'CM') {
+    await run(userId, async (tx, s) => attachMatrixLinksByTitle(tx, s, copy!.id, 'CM', source.title));
+  }
   await invalidate('map.changed', { userId, mapId: copy!.id });
   await maybeQualifyReferral(userId); // F18 (D-485): a copied seed can be the first map; never throws
   return ok({ id: copy!.id });

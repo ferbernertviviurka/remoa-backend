@@ -153,7 +153,7 @@ export const eventSchemas = {
   checkout_redirected: z.object({ period: z.enum(billingPeriods), method: z.enum(paymentMethods) }).strict(),
   checkout_canceled: none,
   checkout_pending_pix: none,
-  faq_opened: z.object({ index: z.number().int().min(0).max(9) }).strict(),
+  faq_opened: z.object({ index: z.number().int().min(0).max(15) }).strict(),
   plans_manage_clicked: none,
   plans_annual_switch_clicked: none,
   // F16 landing (no personal data: referrer is a hostname, utm values are campaign labels)
@@ -226,6 +226,12 @@ export const eventSchemas = {
   blog_search_used: z.object({ resultCount: count, queryLength: count }).strict(),
   landing_blog_clicked: z.object({ position: z.number().int().min(0).max(4) }).strict(),
   legal_page_viewed: z.object({ document: z.enum(['terms', 'privacy']) }).strict(),
+  // G24 landing (F16): demo and ENAMED slider. Counts and enums only, never titles or answers.
+  ia_demo_viewed: none,
+  calendar_demo_viewed: none,
+  enamed_slider_used: z.object({ control: z.enum(['prev', 'next', 'dot']) }).strict(),
+  enamed_cta_clicked: none,
+  ia_cta_clicked: none,
   // F30 (G25, D-1606) Desafio com IA and Resumo com IA: counts and enums only, never the question, answer, feedback or summary text.
   questions_generated: z.object({ n: count, kept: count, dropped: count, durationMs: ms }).strict(),
   answer_graded: z.object({ type: z.enum(aiItemTypes), verdict: z.enum(verdicts).nullable(), gradedBy: z.enum(gradedBy), latencyMs: ms, hint: z.boolean() }).strict(),

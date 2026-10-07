@@ -103,6 +103,10 @@ export const reasonSchema = z.string().trim().min(ADMIN_LIMITS.reasonMin).max(AD
 export const reasonInputSchema = z.object({ reason: reasonSchema });
 export type ReasonInput = z.input<typeof reasonInputSchema>;
 
+/** POST /v1/admin/seeds/:id/approve (F31, D-1522). `institutional: true` = "Aprovado por Remoa" (not physician CRM on cards). */
+export const seedApproveInputSchema = reasonInputSchema.extend({ institutional: z.literal(true).optional() });
+export type SeedApproveInput = z.infer<typeof seedApproveInputSchema>;
+
 /** Query string of every list route (strings coerced). Search and filters run on the server (FR-22). */
 export const adminListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
