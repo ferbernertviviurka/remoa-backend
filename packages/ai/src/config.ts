@@ -2,7 +2,7 @@
 // free models leave the OpenRouter catalog without notice, so no model id is written in code.
 import { z } from 'zod';
 
-export type AiFn = 'grader' | 'rubric' | 'extract' | (string & {});
+export type AiFn = 'grader' | 'rubric' | 'extract' | 'grade' | 'generate' | 'summary' | (string & {});
 
 export type AiConfig = {
   provider: 'openrouter';

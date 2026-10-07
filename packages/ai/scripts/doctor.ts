@@ -19,7 +19,7 @@ out('AI_BASE_URL', c.baseUrl);
 out('OPENROUTER_API_KEY', c.apiKey ? `definida (${c.apiKey.length} caracteres)` : 'ausente');
 out('AI_MODEL', c.model);
 out('AI_MODEL_FALLBACKS', c.fallbacks.join(', ') || undefined);
-for (const fn of ['grader', 'rubric', 'extract']) out(`  cadeia ${fn}`, chainFor(fn).join(' → ') || undefined);
+for (const fn of ['grader', 'rubric', 'extract', 'grade', 'generate', 'summary']) out(`  cadeia ${fn}`, chainFor(fn).join(' → ') || undefined);
 out('AI_REQUIRE_FREE', yes(c.requireFree));
 out('AI_ALLOW_FREE_IN_PROD', yes(c.allowFreeInProd));
 out('AI_DATA_COLLECTION', c.dataCollection);
