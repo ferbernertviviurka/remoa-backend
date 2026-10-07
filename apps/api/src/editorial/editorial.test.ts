@@ -252,6 +252,16 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
     await dbm.db.insert(dbm.cardPrereqs).values({ cardId: b!.id, prereqCardId: a!.id });
     await dbm.db.insert(dbm.cards).values({ boardId: draft.id, title: 'C', status: 'draft' });
 
+    const pub = await app.request('/v1/public/mapas-prontos');
+    const pubItems = ((await pub.json()) as { data: { slug: string; title: string }[] }).data;
+    expect(pub.status).toBe(200);
+    expect(pubItems.find((x) => x.title === 'Biblioteca aprovada')).toBeDefined();
+    expect(pubItems.find((x) => x.title === 'Biblioteca rascunho')).toBeUndefined();
+    const slugA = (approved.path as { slug: string }).slug;
+    const one = (await (await app.request(`/v1/public/mapas-prontos/${slugA}`)).json()) as { data: { sample: { title: string }[] } };
+    expect(one.data.sample.map((x) => x.title)).toEqual(['A', 'B']);
+    expect((await app.request(`/v1/public/mapas-prontos/${(draft.path as { slug: string }).slug}`)).status).toBe(404);
+
     const list = await call(student, 'GET', '/editorial/seeds');
     const items = list.json.data as unknown as { id: string; badges: string[]; cardCount: number; levels: number[] }[];
     expect(items.find((x) => x.id === draft.id)).toBeUndefined();
