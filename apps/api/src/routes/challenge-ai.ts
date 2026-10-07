@@ -6,7 +6,7 @@ import {
   aiAnswerInputSchema, aiAnswerItemInputSchema, aiAnswerResultSchema, aiChallengeItemPublicSchema, aiChallengeItemServerSchema,
   aiChallengeSessionPublicSchema, aiItemTypes, cardRubricServerSchema, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, disputeVerdictInputSchema, enamedTopicOptionSchema, err,
   generateSummaryInputSchema, gradedBy as gradedByValues, grades, idSchema, mapSummaryPublicSchema, ok, parseWith, questionBankItemPublicSchema,
-  questionDifficulties, questionStatuses, questionTypes, verdicts,
+  questionDifficulties, questionSources, questionStatuses, questionTypes, verdicts,
   type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey, type CardRubricServer,
   type AppError, type ChallengeConfig, type ErrorCode, type GradedBy, type Grade, type QuestionType, type Result, type Verdict,
 } from '@remoa/contracts';
@@ -102,6 +102,13 @@ export const bankQuerySchema = z
     board: idSchema.optional(),
     /** `enamed_area_id`. */
     area: idSchema.optional(),
+    /** `enamed_domain_id`. */
+    domain: idSchema.optional(),
+    /** `enamed_topic_id`. */
+    topic: idSchema.optional(),
+    source: z.enum(questionSources).optional(),
+    /** Stem search. Wildcards are stripped so the match stays a literal substring. */
+    q: z.string().trim().min(1).max(80).optional(),
     difficulty: z.enum(questionDifficulties).optional(),
     type: z.enum(questionTypes).optional(),
     status: z.enum(questionStatuses).optional(),
@@ -131,6 +138,7 @@ export type ChallengeAiService = {
   edit(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
   confirmTopic(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
   topics(userId: string, areaId: string | null): Promise<Result<unknown>>;
+  taxonomy(userId: string, kind: 'area' | 'domain' | 'topic'): Promise<Result<unknown>>;
   report(userId: string, itemId: string): Promise<Result<unknown>>;
   summarize(input: GenerateSummaryInput): Promise<Result<unknown>>;
   summaries(userId: string, boardId: string): Promise<Result<unknown>>;
@@ -186,6 +194,8 @@ export type DataPort = {
   confirmTopic(userId: string, bankId: string, topicId: string): Promise<unknown | 'closed' | null>;
   /** Closed-list topic names. `areaId` limits them to that area row; null lists every topic. */
   topics(userId: string, areaId: string | null): Promise<{ id: string; name: string }[]>;
+  /** Closed-list rows of one kind (area, domain or topic), names only. */
+  taxonomy(userId: string, kind: 'area' | 'domain' | 'topic'): Promise<{ id: string; name: string }[]>;
   /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
   report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
 };
@@ -256,14 +266,17 @@ const typeAt = (cfg: ChallengeConfig, at: number): QuestionType =>
 
 export function createChallengeAiService(io: Io): ChallengeAiService {
   const filling = new Map<string, Promise<void>>();
+  /** Sessions whose first model call already took the one `ai_question_batches` unit (D-1637). In memory, same as `filling`. */
+  const paid = new Set<string>();
   const build = (s: SessionRow, at: number, focus: number) => {
     const key = `${s.id}:${at}`;
     const running = filling.get(key) ?? (async () => {
       const cfg = s.params;
       const gen = await io.generate({
         userId: s.userId, boardId: cfg.boardId, scope: cfg.scope, n: 1, questionType: typeAt(cfg, at), difficulty: cfg.difficulty,
-        requestId: 'challenge-fill', charge: 'none', focus: { seed: s.id, index: focus },
+        requestId: 'challenge-fill', charge: paid.has(s.id) ? 'none' : 'once', focus: { seed: s.id, index: focus },
       }).catch(() => null);
+      if (gen?.ok && gen.data.calls > 0) paid.add(s.id);
       const q = gen?.ok ? gen.data.questions[0] : undefined;
       if (q) await io.tx(s.userId, (st) => appendBankItem(st, s.userId, s.id, at, q.id));
     })().finally(() => filling.delete(key));
@@ -275,18 +288,26 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
    * D-1566: format 1 builds one question per step, in order (no gaps): `ahead` while the student answers, the current step if it is
    * still missing, else the next. The current step gets a second try on another card; nothing for it ends the session there (FR-8).
    */
-  const fill = async (userId: string, sessionId: string, ahead: boolean) => {
+  const fill = async (userId: string, sessionId: string, ahead: boolean, burst = false) => {
     const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
     if (!s || s.status !== 'active' || s.format !== 'generated') return;
     const at = s.position;
-    if (await missingAt(s, at)) await build(s, at, at);
+    // D-1637: reading the session can build the open step. That call shares the per-minute cap; a full cap waits, it does not end the session.
+    const opened = async (step: number, focus: number) => {
+      if (burst && !takeAiSlot(userId).ok) return false;
+      await build(s, step, focus);
+      return true;
+    };
+    if (await missingAt(s, at)) {
+      if (!(await opened(at, at))) return;
+    }
     const current = !(await missingAt(s, at));
     if (ahead) {
-      if (current && (await missingAt(s, at + 1))) await build(s, at + 1, at + 1);
+      if (current && (await missingAt(s, at + 1))) await opened(at + 1, at + 1);
       return;
     }
     if (current) return;
-    await build(s, at, at + s.total);
+    if (!(await opened(at, at + s.total))) return;
     await io.tx(userId, (st) => endEarly(st, userId, sessionId, io.now()));
   };
   const fillAhead = (userId: string, sessionId: string) => void fill(userId, sessionId, true).catch(() => undefined);
@@ -295,7 +316,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
 
   return {
     // FR-2 format 2 (map): the session service only. Format 1 (generated, D-1566): the first question only (a saved one first, else the
-    // model, FR-19), paying one unit for the whole session; the rest come one per step through `fill`.
+    // model, FR-19). One quota unit for the session, and only after a model call (D-1637); the rest come one per step through `fill`.
     async start(userId, cfg, requestId) {
       if (cfg.format === 'map') {
         const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { now: io.now() }));
@@ -311,6 +332,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       if (!gen.ok) return gen;
       const g = gen.data;
       if (!g.questions.length) return err('not_found', 'no_questions');
+      if (g.calls > 0) paid.add(id);
       const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { id, bankIds: g.questions.map((q) => q.id), now: io.now() }));
       if (!r.ok) return r;
       fillAhead(userId, id);
@@ -319,7 +341,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
     },
 
     async session(userId, sessionId) {
-      await fill(userId, sessionId, false).catch(() => undefined);
+      await fill(userId, sessionId, false, true).catch(() => undefined);
       return io.tx(userId, (st) => getSession(st, userId, sessionId, io.now()));
     },
 
@@ -496,6 +518,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       return row ? ok(row) : err('not_found', 'question_not_found');
     },
     topics: async (userId, areaId) => ok(await io.data.topics(userId, areaId)),
+    taxonomy: async (userId, kind) => ok(await io.data.taxonomy(userId, kind)),
     report: async (userId, itemId) => {
       const row = await io.data.report(userId, itemId);
       return row ? ok(row) : err('not_found', 'item_not_found');
@@ -681,6 +704,10 @@ export const dbData: DataPort = {
     const where: SQL[] = [sql`q.user_id = ${userId}`, sql`not exists (select 1 from question_bank n where n.supersedes_id = q.id)`];
     if (q.board) where.push(sql`q.board_id = ${q.board}`);
     if (q.area) where.push(sql`q.enamed_area_id = ${q.area}`);
+    if (q.domain) where.push(sql`q.enamed_domain_id = ${q.domain}`);
+    if (q.topic) where.push(sql`q.enamed_topic_id = ${q.topic}`);
+    if (q.source) where.push(sql`q.source = ${q.source}`);
+    if (q.q) where.push(sql`q.stem ilike ${`%${q.q.replace(/[\\%_]/g, '')}%`}`);
     if (q.difficulty) where.push(sql`q.difficulty = ${q.difficulty}`);
     if (q.type) where.push(sql`q.type = ${q.type}`);
     where.push(q.status ? sql`q.status = ${q.status}` : sql`q.status <> 'archived'`);
@@ -796,6 +823,11 @@ export const dbData: DataPort = {
     await invalidate('question.changed', { userId, mapId: written.board_id ? String(written.board_id) : undefined });
     return publicBank(written);
   },
+
+  taxonomy: (userId, kind) => run(userId, async (tx) => {
+    const rows = await exec(tx, sql`select id, name from enamed_taxonomy where kind = ${kind} order by name, id limit 200`);
+    return rows.map((r) => ({ id: String(r.id), name: String(r.name) }));
+  }),
 
   topics: (userId, areaId) => run(userId, async (tx) => {
     const area = areaId ? sql`and t.area = (select area from enamed_taxonomy where id = ${areaId} and kind = 'area')` : sql``;
@@ -944,6 +976,11 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       return sendPublic(c, 'dispute', disputeResultSchema, await service.dispute(c.get('userId'), id));
     })
     // FR-18: the caller's own questions, without the reference.
+    .get('/taxonomy', async (c) => {
+      const q = parseWith(z.object({ kind: z.enum(['area', 'domain', 'topic']) }).strict(), c.req.query());
+      if (!q.ok) return errorResponse(q.error);
+      return sendPublic(c, 'taxonomy', z.array(enamedTopicOptionSchema).max(200), await service.taxonomy(c.get('userId'), q.data.kind));
+    })
     .get('/topics', async (c) => {
       const q = parseWith(topicsQuerySchema, c.req.query());
       if (!q.ok) return errorResponse(q.error);

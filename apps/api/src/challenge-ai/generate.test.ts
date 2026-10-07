@@ -190,6 +190,59 @@ describe('generateQuestions: reuse and batches', () => {
     expect(reserve).not.toHaveBeenCalled();
   });
 
+  it('AI=mock writes the question from the card title and does not call the model', async () => {
+    vi.stubEnv('AI', 'mock');
+    try {
+      const { store, saved } = memStore();
+      const r = await generateQuestions(input({ n: 1, questionType: 'objective' }), deps(store));
+      expect(ask).not.toHaveBeenCalled();
+      expect(r.ok && r.data).toMatchObject({ calls: 0, generated: 1, shortfall: 0 });
+      expect(saved[0]?.stem).toBe('Qual registro o card traz?');
+      expect(saved[0]?.alternatives?.some((a) => a.text === CARDS[0]!.title)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('D-1639: without a map topic, one classifier call stores a closed-list theme and its confidence, unconfirmed', async () => {
+    const topicId = '00000000-0000-4000-8000-000000000009';
+    const { store, saved } = memStore({ context: ctx({ topics: [{ id: topicId, code: 'sepse', name: 'Sepse' }] }) });
+    ask.mockResolvedValueOnce(discReply(disc())).mockResolvedValueOnce(reply({ classificacoes: [{ tema: 'Sepse', confianca: 0.82 }] }));
+    const r = await generateQuestions(input({ n: 1 }), deps(store));
+    expect(r.ok && r.data.calls).toBe(1);
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(systemOf(1)).toContain('<lista>');
+    expect(systemOf(1)).toContain('Sepse');
+    expect(saved[0]).toMatchObject({ enamedTopicId: topicId, enamedAreaId: AREA, enamedConfidence: 0.82, enamedConfirmed: false });
+    expect(reserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-1639: a classifier name outside the list is dropped, and a map that already has a topic skips the call', async () => {
+    const topicId = '00000000-0000-4000-8000-000000000009';
+    const topics = [{ id: topicId, code: 'sepse', name: 'Sepse' }];
+    const dropped = memStore({ context: ctx({ topics }) });
+    ask.mockResolvedValueOnce(discReply(disc())).mockResolvedValueOnce(reply({ classificacoes: [{ tema: 'Tema inventado', confianca: 0.9 }] }));
+    await generateQuestions(input({ n: 1 }), deps(dropped.store));
+    expect(dropped.saved[0]).toMatchObject({ enamedTopicId: null, enamedConfidence: null });
+
+    ask.mockReset();
+    const inherited = memStore({ context: ctx({ topics, tags: { areaId: AREA, domainId: DOMAIN, competencyId: null, topicId } }) });
+    ask.mockResolvedValueOnce(discReply(disc()));
+    await generateQuestions(input({ n: 1 }), deps(inherited.store));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(inherited.saved[0]).toMatchObject({ enamedTopicId: topicId, enamedConfirmed: true, enamedConfidence: null });
+  });
+
+  it('D-1637: charge once is returned when the only question is a reuse', async () => {
+    const held = vi.fn().mockResolvedValue(undefined);
+    reserve.mockResolvedValue({ ok: true, quota: { key: 'ai_question_batches', used: 1, limit: 5, period: PERIOD, remaining: 4, nearLimit: false }, refund: held });
+    const { store } = memStore({ unseen: [bank(1)] });
+    const r = await generateQuestions(input({ charge: 'once' }), deps(store));
+    expect(r.ok && r.data).toMatchObject({ reused: 1, generated: 0, calls: 0 });
+    expect(ask).not.toHaveBeenCalled();
+    expect(held).toHaveBeenCalledTimes(1);
+  });
+
   it('asks the model only for the shortfall, with the map as data and the last saved stems', async () => {
     const { store } = memStore({ unseen: [bank(1)], stems: ['Pergunta antiga sobre o alvo?'] });
     ask.mockResolvedValueOnce(discReply(disc(), disc({ enunciado: 'O que caracteriza a síndrome sintética X?', resposta_esperada: 'Disfunção orgânica por resposta desregulada.', pontos_essenciais: ['disfunção orgânica'], explicacao: '', cards: ['c1'], evidencias: [{ card: 'c1', trecho: 'Disfunção orgânica causada por resposta desregulada' }] })));

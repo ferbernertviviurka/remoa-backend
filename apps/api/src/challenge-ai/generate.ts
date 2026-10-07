@@ -9,7 +9,7 @@ import {
   type AppError, type ChallengeScope, type GeneratedQuestion, type QuestionBankServer, type QuestionDifficulty, type QuestionType, type Result,
 } from '@remoa/contracts';
 import {
-  AiError, LETTERS, challengeLimits, generateJson, keepDistinctStems, literalEvidence, loadChallengePrompt, numbersGrounded, remapLetters,
+  AiError, LETTERS, aiMode, challengeLimits, generateJson, keepDistinctStems, literalEvidence, loadChallengePrompt, numbersGrounded, remapLetters,
   renderChallengePrompt, shuffleAlternatives, type ChallengePrompt, type Evidence, type Letter,
 } from '@remoa/ai';
 import { createLogger } from '@remoa/log';
@@ -158,6 +158,22 @@ export const objectiveReplySchema = z.object({
 type DiscursiveItem = z.infer<typeof discursiveReplySchema>['perguntas'][number];
 type ObjectiveItem = z.infer<typeof objectiveReplySchema>['questoes'][number];
 
+/** AI=mock: one grounded question from the card title, no provider call. The title is already in the card text, so the guards pass. */
+function offlineItems(type: QuestionType, refs: ReadonlyMap<string, ScopeCard>, size: number, focus: { ref: string; card: ScopeCard } | null): (DiscursiveItem | ObjectiveItem)[] {
+  const pool = focus ? [[focus.ref, focus.card] as const] : [...refs];
+  const items: (DiscursiveItem | ObjectiveItem)[] = [];
+  for (const [ref, card] of pool) {
+    if (items.length >= size) break;
+    const trecho = card.title.replace(/\s+/g, ' ').trim().slice(0, 180);
+    if (trecho.length < 4) continue;
+    const base = { dificuldade: 'facil' as const, cards: [ref], evidencias: [{ card: ref, trecho }], tema_enamed_sugerido: null };
+    items.push(type === 'objective'
+      ? { ...base, enunciado: 'Qual registro o card traz?', alternativas: { A: 'Registro ausente neste card', B: trecho, C: 'Outro registro ausente', D: 'Nada foi escrito no card' }, correta: 'B' as const, explicacao_correta: trecho, explicacao_distratores: { A: 'Não aparece.', C: 'Não aparece.', D: 'Há registro.' } }
+      : { ...base, enunciado: 'O que o card registra?', resposta_esperada: trecho, pontos_essenciais: [trecho], explicacao: trecho });
+  }
+  return items;
+}
+
 // --- Server guards -------------------------------------------------------------------------------------------------
 
 export type DiscardReason = 'evidence' | 'numbers' | 'format' | 'duplicate';
@@ -261,10 +277,47 @@ function distractorNotes(item: ObjectiveItem): GeneratedQuestion['notas_distrato
   return Object.keys(notes).length ? notes : null;
 }
 
+const classificationSchema = z.object({
+  classificacoes: z.array(z.object({ tema: z.string().max(200), confianca: z.number().min(0).max(1) })).max(10),
+}).strict();
+
+/**
+ * FR-17: one short call when the map has no topic and the model's suggestion is not an exact closed-list name.
+ * A name outside the list is dropped. Failure leaves the question untagged so the student can still confirm it.
+ */
+async function classifyTopics(items: readonly Candidate[], ctx: MapContext, requestId: string): Promise<Map<number, { id: string; confidence: number }>> {
+  const topics = ctx.topics ?? [];
+  const out = new Map<number, { id: string; confidence: number }>();
+  if (aiMode() !== 'live' || !topics.length || ctx.tags.topicId) return out;
+  const pending = items.map((c, i) => ({ c, i })).filter(({ c }) => !matchClosedTopic(c.suggestedTopic, topics));
+  if (!pending.length) return out;
+  const prompt = loadChallengePrompt('classificar-tema');
+  const rendered = renderChallengePrompt(prompt, {
+    assunto: ctx.title,
+    lista: topics.map((t) => t.name).join('\n'),
+    perguntas: pending.map(({ c }, n) => `${n + 1}. ${c.question.enunciado.replace(/\s+/g, ' ')}`).join('\n'),
+  });
+  if (!rendered.ok) return out;
+  try {
+    const r = await generateJson(classificationSchema, {
+      fn: 'classify-topic', system: rendered.data, user: 'Responda agora apenas com o JSON pedido.', temperature: 0, requestId,
+    });
+    pending.forEach(({ i }, n) => {
+      const row = r.data.classificacoes[n];
+      if (!row || row.confianca <= 0) return;
+      const id = matchClosedTopic(row.tema, topics);
+      if (id) out.set(i, { id, confidence: row.confianca });
+    });
+  } catch (e) {
+    if (!(e instanceof AiError)) throw e;
+  }
+  return out;
+}
+
 /** The bank row. A–D shuffled here with `seed` (the model tends to put the answer in B); distractor notes follow their letters. */
 export function toRow(
   c: Candidate,
-  meta: { id: string; userId: string; ctx: MapContext; prompt: ChallengePrompt; model: string; seed: string; now: Date },
+  meta: { id: string; userId: string; ctx: MapContext; prompt: ChallengePrompt; model: string; seed: string; now: Date; classified?: { id: string; confidence: number } | null },
 ): QuestionBankServer {
   const q = c.question;
   let alternatives: QuestionBankServer['alternatives'] = null;
@@ -278,15 +331,16 @@ export function toRow(
     notes = q.notas_distratores ? remapLetters(q.notas_distratores, s.from) : null;
   }
   const { tags } = meta.ctx;
-  const topicId = tags.topicId ?? matchClosedTopic(c.suggestedTopic, meta.ctx.topics ?? []);
+  const topicId = tags.topicId ?? matchClosedTopic(c.suggestedTopic, meta.ctx.topics ?? []) ?? meta.classified?.id ?? null;
+  const confidence = meta.classified && topicId === meta.classified.id ? meta.classified.confidence : null;
   return questionBankServerSchema.parse({
     id: meta.id, userId: meta.userId, boardId: meta.ctx.boardId, boardVersion: meta.ctx.boardVersion, cardIds: c.cardIds,
     type: alternatives ? 'objective' : 'discursive', difficulty: c.difficulty, stem: q.enunciado, alternatives, correctKey,
     expectedAnswer: q.resposta_esperada, keyPoints: q.pontos_essenciais, explanation: q.explicacao || null, distractorNotes: notes,
     evidences: q.evidencias.map((e) => ({ cardId: e.card, excerpt: e.trecho })),
     enamedAreaId: tags.areaId, enamedDomainId: tags.domainId, enamedCompetencyId: tags.competencyId, enamedTopicId: topicId,
-    // Confirmed only when the map already had the topic. A closed-list match stays unconfirmed.
-    enamedConfidence: null, enamedConfirmed: tags.topicId !== null && topicId === tags.topicId,
+    // Confirmed only when the map already had the topic. A closed-list match or a classifier proposal stays unconfirmed.
+    enamedConfidence: confidence, enamedConfirmed: tags.topicId !== null && topicId === tags.topicId,
     source: 'ai', promptId: meta.prompt.meta.id, promptVersion: meta.prompt.promptVersion, model: meta.model, status: 'draft',
     stats: EMPTY_QUESTION_STATS, version: 1, supersedesId: null, createdAt: meta.now,
   });
@@ -392,8 +446,8 @@ export type GenerateInput = {
   seed?: string;
   requestId?: string;
   /**
-   * D-1566: default one `ai_question_batches` unit per model batch. `once`: one unit up front, back if nothing is delivered (a session
-   * paying for all its questions); `none`: the caller already paid (the next question of that session).
+   * D-1566 / D-1637: default one `ai_question_batches` unit per model batch. `once`: one unit up front, back when nothing is delivered or
+   * when every question was a reuse (no model call). `none`: this session already paid on an earlier call.
    */
   charge?: 'once' | 'none';
   /** D-1566: the question must cite this card: the scope's card, else the `index`-th of the scope in a `seed` order (one card per step). */
@@ -469,7 +523,8 @@ export async function generateQuestions(input: GenerateInput, deps: GenerateDeps
   if (!held.ok) return held;
   try {
     const r = await generateBatches({ ...input, charge: 'none' }, deps);
-    if (!r.ok || !r.data.questions.length) await held.refund().catch(() => undefined);
+    // D-1637: a reuse delivers questions with zero model calls, and that must not keep the unit (FR-19, FR-60).
+    if (!r.ok || !r.data.questions.length || r.data.calls === 0) await held.refund().catch(() => undefined);
     return r;
   } catch (e) {
     await held.refund().catch(() => undefined);
@@ -536,6 +591,15 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
       const vars = (k: number) => ({ ...baseVars, n: k, perguntas_existentes: avoid().map((s) => `- ${s.replace(/\s+/g, ' ')}`).join('\n') || '(nenhuma)' });
 
       for (let attempt = 0; attempt < 2 && kept.length < size; attempt++) {
+        if (aiMode() !== 'live') {
+          const screened = screenReply(type, offlineItems(type, refs, size - kept.length, focus), refs, existingStems(), dupThreshold);
+          addDiscards(out.discarded, screened.discarded);
+          const onFocus = focus ? screened.kept.filter((k) => k.cardIds.includes(focus.card.id)) : screened.kept;
+          offFocus.push(...screened.kept.filter((k) => !onFocus.includes(k)));
+          kept.push(...onFocus.slice(0, size - kept.length));
+          model = 'offline';
+          break;
+        }
         let reply: Awaited<ReturnType<typeof ask>>;
         try {
           out.calls++;
@@ -564,9 +628,10 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
 
       try {
         const now = deps.now();
-        const rows = kept.map((c) => {
+        const classified = await classifyTopics(kept, ctx, input.requestId ?? 'challenge-generate');
+        const rows = kept.map((c, i) => {
           const id = deps.newId();
-          return toRow(c, { id, userId: input.userId, ctx, prompt, model, seed: input.seed ? `${input.seed}:${c.question.enunciado}` : id, now });
+          return toRow(c, { id, userId: input.userId, ctx, prompt, model, seed: input.seed ? `${input.seed}:${c.question.enunciado}` : id, now, classified: classified.get(i) ?? null });
         });
         await store.save(input.userId, rows);
         fresh.push(...rows);

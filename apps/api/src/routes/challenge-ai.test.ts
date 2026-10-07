@@ -66,6 +66,7 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     edit: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado novo', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: false, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
     confirmTopic: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: true, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
     topics: vi.fn(async () => ok([])),
+    taxonomy: vi.fn(async () => ok([])),
     report: vi.fn(async () => ok({ itemId: ID, reported: true as const })),
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
@@ -273,13 +274,31 @@ describe('rotas /v1/challenge-ai: entrada estrita', () => {
     expect(await hidden.text()).not.toContain(SECRET);
   });
 
-  it('bank filters are parsed and passed on (board, area, difficulty, type, status)', async () => {
+  it('bank filters are parsed and passed on (board, area, domain, topic, source, search, difficulty, type, status)', async () => {
     const service = mockService();
     const area = randomUUID();
-    const res = await send(appFor(service), 'GET', `/bank?board=${BOARD}&area=${area}&difficulty=hard&type=objective&status=draft&limit=20&offset=40`);
+    const domain = randomUUID();
+    const topic = randomUUID();
+    const res = await send(appFor(service), 'GET', `/bank?board=${BOARD}&area=${area}&domain=${domain}&topic=${topic}&source=ai&q=sepse&difficulty=hard&type=objective&status=draft&limit=20&offset=40`);
     expect(res.status).toBe(200);
-    expect(service.bank).toHaveBeenCalledWith(USER, { board: BOARD, area, difficulty: 'hard', type: 'objective', status: 'draft', limit: 20, offset: 40 });
+    expect(service.bank).toHaveBeenCalledWith(USER, { board: BOARD, area, domain, topic, source: 'ai', q: 'sepse', difficulty: 'hard', type: 'objective', status: 'draft', limit: 20, offset: 40 });
     expect(bankQuerySchema.parse({})).toEqual({ limit: 50, offset: 0 });
+    expect((await send(appFor(service), 'GET', '/bank?q=%20')).status).toBe(422);
+  });
+
+  it('lists one taxonomy kind and refuses an unknown kind', async () => {
+    const area = '00000000-0000-4000-8000-000000000070';
+    const service = mockService({ taxonomy: vi.fn(async () => ok([{ id: area, name: 'Clínica Médica' }])) });
+    const app = appFor(service);
+    const res = await send(app, 'GET', '/taxonomy?kind=area');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, data: [{ id: area, name: 'Clínica Médica' }] });
+    expect(service.taxonomy).toHaveBeenCalledWith(USER, 'area');
+    expect((await send(app, 'GET', '/taxonomy?kind=competency')).status).toBe(422);
+    const leaked = appFor(mockService({ taxonomy: vi.fn(async () => ok([{ id: area, name: 'Clínica Médica', expectedAnswer: SECRET }])) }));
+    const hidden = await send(leaked, 'GET', '/taxonomy?kind=domain');
+    expect(hidden.status).toBe(500);
+    expect(await hidden.text()).not.toContain(SECRET);
   });
 });
 
@@ -402,6 +421,7 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     edit: async () => null,
     confirmTopic: async () => null,
     topics: async () => [],
+    taxonomy: async () => [],
     report: async () => null,
   };
   let units = o.units ?? 100;
@@ -519,6 +539,31 @@ describe('start (serviço)', () => {
     expect(await get()).toMatchObject({ status: 'finished', total: 2, current: null });
     expect(f.generate.mock.calls.at(-1)![0].focus).toEqual({ seed: data.id, index: 2 + 5 }); // a second try on another card first
     expect(f.mem.items.map((i) => i.bankId)).toEqual([q1.id, q2.id]);
+  });
+
+  it('D-1637: a reused first question leaves the session unpaid; the next model call pays, and a full minute cap does not end it', async () => {
+    const [q1, q2] = [objective(), discursive()];
+    const f = fixture({ bank: [q1, q2] });
+    const meta = (b: BankRow | undefined, calls: number) => ok({
+      questions: (b ? [{ id: b.id }] : []) as never, requested: 1, reused: calls ? 0 : 1, generated: calls ? 1 : 0, shortfall: b ? 0 : 1, calls,
+      discarded: { evidence: 0, numbers: 0, format: 0, duplicate: 0 }, stoppedBy: null,
+    });
+    f.generate.mockResolvedValueOnce(meta(q1, 0)).mockResolvedValueOnce(meta(q2, 1)).mockResolvedValue(meta(undefined, 0));
+    const userId = randomUUID();
+    const app = appFor(f.service, userId);
+    const res = await send(app, 'POST', '/sessions', cfg({ format: 'generated', n: 5, questionType: 'mixed', grading: 'end' }));
+    const { data } = (await res.json()) as { data: { id: string; total: number; current: { id: string } } };
+    await send(app, 'POST', `/sessions/${data.id}/answers`, { itemId: data.current.id, answer: { kind: 'dont_know' } });
+    const second = (await (await send(app, 'GET', `/sessions/${data.id}`)).json()) as { data: { status: string; current: { id: string } | null } };
+    expect(f.generate.mock.calls.map(([i]) => i.charge)).toEqual(['once', 'once', 'none']);
+    expect(second.data.status).toBe('active');
+
+    await send(app, 'POST', `/sessions/${data.id}/answers`, { itemId: second.data.current!.id, answer: { kind: 'dont_know' } });
+    for (let i = 0; i < AI_CALLS_PER_MINUTE; i++) takeAiSlot(userId);
+    const before = f.generate.mock.calls.length;
+    const held = (await (await send(app, 'GET', `/sessions/${data.id}`)).json()) as { data: { status: string } };
+    expect(held.data.status).toBe('active');
+    expect(f.generate.mock.calls.length).toBe(before);
   });
 });
 
