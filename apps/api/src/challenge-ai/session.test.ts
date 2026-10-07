@@ -248,7 +248,7 @@ describe('startSession — formato 1 (banco)', () => {
 
 describe('toPublic — sem vazamento do gabarito', () => {
   const session = (): SessionRow => ({
-    id: randomUUID(), userId, boardId, format: 'generated', status: 'active', position: 0, expiresAt: T0, params: genCfg(), total: 1, aiUnits: 0,
+    id: randomUUID(), userId, boardId, format: 'generated', status: 'active', position: 0, startedAt: T0, expiresAt: T0, params: genCfg(), total: 1, aiUnits: 0,
   });
   const payload = { id: randomUUID(), position: 0, type: 'objective', stem: 'Enunciado sintético',
     alternatives: [{ key: 'A', text: 'a' }, { key: 'B', text: 'b' }, { key: 'C', text: 'c' }, { key: 'D', text: 'd' }] };
@@ -403,7 +403,7 @@ describe('sessionStore (SQL)', () => {
     await s.itemAt(userId, randomUUID(), 0);
     wrapped(log, /reference_ref, shuffle_map from challenge_items where session_id = \$1 and user_id = \$2/);
     await s.appendAttempt({ itemId: randomUUID(), userId, attemptNo: 1, answer: { kind: 'dont_know' }, answerHash: 'h' });
-    wrapped(log, /insert into challenge_attempts .* 'pending'\) on conflict do nothing/);
+    wrapped(log, /insert into challenge_attempts .* 'pending', \$\d+\) on conflict do nothing/);
     await s.session(userId, randomUUID(), true);
     wrapped(log, /from challenge_sessions s where s.id = \$\d+ and s.user_id = \$\d+ for update of s/);
     await s.expire(userId, randomUUID());

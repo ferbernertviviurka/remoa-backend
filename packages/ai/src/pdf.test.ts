@@ -13,6 +13,22 @@ describe('readPdfText (D-581)', () => {
     expect(text).toContain('Diureticos');
   });
 
+  it('D-1568: pdf.js text wins over longer byte-regex noise once pdf.js opens the file', async () => {
+    const noise = new TextEncoder().encode(`\n% (${'Xqzw Jvkp Mbtr '.repeat(40)})\n`);
+    const pdf = compressedPdf(lines);
+    const bytes = new Uint8Array([...pdf, ...noise]);
+    expect(pdfText(bytes).length).toBeGreaterThan(200);
+    const text = await readPdfText(bytes);
+    expect(text).toContain('fracao de ejecao reduzida');
+    expect(text).not.toContain('Xqzw');
+  });
+
+  it('D-1568: a word hyphenated at the line end is joined, so a quote of it passes the literal check', async () => {
+    const text = await readPdfText(compressedPdf(['Insuficiencia cardiaca com fracao de eje-', 'cao reduzida e COVID-', '19']));
+    expect(text).toContain('fracao de ejecao reduzida');
+    expect(text).toContain('COVID-');
+  });
+
   it('falls back to the literal strings when pdf.js cannot open the file', async () => {
     expect(await readPdfText(new TextEncoder().encode('%PDF-1.4 (Sepse e choque septico exige noradrenalina) Tj'))).toContain('noradrenalina');
   });

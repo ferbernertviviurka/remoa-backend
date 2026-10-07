@@ -27,6 +27,7 @@ import {
   type ItemRow, type SessionRow, type SessionStore,
 } from '../challenge-ai/session';
 import { generateSummary, listSummaries, type GenerateSummaryInput } from '../challenge-ai/summary';
+import { ADVICE_BELOW, scorePercent, studyAdviceSchema, writeAdvice, type AdviceCandidates, type StudyAdvice } from '../challenge-ai/advice';
 import { recordAttempt as recordReview } from '../review/record-attempt';
 
 // G25 (F32) T6: HTTP for "Desafio com IA" and "Resumo com IA" (FR-36–FR-52, D-1605, D-1611).
@@ -47,6 +48,11 @@ export const challengeReportSchema = z
     format: z.enum(challengeFormats),
     status: z.enum(challengeSessionStatuses),
     total: z.number().int().nonnegative(),
+    /** D-1567: share answered right (a partial counts half) over the graded questions. */
+    percent: z.number().int().min(0).max(100),
+    /** D-1567: `totalMs` is the session's wall clock (start to finish); `avgMs` the mean time on a question that has one. */
+    timing: z.object({ totalMs: z.number().int().nonnegative().nullable(), avgMs: z.number().int().nonnegative().nullable() }).strict(),
+    advice: studyAdviceSchema.nullable(),
     score: z.object({
       correct: z.number().int().nonnegative(), partial: z.number().int().nonnegative(), incorrect: z.number().int().nonnegative(),
       pending: z.number().int().nonnegative(), unanswered: z.number().int().nonnegative(),
@@ -64,6 +70,7 @@ export const challengeReportSchema = z
       feedback: z.string().max(2000).nullable(),
       manipulation: z.boolean(),
       disputed: z.boolean(),
+      elapsedMs: z.number().int().nonnegative().nullable(),
     }).strict()).max(20),
   })
   .strict();
@@ -126,7 +133,7 @@ export type ChallengeAiService = {
 export type StoredAttempt = {
   id: string; itemId: string; attemptNo: number; answer: AiAnswerInput; gradedBy: GradedBy; verdict: Verdict | null; feedback: string | null;
   hint: string | null; manipulation: boolean; covered: string[]; missing: string[]; criticalError: boolean; confidence: number | null;
-  model: string | null; promptVersion: string | null; rating: Grade | null; disputed: boolean;
+  model: string | null; promptVersion: string | null; rating: Grade | null; disputed: boolean; elapsedMs?: number | null;
 };
 
 /** What the grader needs from the reference, resolved on the server from `reference_ref`. Lives only inside one request. */
@@ -153,6 +160,11 @@ export type DataPort = {
   /** Appends the graded row (same attempt_no as the pending one). null = that attempt was graded already (a concurrent request won). */
   saveGraded(userId: string, itemId: string, g: GradedAttempt): Promise<string | null>;
   saveScore(userId: string, sessionId: string, score: ScoreRow): Promise<void>;
+  /** D-1567: the advice saved at the first finish (null = none yet). */
+  advice(userId: string, sessionId: string): Promise<StudyAdvice | null>;
+  saveAdvice(userId: string, sessionId: string, advice: StudyAdvice): Promise<void>;
+  /** D-1567: the cards behind the missed questions and the maps the student can open (own, not archived, plus the ready library). */
+  adviceCandidates(userId: string, boardId: string | null, missed: { stem: string; cardId: string | null; bankId: string | null }[]): Promise<AdviceCandidates>;
   /** D-1605: flips `disputed` false -> true and nothing else. */
   dispute(userId: string, attemptId: string): Promise<Result<{ attemptId: string; disputed: true }>>;
   bank(userId: string, q: BankQuery): Promise<unknown[]>;
@@ -176,6 +188,7 @@ export type Io = {
   generate: (input: GenerateInput) => Promise<Result<GenerateOutput>>;
   summarize: typeof generateSummary;
   summaries: typeof listSummaries;
+  advise: typeof writeAdvice;
   now: () => Date;
 };
 
@@ -373,12 +386,13 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
         return pend ? [{ row, pend, mine }] : [];
       });
       if (waiting.length) {
-        const jobs: { row: ItemRow; input: GradeInput }[] = [];
+        const jobs: { row: ItemRow; input: GradeInput; elapsedMs?: number }[] = [];
         for (const w of waiting) {
           const ref = await io.data.reference(userId, s, toServerItem(w.row));
           if (!ref) continue;
           jobs.push({
             row: w.row,
+            elapsedMs: w.pend.elapsedMs ?? undefined,
             input: {
               userId, mode: modeOf(s), item: withReference(toServerItem(w.row), ref), answer: w.pend.answer,
               card: w.row.cardId ? await io.data.cardDue(userId, w.row.cardId, w.row.subId || '', now) : null, history: w.mine.map(toPrior),
@@ -392,11 +406,11 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
           const outs = await io.gradeBatch(chunk.map((j) => j.input), { requestId });
           for (const [k, o] of outs.entries()) {
             if (!o.ok || o.data.gradedBy === 'pending') continue;
-            const row = chunk[k]!.row;
+            const { row, elapsedMs } = chunk[k]!;
             const saved = await io.data.saveGraded(userId, row.id, o.data);
             if (saved && o.data.verdict && !o.data.canRetry) await io.data.afterGrade(userId, {
               cardId: row.cardId, subId: row.subId || '', bankId: row.bankId, itemType: row.type, schedule: o.data.schedule, rating: o.data.rating,
-              verdict: o.data.verdict, attemptId: saved, now,
+              verdict: o.data.verdict, attemptId: saved, elapsedMs, now,
             });
           }
         }
@@ -413,20 +427,40 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
         if (!final) score.unanswered++;
         else if (!final.verdict) score.pending++;
         else score[final.verdict]++;
+        // the time sits on the student's own rows (pending); retries add up
+        const timed = mine.filter((a) => a.gradedBy === 'pending' && typeof a.elapsedMs === 'number');
         return {
           itemId: row.id, position: row.position, type: pub.type, stem: pub.stem, attemptId: final?.id ?? null, attemptNo: final?.attemptNo ?? null,
           verdict: final?.verdict ?? null, gradedBy: final?.gradedBy ?? null, rating: final?.rating ?? null, feedback: final?.feedback ?? null,
           manipulation: final?.manipulation ?? false, disputed: final?.disputed ?? false,
+          elapsedMs: timed.length ? timed.reduce((n, a) => n + (a.elapsedMs ?? 0), 0) : null,
         };
       });
 
+      const finishedAt = s.finishedAt ?? now;
       if (s.status !== 'expired') {
         await io.tx(userId, (st) => (s.status === 'active' ? st.moveTo(userId, sessionId, rows.length, now) : Promise.resolve()));
         await io.data.saveScore(userId, sessionId, { correct: score.correct, partial: score.partial, incorrect: score.incorrect, pending: score.pending });
       }
+      const percent = scorePercent(score, rows.length - score.pending);
+      const times = items.flatMap((i) => (i.elapsedMs === null ? [] : [i.elapsedMs]));
+      const timing = {
+        totalMs: Math.max(0, finishedAt.getTime() - s.startedAt.getTime()),
+        avgMs: times.length ? Math.round(times.reduce((a, b) => a + b, 0) / times.length) : null,
+      };
+      // D-1567: under ADVICE_BELOW the model points to cards and maps once; later finishes read what was saved
+      let advice = await io.data.advice(userId, sessionId);
+      const missed = items.filter((i) => i.verdict === 'incorrect' || i.verdict === 'partial' || i.attemptId === null);
+      if (!advice && percent < ADVICE_BELOW && missed.length && s.status !== 'expired') {
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        const candidates = await io.data.adviceCandidates(userId, s.boardId, missed.map((i) => ({ stem: i.stem, cardId: byId.get(i.itemId)?.cardId ?? null, bankId: byId.get(i.itemId)?.bankId ?? null })));
+        advice = await io.advise(candidates, percent, requestId);
+        await io.data.saveAdvice(userId, sessionId, advice);
+      }
       return ok({
         // D-1566: a generated session finished early counts the questions it built, not the n it was asked for
-        sessionId: s.id, boardId: s.boardId, format: s.format, status: s.status === 'active' ? 'finished' : s.status, total: rows.length, score, items,
+        sessionId: s.id, boardId: s.boardId, format: s.format, status: s.status === 'active' ? 'finished' : s.status, total: rows.length, percent, timing,
+        advice, score, items,
       } satisfies ChallengeReport);
     },
 
@@ -462,13 +496,14 @@ const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : nul
 const clip = (s: string, n = 1500) => s.slice(0, n);
 
 const ATTEMPT_COLUMNS = sql`id, item_id, attempt_no, answer, verdict, covered, missing, critical_error, manipulation, feedback, hint, confidence, graded_by, model,
-  prompt_version, rating, disputed`;
+  prompt_version, rating, disputed, elapsed_ms`;
 const toStored = (r: Raw): StoredAttempt => ({
   id: String(r.id), itemId: String(r.item_id), attemptNo: Number(r.attempt_no), answer: aiAnswerInputSchema.parse(json(r.answer)), gradedBy: r.graded_by as GradedBy,
   verdict: (r.verdict as Verdict | null) ?? null, feedback: (r.feedback as string | null) ?? null, hint: (r.hint as string | null) ?? null,
   manipulation: Boolean(r.manipulation), covered: strs(r.covered), missing: strs(r.missing), criticalError: Boolean(r.critical_error),
   confidence: r.confidence === null || r.confidence === undefined ? null : Number(r.confidence), model: (r.model as string | null) ?? null,
   promptVersion: (r.prompt_version as string | null) ?? null, rating: (r.rating as Grade | null) ?? null, disputed: Boolean(r.disputed),
+  elapsedMs: r.elapsed_ms === null || r.elapsed_ms === undefined ? null : Number(r.elapsed_ms),
 });
 
 export const dbData: DataPort = {
@@ -562,6 +597,44 @@ export const dbData: DataPort = {
     await invalidate('challenge.finished', { userId });
   },
 
+  advice: (userId, sessionId) => run(userId, async (tx) => {
+    const [r] = await exec(tx, sql`select recommendations from challenge_sessions where id = ${sessionId} and user_id = ${userId}`);
+    const parsed = studyAdviceSchema.safeParse(json(r?.recommendations ?? null));
+    return parsed.success ? parsed.data : null;
+  }),
+
+  saveAdvice: async (userId, sessionId, advice) => {
+    await run(userId, (tx) => asServer(tx, sql`update challenge_sessions set recommendations = ${JSON.stringify(advice)}::jsonb
+      where id = ${sessionId} and user_id = ${userId} and recommendations is null`));
+  },
+
+  adviceCandidates: (userId, boardId, missed) => run(userId, async (tx) => {
+    const bankIds = missed.flatMap((m) => (m.bankId ? [m.bankId] : []));
+    const bank = bankIds.length
+      ? await asServer<Raw>(tx, sql`select id, card_ids from question_bank where user_id = ${userId} and id = any(${pgArray(bankIds, 'uuid')})`)
+      : [];
+    const cardsOf = new Map(bank.map((b) => [String(b.id), strs(b.card_ids)]));
+    const withCards = missed.map((m) => ({ stem: m.stem, cardIds: m.cardId ? [m.cardId] : (m.bankId ? cardsOf.get(m.bankId) : undefined) ?? [] }));
+    const ids = [...new Set(withCards.flatMap((m) => m.cardIds))];
+    const cards = ids.length ? await exec(tx, sql`select id, title from cards where id = any(${pgArray(ids, 'uuid')}) and deleted_at is null`) : [];
+    const [board] = boardId ? await exec(tx, sql`select title, area, source_board_id from boards where id = ${boardId}`) : [];
+    const area = board?.area ?? 'CM';
+    const own = await exec(tx, sql`select id, title from boards where user_id = ${userId} and archived_at is null and area = ${area}
+      and id is distinct from ${boardId}
+      and (${board?.source_board_id ?? null}::uuid is null or source_board_id is distinct from ${board?.source_board_id ?? null}::uuid)
+      order by updated_at desc limit 20`);
+    const ready = await exec(tx, sql`select b.id, b.title from boards b where b.status = 'seed_approved' and b.area = ${area}
+      and b.id is distinct from ${board?.source_board_id ?? null}
+      and not exists (select 1 from boards c where c.user_id = ${userId} and c.source_board_id = b.id and c.archived_at is null)
+      order by b.title limit 30`);
+    return {
+      subject: text(board?.title) ?? 'Desafio',
+      missed: withCards,
+      cards: cards.map((c) => ({ id: String(c.id), title: String(c.title ?? '') })).filter((c) => c.title),
+      maps: [...own.map((b) => ({ id: String(b.id), title: String(b.title), ready: false })), ...ready.map((b) => ({ id: String(b.id), title: String(b.title), ready: true }))],
+    };
+  }),
+
   dispute: async (userId, attemptId) => {
     const result = await run(userId, async (tx) => {
       const [a] = await exec(tx, sql`select graded_by, disputed from challenge_attempts where id = ${attemptId} and user_id = ${userId}`);
@@ -601,17 +674,27 @@ export const dbData: DataPort = {
   afterGrade: async (userId, spec) => {
     const { schedule, cardId, verdict, rating } = spec;
     if (schedule && cardId && rating && verdict) {
-      if (schedule.apply) {
-        const mode = (challengeModes as readonly string[]).includes(spec.itemType) ? spec.itemType as (typeof challengeModes)[number] : 'hidden_card';
-        const reviewed = await recordReview({
+      const mode = (challengeModes as readonly string[]).includes(spec.itemType) ? spec.itemType as (typeof challengeModes)[number] : 'hidden_card';
+      const inputKind = spec.itemType === 'objective' ? 'mcq' : 'text';
+      const durationMs = spec.elapsedMs ?? 0;
+      const reviewed = schedule.apply
+        ? await recordReview({
           id: spec.attemptId, userId, cardId, subId: spec.subId || null, sessionId: null, mode,
-          inputKind: spec.itemType === 'objective' ? 'mcq' : 'text', answerText: null, verdict: null, grade: rating, gradeOverridden: false,
-          durationMs: spec.elapsedMs ?? 0, createdAt: spec.now,
+          inputKind, answerText: null, verdict: null, grade: rating, gradeOverridden: false, durationMs, createdAt: spec.now,
+        })
+        : null;
+      if (!reviewed?.ok) {
+        // D-1567: FSRS did not move (card not due, or a sub the scheduler does not know: edge, case stage, flow without step), but the
+        // answer still counts in Revisar, Progresso and the streak. A card deleted meanwhile inserts nothing.
+        await run(userId, async (tx) => {
+          await tx.execute(sql`insert into attempts (id, user_id, card_id, sub_id, mode, input_kind, grade, duration_ms, created_at)
+            select ${spec.attemptId}, ${userId}, c.id, ${spec.subId}, ${mode}::challenge_mode, ${inputKind}::input_kind,
+              ${grades.indexOf(rating) + 1}, ${durationMs}, ${spec.now.toISOString()}::timestamptz
+            from cards c where c.id = ${cardId}
+            on conflict (id) do nothing`);
+          if (schedule.anticipate) await tx.execute(sql`update fsrs_state set due = now()
+            where user_id = ${userId} and card_id = ${cardId} and sub_id = ${spec.subId} and due > now()`);
         });
-        if (!reviewed.ok) return;
-      } else if (schedule.anticipate) {
-        await run(userId, (tx) => tx.execute(sql`update fsrs_state set due = now()
-          where user_id = ${userId} and card_id = ${cardId} and sub_id = ${spec.subId} and due > now()`));
         await invalidate('review.answered', { userId });
       }
     }
@@ -695,6 +778,7 @@ export const dbIo = (): Io => ({
   generate: generateQuestions,
   summarize: generateSummary,
   summaries: listSummaries,
+  advise: writeAdvice,
   now: () => new Date(),
 });
 

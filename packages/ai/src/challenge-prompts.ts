@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const CHALLENGE_PROMPT_IDS = ['gerar-perguntas-discursivas', 'gerar-questoes-objetivas', 'corrigir-resposta', 'resumir-mapa'] as const;
+export const CHALLENGE_PROMPT_IDS = ['gerar-perguntas-discursivas', 'gerar-questoes-objetivas', 'corrigir-resposta', 'resumir-mapa', 'recomendar-estudo'] as const;
 export type ChallengePromptId = (typeof CHALLENGE_PROMPT_IDS)[number];
 
 export const PROMPT_PARTS = ['PAPEL', 'CONTEXTO E PÚBLICO', 'FORMATO DE SAÍDA', 'EXEMPLO', 'LIMITES'] as const;

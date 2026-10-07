@@ -10,6 +10,7 @@ import type { Env } from '../app';
 import { createApp } from '../app';
 import { answerHash as sessionHash, type BankRow, type ItemRow, type SessionRow, type SessionStore } from '../challenge-ai/session';
 import type { CardDue } from '../challenge-ai/grade';
+import type { StudyAdvice } from '../challenge-ai/advice';
 import { gradeAnswer, gradeBatch, type GradeDeps } from '../challenge-ai/grade';
 import type { Reservation } from '../billing/quota';
 import {
@@ -48,7 +49,7 @@ const cfg = (over: Partial<ChallengeConfig> = {}): ChallengeConfig => ({
 });
 
 const publicSession = (over: Record<string, unknown> = {}) => ({
-  id: ID, boardId: BOARD, format: 'generated', status: 'active', total: 1, position: 0, expiresAt: T0, aiUnits: 1,
+  id: ID, boardId: BOARD, format: 'generated', status: 'active', total: 1, position: 0, startedAt: T0, expiresAt: T0, aiUnits: 1,
   current: { id: ID, position: 0, type: 'discursive', stem: 'Enunciado sintético' }, ...over,
 });
 
@@ -277,11 +278,11 @@ describe('rotas /v1/challenge-ai: quem chama e quanto', () => {
 
 type Mem = {
   sessions: (SessionRow & { finishedAt: Date | null })[]; items: ItemRow[]; rows: (StoredAttempt & { answerHash: string })[]; disputes: string[]; scores: unknown[];
-  grades: AfterGrade[]; refs: Map<string, Reference>;
+  grades: AfterGrade[]; refs: Map<string, Reference>; advice: Map<string, StudyAdvice>;
 };
 
 function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replies?: (Veredito | Error)[]; units?: number; limitBatch?: number; card?: CardDue } = {}) {
-  const mem: Mem = { sessions: [], items: [], rows: [], disputes: [], scores: [], grades: [], refs: new Map(Object.entries(o.refs ?? {})) };
+  const mem: Mem = { sessions: [], items: [], rows: [], disputes: [], scores: [], grades: [], refs: new Map(Object.entries(o.refs ?? {})), advice: new Map() };
   const counts = (id: string) => {
     const its = mem.items.filter((i) => i.sessionId === id);
     const s = mem.sessions.find((x) => x.id === id)!;
@@ -326,6 +327,7 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
       mem.rows.push({
         id, itemId: a.itemId, attemptNo: a.attemptNo, answer: a.answer, answerHash: a.answerHash, gradedBy: 'pending', verdict: null, feedback: null, hint: null,
         manipulation: false, covered: [], missing: [], criticalError: false, confidence: null, model: null, promptVersion: null, rating: null, disputed: false,
+        elapsedMs: a.elapsedMs ?? null,
       });
       return { id };
     },
@@ -350,6 +352,9 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
       return id;
     },
     saveScore: async (_u, _s, score) => void mem.scores.push(score),
+    advice: async (_u, sid) => mem.advice.get(sid) ?? null,
+    saveAdvice: async (_u, sid, a) => void (mem.advice.has(sid) || mem.advice.set(sid, a)),
+    adviceCandidates: async (_u, _b, missed) => ({ subject: 'Mapa', missed: missed.map((m) => ({ stem: m.stem, cardIds: [] })), cards: [], maps: [] }),
     dispute: async (_u, id) => {
       mem.disputes.push(id);
       return ok({ attemptId: id, disputed: true as const });
@@ -386,6 +391,7 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     generate,
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
+    advise: vi.fn<Io['advise']>(async () => ({ message: 'Revise o gatilho.', cards: [], maps: [] })),
     now: () => T0,
   };
   return { io, mem, store, model, reserve, generate, service: createChallengeAiService(io) };
@@ -600,6 +606,19 @@ describe('answers (serviço): só o resultado público', () => {
     expect(f.io.gradeBatch).toHaveBeenCalledTimes(1);
     expect(f.mem.scores).toEqual([{ correct: 0, partial: 1, incorrect: 0, pending: 0 }]);
     expect(f.mem.rows.map((r) => r.gradedBy)).toEqual(['pending', 'ai']);
+  });
+
+  it('D-1567: the report has the time per question, the average and the percent; under 70% the advice is written once and saved', async () => {
+    const q = discursive();
+    const f = fixture({ bank: [q], refs: { [q.id]: ref({ expectedAnswer: 'Referência sintética longa o bastante' }) }, replies: [reply({ veredito: 'parcial' })] });
+    const { app, sessionId, firstItem } = await started(f, [q], { grading: 'end' });
+    await send(app, 'POST', `/sessions/${sessionId}/answers`, { itemId: firstItem, answer: { kind: 'text', text: 'Resposta sintética com tamanho suficiente' }, elapsedMs: 4_000_000 });
+    const report = async () => challengeReportSchema.parse(((await (await send(app, 'POST', `/sessions/${sessionId}/finish`)).json()) as { data: unknown }).data);
+    const first = await report();
+    expect(first).toMatchObject({ percent: 50, timing: { totalMs: 0, avgMs: 3_600_000 }, advice: { message: 'Revise o gatilho.' } });
+    expect(first.items[0]!.elapsedMs).toBe(3_600_000); // capped at 1 h
+    expect((await report()).advice).toEqual(first.advice);
+    expect(f.io.advise).toHaveBeenCalledTimes(1);
   });
 
   it('errors of the grader become the project error codes; a client rating is a 422 and never reaches the grader', async () => {

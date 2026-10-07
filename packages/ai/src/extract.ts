@@ -25,11 +25,14 @@ export type Extracted = { cards: ExtractedCard[]; edges: EdgeDraft[] };
 /** Whole map generation, including every chunk, must finish inside this budget (F05). */
 export const GENERATE_BUDGET_MS = 10 * 60 * 1000;
 
-/** Split long text into sections of about 1 500 characters, breaking on blank lines. */
+/**
+ * Split long text into sections of about 1 500 characters, breaking on blank lines. A block longer than `size` breaks on its
+ * lines (D-1568: PDF text has almost no blank lines; one 27k block was cut to the model's 8k and the rest never sent).
+ */
 export function chunkText(text: string, size = 1500): string[] {
   const parts: string[] = [];
   let buf = '';
-  for (const block of text.split(/\n\s*\n/)) {
+  for (const block of text.split(/\n\s*\n/).flatMap((b) => (b.length > size ? b.split('\n') : [b]))) {
     if ((buf + block).length > size && buf) {
       parts.push(buf.trim());
       buf = '';
@@ -305,7 +308,7 @@ export async function extractWithMeta(
     meta: { model: 'offline-extract', promptVersion: EXTRACT_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: 0, ...(error ? { error } : {}) },
   });
   if (aiMode() !== 'live') return offline();
-  const truncated = text.length > MAX_SOURCE_CHARS;
+  let truncated = text.length > MAX_SOURCE_CHARS;
   try {
     let merged: Extracted = { cards: [], edges: [] };
     const parts: Extracted[] = [];
@@ -334,6 +337,11 @@ export async function extractWithMeta(
         parts.push(i === 0 ? done.data.extracted : retag(done.data.extracted, `k${i}-`));
         merged = mergeDrafts(parts);
       } catch (e) {
+        // D-1568: the app's own minute/day AI limit mid-book keeps the cards already found (rest of the text not read: `truncated`).
+        if (e instanceof AiError && e.local && (e.code === 'rate_limited' || e.code === 'quota_exceeded') && merged.cards.length) {
+          truncated = true;
+          break;
+        }
         if (!(e instanceof AiError && e.code === 'invalid_output')) throw e;
         tokensIn += e.usage?.tokensIn ?? 0;
         tokensOut += e.usage?.tokensOut ?? 0;

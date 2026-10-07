@@ -138,6 +138,8 @@ export const aiChallengeSessionPublicSchema = z
     status: z.enum(challengeSessionStatuses),
     total: z.number().int().nonnegative(),
     position: z.number().int().nonnegative(),
+    /** Session clock on the screen (D-1567). */
+    startedAt: timestampSchema,
     expiresAt: timestampSchema,
     current: aiChallengeItemPublicSchema.nullable(),
     /** FR-4: AI gradings this session will use, shown before it starts. */

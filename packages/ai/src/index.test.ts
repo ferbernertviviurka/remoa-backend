@@ -138,6 +138,14 @@ describe('rubric and extract', () => {
   it('chunks long text', () => {
     expect(chunkText(`${'a'.repeat(20)}\n\n${'b'.repeat(20)}`, 25).length).toBe(2);
   });
+
+  it('D-1568: a block with no blank line is split on its lines, so nothing past the first chunk is lost', () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `linha ${i} do capitulo`);
+    const chunks = chunkText(lines.join('\n'), 1000);
+    expect(chunks.length).toBeGreaterThan(5);
+    expect(chunks.every((c) => c.length <= 1000)).toBe(true);
+    expect(chunks.at(-1)).toContain('linha 299');
+  });
 });
 
 describe('openrouter parse', () => {

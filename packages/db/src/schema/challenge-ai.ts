@@ -100,6 +100,8 @@ export const challengeSessions = pgTable('challenge_sessions', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
   score: jsonb('score').$type<{ correct: number; partial: number; incorrect: number; pending: number }>(),
+  /** D-1567: study advice written once at finish when the score is under 70% (cards and maps by id, reasons). Server-owned. */
+  recommendations: jsonb('recommendations'),
   ...timestamps,
 }, (t) => [
   unique('challenge_sessions_id_user_uq').on(t.id, t.userId),
@@ -160,6 +162,8 @@ export const challengeAttempts = pgTable('challenge_attempts', {
   model: text('model'),
   promptVersion: text('prompt_version'),
   latencyMs: integer('latency_ms'),
+  /** D-1567: time the student took on this attempt (client clock, capped at 1 h); only on the pending row. */
+  elapsedMs: integer('elapsed_ms'),
   rating: text('rating', { enum: grades }),
   disputed: boolean('disputed').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`now()`),

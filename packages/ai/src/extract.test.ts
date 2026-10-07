@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { resetUsage } from './client';
 import { extractOffline, extractWithMeta, literalIn } from './extract';
 
 afterEach(() => { delete process.env.OPENROUTER_API_KEY; });
@@ -86,6 +87,24 @@ describe('extractWithMeta over several chunks', () => {
     const fetchImpl = (async () => Response.json({ model: 'm', choices: [{ message: { content: JSON.stringify(replies.shift()) } }] })) as unknown as typeof fetch;
     const r = await extractWithMeta(`${a}\n\n${b}`, 'fonte', fetchImpl);
     expect(r.extracted.cards.map((c) => c.ref)).toEqual(['c1', 'k1-c1']);
+  });
+
+  it('D-1568: the app minute limit mid-text keeps the cards already found (truncated), instead of failing the map', async () => {
+    process.env.OPENROUTER_API_KEY = 'k';
+    process.env.AI_RPM_LIMIT = '1';
+    resetUsage();
+    try {
+      const a = 'Sepse é disfunção orgânica por resposta desregulada à infecção. '.repeat(60);
+      const b = 'Choque séptico exige vasopressor para manter a pressão arterial média. '.repeat(60);
+      const first = { cards: [{ ref: 'c1', type: 'concept', title: 'Sepse', question: 'O que é?', answer: 'Disfunção', sourceExcerpt: 'Sepse é disfunção orgânica', payload: {} }] };
+      const r = await extractWithMeta(`${a}\n\n${b}`, 'fonte', reply(JSON.stringify(first)));
+      expect(r.extracted.cards.map((c) => c.title)).toEqual(['Sepse']);
+      expect(r.meta).toMatchObject({ model: 'm', truncated: true });
+      expect(r.meta.error).toBeUndefined();
+    } finally {
+      delete process.env.AI_RPM_LIMIT;
+      resetUsage();
+    }
   });
 });
 

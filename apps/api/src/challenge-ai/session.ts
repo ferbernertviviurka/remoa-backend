@@ -33,7 +33,7 @@ export type BankRow = {
 };
 export type SessionRow = {
   id: string; userId: string; boardId: string | null; format: ChallengeFormat; status: 'active' | 'finished' | 'expired'; position: number;
-  expiresAt: Date; params: ChallengeConfig; total: number; aiUnits: number;
+  startedAt: Date; finishedAt?: Date | null; expiresAt: Date; params: ChallengeConfig; total: number; aiUnits: number;
 };
 export type ItemRow = {
   id: string; sessionId: string; position: number; kind: 'card' | 'bank'; cardId: string | null; subId: string; bankId: string | null;
@@ -44,7 +44,7 @@ export type NewItem = Omit<ItemRow, 'sessionId' | 'payloadPublic' | 'referenceRe
 };
 export type NewSession = { id: string; userId: string; boardId: string; scope: ChallengeScope; format: ChallengeFormat; params: ChallengeConfig; startedAt: Date; expiresAt: Date };
 export type AttemptRow = { id: string; attemptNo: number; answerHash: string };
-export type NewAttempt = { itemId: string; userId: string; attemptNo: number; answer: AiAnswerInput; answerHash: string };
+export type NewAttempt = { itemId: string; userId: string; attemptNo: number; answer: AiAnswerInput; answerHash: string; elapsedMs?: number };
 
 /** The data access of a session. `sessionStore(tx)` is the SQL one; tests pass an in-memory one. */
 export type SessionStore = {
@@ -73,7 +73,7 @@ export type SessionStore = {
 /** The only shape a caller gets. Parses (strict): a stored payload carrying any reference field throws instead of leaking. */
 export function toPublic(s: SessionRow, current: unknown): AiChallengeSessionPublic {
   return aiChallengeSessionPublicSchema.parse({
-    id: s.id, boardId: s.boardId, format: s.format, status: s.status, total: s.total, position: s.position, expiresAt: s.expiresAt,
+    id: s.id, boardId: s.boardId, format: s.format, status: s.status, total: s.total, position: s.position, startedAt: s.startedAt, expiresAt: s.expiresAt,
     current: s.status === 'active' && current != null ? current : null, aiUnits: s.aiUnits,
   });
 }
@@ -264,7 +264,7 @@ export async function startSession(store: SessionStore, userId: string, config: 
   const expiresAt = new Date(now.getTime() + challengeLimits(opts.env).sessionTtlMin * 60_000);
   await store.createSession({ id, userId, boardId: cfg.boardId, scope: cfg.scope, format: cfg.format, params: cfg, startedAt: now, expiresAt }, items);
   const session: SessionRow = {
-    id, userId, boardId: cfg.boardId, format: cfg.format, status: 'active', position: 0, expiresAt, params: cfg,
+    id, userId, boardId: cfg.boardId, format: cfg.format, status: 'active', position: 0, startedAt: now, expiresAt, params: cfg,
     total: cfg.format === 'generated' ? Math.max(cfg.n, items.length) : items.length,
     aiUnits: items.filter((i) => (AI_GRADED_TYPES as readonly string[]).includes(i.type)).length,
   };
@@ -326,6 +326,8 @@ export async function acceptAnswer(
   return ok({ session: s, item: toServerItem(row) });
 }
 
+/** D-1567: a tab left open overnight does not make the average meaningless. */
+const ELAPSED_CAP_MS = 3_600_000;
 const ANSWER_KINDS: Record<AiItemType, readonly AiAnswerInput['kind'][]> = {
   objective: ['choice', 'dont_know'], next_step: ['order', 'dont_know'], occlusion: ['label', 'dont_know'],
   discursive: ['text', 'dont_know'], hidden_card: ['text', 'dont_know'], edge: ['text', 'dont_know'], case: ['text', 'dont_know'],
@@ -343,7 +345,7 @@ export async function recordAttempt(
 ): Promise<Result<RecordedAttempt>> {
   const parsed = parseWith(aiAnswerItemInputSchema, input);
   if (!parsed.ok) return parsed;
-  const { itemId, answer } = parsed.data;
+  const { itemId, answer, elapsedMs } = parsed.data;
   const open = await acceptAnswer(store, userId, sessionId, itemId, now);
   if (!open.ok) return open;
   const { session, item } = open.data;
@@ -358,7 +360,7 @@ export async function recordAttempt(
   if (last && last.answerHash === hash) return ok({ attemptId: last.id, attemptNo: last.attemptNo, itemId });
   const attemptNo = (last?.attemptNo ?? 0) + 1;
   if (attemptNo > (session.params.preset === 'mock' ? 1 : CHALLENGE_MAX_ATTEMPTS)) return err('conflict', 'no_attempts_left');
-  const row = await store.appendAttempt({ itemId, userId, attemptNo, answer, answerHash: hash });
+  const row = await store.appendAttempt({ itemId, userId, attemptNo, answer, answerHash: hash, elapsedMs: elapsedMs === undefined ? undefined : Math.min(elapsedMs, ELAPSED_CAP_MS) });
   if (!row) return err('conflict', 'attempt_exists');
   return ok({ attemptId: row.id, attemptNo, itemId });
 }
@@ -433,7 +435,7 @@ export function sessionStore(tx: Tx): SessionStore {
         on conflict (session_id, position) do nothing`);
     },
     async session(userId, sessionId, lock) {
-      const [r] = await asServer<Raw>(tx, sql`select s.id, s.user_id, s.board_id, s.format, s.status, s.position, s.expires_at, s.params,
+      const [r] = await asServer<Raw>(tx, sql`select s.id, s.user_id, s.board_id, s.format, s.status, s.position, s.started_at, s.finished_at, s.expires_at, s.params,
           greatest((select count(*)::int from challenge_items i where i.session_id = s.id),
             case when s.format = 'generated' and s.status = 'active' then (s.params->>'n')::int else 0 end) as total,
           (select count(*)::int from challenge_items i where i.session_id = s.id and i.type = any(${pgArray(AI_GRADED_TYPES, 'text')})) as ai_units
@@ -441,7 +443,7 @@ export function sessionStore(tx: Tx): SessionStore {
       if (!r) return null;
       return {
         id: String(r.id), userId: String(r.user_id), boardId: (r.board_id as string | null) ?? null, format: r.format as ChallengeFormat,
-        status: r.status as SessionRow['status'], position: Number(r.position), expiresAt: date(r.expires_at), params: json(r.params) as ChallengeConfig,
+        status: r.status as SessionRow['status'], position: Number(r.position), startedAt: date(r.started_at), finishedAt: r.finished_at ? date(r.finished_at) : null, expiresAt: date(r.expires_at), params: json(r.params) as ChallengeConfig,
         total: Number(r.total), aiUnits: Number(r.ai_units),
       };
     },
@@ -476,8 +478,8 @@ export function sessionStore(tx: Tx): SessionStore {
       return r ? { id: String(r.id), attemptNo: Number(r.attempt_no), answerHash: String(r.answer_hash) } : null;
     },
     async appendAttempt(a) {
-      const [r] = await asServer<Raw>(tx, sql`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, graded_by)
-        values (${a.itemId}, ${a.userId}, ${a.attemptNo}, ${JSON.stringify(a.answer)}::jsonb, ${a.answerHash}, 'pending')
+      const [r] = await asServer<Raw>(tx, sql`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, graded_by, elapsed_ms)
+        values (${a.itemId}, ${a.userId}, ${a.attemptNo}, ${JSON.stringify(a.answer)}::jsonb, ${a.answerHash}, 'pending', ${a.elapsedMs ?? null})
         on conflict do nothing returning id`);
       await invalidate('challenge.finished', { userId: a.userId });
       return r ? { id: String(r.id) } : null;

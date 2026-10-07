@@ -33,7 +33,7 @@ describe('F30 FR-36: the public item never carries reference material', () => {
     expect(aiChallengeItemPublicSchema.safeParse(labelled).success).toBe(false);
     const flagged = { ...objective, alternatives: objective.alternatives.map((a, i) => ({ ...a, correct: i === 1 })) };
     expect(aiChallengeItemPublicSchema.safeParse(flagged).success).toBe(false);
-    const session = { id: id(9), boardId: id(8), format: 'generated', status: 'active', total: 5, position: 0, expiresAt: new Date().toISOString(), aiUnits: 5 };
+    const session = { id: id(9), boardId: id(8), format: 'generated', status: 'active', total: 5, position: 0, startedAt: new Date().toISOString(), expiresAt: new Date().toISOString(), aiUnits: 5 };
     expect(aiChallengeSessionPublicSchema.safeParse({ ...session, current: objective }).success).toBe(true);
     expect(aiChallengeSessionPublicSchema.safeParse({ ...session, current: { ...objective, correct_key: 'B' } }).success).toBe(false);
     expect(aiChallengeSessionPublicSchema.safeParse({ ...session, current: objective, expected_answer: 'x' }).success).toBe(false);
