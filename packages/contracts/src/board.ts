@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { areas, boardAccess, boardStatuses, cardTypes, mapStates } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
 import { cardSchema, cardSizeSchema } from './card';
+import { boardBadges, boardPathSchema } from './content';
 import { MAX_MATRIX_ITEMS_PER_BOARD, SHARE_PASSWORD_MAX, SHARE_PASSWORD_MIN } from './constants';
 
 // --- F17 access and matrix items (D-281, D-285–D-289) ---------------------------
@@ -49,6 +50,10 @@ export const boardSchema = z.object({
   shareUrl: z.string().url().nullable().optional(),
   /** F17 FR-16: set when the board is a copy made from a shared link (never the original's id or owner). */
   copiedFrom: z.object({ at: timestampSchema }).nullable().optional(),
+  /** F31 (CCR-080): trail of a ready map (and of its copies); absent/null = ordinary map. */
+  path: boardPathSchema.nullable().optional(),
+  /** F31 (D-1461): library seals, e.g. `top10_enamed`; only on seed boards. */
+  badges: z.array(z.enum(boardBadges)).optional(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 });

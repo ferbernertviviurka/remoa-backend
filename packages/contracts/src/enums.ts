@@ -21,15 +21,18 @@ export const importKinds = ['anki', 'pdf'] as const;
 export const jobStatuses = ['queued', 'running', 'done', 'failed'] as const;
 export const editorialStatuses = ['pending', 'approved', 'changes_requested', 'rejected'] as const;
 export const flagSources = ['ai', 'user_disagree'] as const;
-/** D-280/D-285: the 5 grandes áreas are a board label (Clínica Médica, Cirurgia, GO, Pediatria, Medicina Preventiva). */
-export const areas = ['CM', 'CIR', 'GO', 'PED', 'MP'] as const;
+/**
+ * D-280/D-285: the 5 grandes áreas are a board label (Clínica Médica, Cirurgia, GO, Pediatria, Medicina Preventiva).
+ * CCR-083 (D-1470): `OUTRO` = "Outro assunto" (non-medical map); never a matrix area, never offered in onboarding.
+ */
+export const areas = ['CM', 'CIR', 'GO', 'PED', 'MP', 'OUTRO'] as const;
 /** Areas with an Enamed matrix, coverage and seeds (MVP: CM only). Lists that mean "the matrix" iterate this, not `areas`. */
 export const matrixAreas = ['CM'] as const satisfies readonly Area[];
 /**
  * CCR-017 (D-572): every grande área with its availability, in UI order. `available: false` = the web shows "Em breve" and
- * the server refuses it where a user picks an area to study (onboarding). Names live in @remoa/strings (`boards.area.<id>`).
+ * the server refuses it where a user picks an area to study (onboarding). `OUTRO` is left out (D-1470). Names live in @remoa/strings (`boards.area.<id>`).
  */
-export const AREA_OPTIONS = areas.map((id) => ({ id, available: (matrixAreas as readonly string[]).includes(id) }));
+export const AREA_OPTIONS = areas.filter((id) => id !== 'OUTRO').map((id) => ({ id, available: (matrixAreas as readonly string[]).includes(id) }));
 export const isAreaAvailable = (a: Area) => (matrixAreas as readonly string[]).includes(a);
 /** D-281/D-285: `owner` = Só eu (no link) · `password` = Privado (link + senha) · `public` = Público (link). */
 export const boardAccess = ['owner', 'password', 'public'] as const;

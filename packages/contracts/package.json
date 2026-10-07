@@ -7,5 +7,5 @@
   "sideEffects": ["./src/mocks/*.ts"],
   "scripts": { "lint": "eslint .", "typecheck": "tsc --noEmit", "test": "vitest run --passWithNoTests" },
   "dependencies": { "zod": "^3.25.76" },
-  "devDependencies": {  }
+  "devDependencies": { "yaml": "^2.9.1" }
 }
