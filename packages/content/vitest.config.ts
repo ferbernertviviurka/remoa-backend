@@ -6,7 +6,7 @@ export default defineConfig({
     setupFiles: ['../../vitest.test-db.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/lint.ts', 'src/graph.ts', 'src/load.ts', 'src/images.ts', 'src/targets.ts'],
+      include: ['src/lint.ts', 'src/graph.ts', 'src/load.ts', 'src/images.ts', 'src/targets.ts', 'src/verify.ts'],
       thresholds: { lines: 90, statements: 90, functions: 90, branches: 85 },
     },
   },

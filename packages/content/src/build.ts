@@ -20,22 +20,34 @@ export function stableId(...parts: string[]): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${(8 | (parseInt(h[16]!, 16) & 3)).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
+/** FR-22 target share of `sustenta`, in %. */
+export const MIN_SUSTENTA_PCT = 98;
+
 /**
- * FR-28 publication gate: reasons the map cannot become `seed_approved` (empty = open). Needs a verifier verdict for every card with no
- * `contradiz`, and the physician's latest decision `aprovo` for every card. The build never publishes even when this is open (D-1475):
- * F10's publishBoard (reviewer with CRM) should call it for trail boards.
+ * FR-22: reasons the verifier result does not let the map go to review (empty = open). Every card needs a verdict for its current text
+ * (the CLI passes `currentVerdicts`, so a stale verdict counts as missing), none `contradiz`, and at least 98% `sustenta`.
  */
-export function publishGate(map: MapFile, verify: VerifyResult[], decisions: ContentReviewDecision[]): string[] {
+export function verifyGate(map: MapFile, verify: VerifyResult[]): string[] {
   const out: string[] = [];
   const verdict = new Map(verify.map((v) => [v.cardId, v.veredito]));
-  const decision = new Map(decisions.map((d) => [d.cardId, d.decisao])); // later lines win
   const contradiz = map.cards.filter((c) => verdict.get(c.id) === 'contradiz').map((c) => c.id);
   const unverified = map.cards.filter((c) => !verdict.has(c.id)).map((c) => c.id);
-  const unapproved = map.cards.filter((c) => decision.get(c.id) !== 'aprovo').map((c) => c.id);
+  const sustenta = map.cards.filter((c) => verdict.get(c.id) === 'sustenta').length;
   if (contradiz.length) out.push(`${contradiz.length} card(s) com contradiz: ${contradiz.join(', ')}`);
   if (unverified.length) out.push(`${unverified.length} card(s) sem verificação`);
-  if (unapproved.length) out.push(`${unapproved.length} de ${map.cards.length} card(s) sem "aprovo" do revisor`);
+  else if (sustenta * 100 < map.cards.length * MIN_SUSTENTA_PCT) out.push(`sustenta ${sustenta} de ${map.cards.length}, abaixo de ${MIN_SUSTENTA_PCT}%`);
   return out;
+}
+
+/**
+ * FR-28 publication gate: `verifyGate` plus the physician's latest decision `aprovo` for every card (empty = open). The build never
+ * publishes even when this is open (D-1475). In the DB the same rule holds by construction (P-672): the build only writes a trail
+ * board whose verify gate is open, and F10's publishBoard requires every card approved by the reviewer (the decision, with CRM).
+ */
+export function publishGate(map: MapFile, verify: VerifyResult[], decisions: ContentReviewDecision[]): string[] {
+  const decision = new Map(decisions.map((d) => [d.cardId, d.decisao])); // later lines win
+  const unapproved = map.cards.filter((c) => decision.get(c.id) !== 'aprovo').map((c) => c.id);
+  return [...verifyGate(map, verify), ...(unapproved.length ? [`${unapproved.length} de ${map.cards.length} card(s) sem "aprovo" do revisor`] : [])];
 }
 
 export type Put = (key: string, body: Buffer, contentType: string) => Promise<void>;
@@ -45,10 +57,11 @@ export type BuildOptions = LintOptions & {
   put?: Put;
   /** Anything but seed_draft is refused (FR-28). */
   status?: 'seed_draft' | 'seed_approved';
+  /** Current verdicts (FR-22): a seed_draft is only written with `verifyGate` open (P-672). */
   verify?: VerifyResult[];
   decisions?: ContentReviewDecision[];
 };
-export type BuildError = { code: 'lint' | 'publish_gate' | 'reviewer_only' | 'published' | 'owner_missing'; message: string; details?: string[] };
+export type BuildError = { code: 'lint' | 'verify_gate' | 'publish_gate' | 'reviewer_only' | 'published' | 'owner_missing'; message: string; details?: string[] };
 export type BuildStats = { boardId: string; created: boolean; cards: number; edges: number; prereqs: number; assets: number; removed: number };
 type Result<T> = { ok: true; data: T } | { ok: false; error: BuildError };
 const fail = (code: BuildError['code'], message: string, details?: string[]): Result<never> => ({ ok: false, error: { code, message, details } });
@@ -87,6 +100,9 @@ export async function buildMap(tx: postgres.TransactionSql, b: Bundle, opts: Bui
     if (reasons.length) return fail('publish_gate', 'portão de publicação fechado (FR-28)', reasons);
     return fail('reviewer_only', 'portão aberto, mas só o revisor com CRM publica, pela área editorial (F10, regra 6)');
   }
+  // P-672: the DB only gets cards the verifier sustained (FR-146: a map goes to review with lint and verify green).
+  const unverified = verifyGate(map, opts.verify ?? []);
+  if (unverified.length) return fail('verify_gate', 'content:verify não está verde (FR-22): rode pnpm content:verify', unverified);
 
   await tx`select pg_advisory_xact_lock(hashtext(${`content:${slug}`}))`;
   const [owner] = await tx`select 1 from auth.users where id = ${opts.ownerId}`;
