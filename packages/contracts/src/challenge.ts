@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { challengeModes, sessionKinds, type Grade } from './enums';
 import { idSchema, subIdSchema, timestampSchema } from './common';
-import { gradeSchema, intervalPreviewSchema, queueFilterSchema } from './review';
+import { gradeSchema, intervalPreviewSchema, queueFilterSchema, studyOrderSchema } from './review';
 import { graderVerdictSchema } from './ai';
 import { caseStageSchema, maskPointSchema } from './card';
 import { REVIEW_SESSION_MAX } from './constants';
@@ -128,6 +128,8 @@ export const startSessionInputSchema = z
     limit: z.number().int().min(1).max(REVIEW_SESSION_MAX).default(SESSION_SIZE),
     /** G15: daily sessions only; restrict the queue by boards/area/reasons, or `ahead`. */
     filter: queueFilterSchema.optional(),
+    /** F31 FR-10: board sessions; absent = trail order on trail maps. */
+    studyOrder: studyOrderSchema.optional(),
     /** CCR-019: stored in sessions.options; absent = DEFAULT_CHALLENGE_OPTIONS. `order` only matters for board sessions. */
     options: challengeOptionsSchema.default(DEFAULT_CHALLENGE_OPTIONS),
   })

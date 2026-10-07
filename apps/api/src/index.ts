@@ -10,7 +10,7 @@ import { gradeAnswer, streamGradeAnswer } from './ai/service';
 import { aiMode, missingConfig, validateAi } from '@remoa/ai';
 import { env as configEnv } from '@remoa/config';
 import { drainEmails } from './notifications/notify';
-import { warmPool } from './db';
+import { warmUp } from './warmup';
 
 const env = (k: string) => {
   const v = process.env[k];
@@ -37,21 +37,15 @@ const stream = process.env.GRADER === 'mock' ? undefined : streamGradeAnswer;
 const mockStripe = process.env.STRIPE === 'mock' ? createMockStripe({ apiOrigin: `http://localhost:${process.env.PORT ?? 4000}` }) : undefined;
 const stripe = mockStripe?.port ?? (process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: webOrigins[0]! }) : undefined);
 installStripe(stripe); // F18: grants/credits run from referral code and the webhook, not only routes
-const app = createApp({
-  grade,
-  stream,
-  stripe,
-  mockStripe,
-  webOrigin: webOrigins,
-  verifyToken: supabaseVerifier(supabase),
-});
+const deps = { grade, stream, stripe, mockStripe, webOrigin: webOrigins };
+// D-1123: /health answers 503 until the pool is open and the hot routes' statements are prepared on every connection
+const app = createApp({ ...deps, verifyToken: supabaseVerifier(supabase), ready: warmUp(deps) });
 
 // P-430: the DB trigger records a sign-up acceptance only for the versions in legal_versions; publish the configured ones.
 // D-1446: a stray rejected promise (e.g. a fire-and-forget job write) must not take the API down; log it and keep serving.
 process.on('unhandledRejection', (e) => createLogger({ requestId: 'process' }).error('unhandled rejection', { error: e instanceof Error ? e.message : String(e) }));
 syncLegalVersions().catch((e) => createLogger({ requestId: 'boot' }).error('legal versions not synced', { error: String(e) }));
 ensureBucket().catch((e) => createLogger({ requestId: 'boot' }).error('storage bucket unavailable', { error: String(e) }));
-warmPool().catch((e) => createLogger({ requestId: 'boot' }).error('db pool warm-up failed', { error: String(e) })); // D-1096
 
 const port = Number(process.env.PORT ?? 4000);
 const server = serve({ fetch: app.fetch, port });

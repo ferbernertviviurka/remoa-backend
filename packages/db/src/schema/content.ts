@@ -1,9 +1,9 @@
 import { sql } from 'drizzle-orm';
-import { type AnyPgColumn, check, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { type AnyPgColumn, check, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   areaEnum, authUsers, boardAccessEnum, boardStatusEnum, cardShapeEnum, cardStatusEnum, cardTypeEnum, licenseEnum, roleEnum, timestamps, userId,
 } from './common';
-import { MAX_GOALS, sexes, userTypes } from '@remoa/contracts';
+import { MAX_GOALS, boardBadges, sexes, userTypes, type BoardPath, type CardSource, type Didactics } from '@remoa/contracts';
 
 export const profiles = pgTable('profiles', {
   userId: uuid('user_id').primaryKey().references(() => authUsers.id, { onDelete: 'cascade' }),
@@ -91,6 +91,10 @@ export const boards = pgTable('boards', {
   copyCount: integer('copy_count').notNull().default(0),
   /** F17 FR-16: this board is a copy made from a shared link (survives the original being deleted). */
   copiedFromLinkAt: timestamp('copied_from_link_at', { withTimezone: true }),
+  /** F31 (CCR-080, D-1460): trail of a ready map (BoardPathSchema), kept on copies; null = ordinary map. Server-owned (no UPDATE grant). */
+  path: jsonb('path').$type<BoardPath>(),
+  /** F31 (D-1461): library seals (boardBadges). Server-owned; only on seed boards (check). */
+  badges: text('badges').array().notNull().default(sql`'{}'::text[]`),
   ...timestamps,
 }, (t) => [
   index('boards_user_idx').on(t.userId),
@@ -105,6 +109,10 @@ export const boards = pgTable('boards', {
   // only student boards are shared; seeds are readable by everyone, so a token there would leak
   check('boards_share_private_chk', sql`${t.access} = 'owner' or ${t.status} = 'private'`),
   check('boards_share_counters_chk', sql`${t.shareSecretVersion} >= 1 and ${t.copyCount} >= 0`),
+  check('boards_path_chk', sql`${t.path} is null or jsonb_typeof(${t.path}) = 'object'`),
+  check('boards_badges_chk', sql.raw(`badges <@ array[${boardBadges.map((v) => `'${v}'`).join(', ')}]::text[] and (cardinality(badges) = 0 or status <> 'private')`)),
+  // F31: build idempotency and /mapas-prontos/[slug]; copies (private) keep the path and may repeat the slug.
+  uniqueIndex('boards_path_slug_idx').on(sql`(${t.path}->>'slug')`).where(sql`${t.path} is not null and ${t.status} <> 'private'`),
 ]);
 
 /** F17 FR-14: wrong-password log for the unlock limit. Server-only (RLS on, no policy); hashes, never the token or IP. */
@@ -155,6 +163,12 @@ export const cards = pgTable('cards', {
   suspendedAt: timestamp('suspended_at', { withTimezone: true }),
   /** F02 FR-9 (D-531): in a seed copy, the seed card this one was copied from. Null for own cards and pre-0023 copies. */
   sourceCardId: uuid('source_card_id').references((): AnyPgColumn => cards.id, { onDelete: 'set null' }),
+  /** F31 (CCR-080, D-1457): DidacticsSchema; null = not a trail card. */
+  didactics: jsonb('didactics').$type<Didactics>(),
+  /** F31 (D-1452): CardSourceSchema[]. */
+  sources: jsonb('sources').$type<CardSource[]>().notNull().default([]),
+  /** F31 (D-1459): order of new cards in trail mode; null = outside the trail. */
+  pathOrder: integer('path_order'),
   ...timestamps,
 }, (t) => [
   index('cards_board_idx').on(t.boardId),
@@ -164,6 +178,20 @@ export const cards = pgTable('cards', {
   // limits mirror CARD_SIZE_MIN/MAX in @remoa/contracts
   check('cards_size_chk', sql`(${t.width} is null and ${t.height} is null) or (${t.width} between 140 and 640 and ${t.height} between 90 and 560)`),
   check('cards_tags_chk', sql`cardinality(${t.tags}) <= 50`),
+  check('cards_didactics_chk', sql`${t.didactics} is null or jsonb_typeof(${t.didactics}) = 'object'`),
+  check('cards_sources_chk', sql`jsonb_typeof(${t.sources}) = 'array'`),
+  index('cards_board_path_order_idx').on(t.boardId, t.pathOrder).where(sql`${t.pathOrder} is not null and ${t.deletedAt} is null`),
+]);
+
+/** F31 (CCR-080, D-1453): trail prerequisites, both cards in the same board (RLS WITH CHECK). */
+export const cardPrereqs = pgTable('card_prereqs', {
+  cardId: uuid('card_id').notNull().references(() => cards.id, { onDelete: 'cascade' }),
+  prereqCardId: uuid('prereq_card_id').notNull().references(() => cards.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`now()`),
+}, (t) => [
+  primaryKey({ columns: [t.cardId, t.prereqCardId] }),
+  index('card_prereqs_prereq_idx').on(t.prereqCardId),
+  check('card_prereqs_self_chk', sql`${t.cardId} <> ${t.prereqCardId}`),
 ]);
 
 export const edges = pgTable('edges', {

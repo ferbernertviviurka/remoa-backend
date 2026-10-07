@@ -71,8 +71,13 @@ export type QueueFilter = z.infer<typeof queueFilterSchema>;
 /** Default new items per day until entitlements (F08) set 20 Pro / 10 Free. */
 export const DEFAULT_NEW_PER_DAY = 20;
 /** GET /v1/review/queue?boardId&limit */
+/** F31 FR-10 (D-1481): "Estudar na ordem da trilha" (default) or "Misturar" (F03 order). CCR-084: per-request until a stored preference exists. */
+export const studyOrders = ['trail', 'mixed'] as const;
+export const studyOrderSchema = z.enum(studyOrders);
+export type StudyOrder = z.infer<typeof studyOrderSchema>;
 export const queueQuerySchema = z.object({
   boardId: idSchema.optional(),
+  studyOrder: studyOrderSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
 export type QueueQuery = z.infer<typeof queueQuerySchema>;

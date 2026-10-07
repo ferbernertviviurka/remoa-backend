@@ -234,6 +234,53 @@ describe.skipIf(!process.env.DATABASE_URL)('F10 approve, publish, copy', () => {
     return { author, board: board!, card: card!, item: item! };
   };
 
+  it('F31 library: lists only approved maps with badge and stats; Free copies one sample; trail and prereqs travel; report reaches the queue', async () => {
+    const student = await newUser();
+    const other = await newUser();
+    const author = await newUser();
+    const path = { slug: `t-${uuid().slice(0, 8)}`, modulos: ['M1'], area: 'Clínica Médica', dominios: [], competencias: [], revisarAte: '2027-01-01', versao: '2026.1', aviso: 'x' };
+    const mk = async (title: string, status: 'seed_approved' | 'seed_draft') => {
+      const [b] = await dbm.db.insert(dbm.boards).values({ userId: author, title, status, area: 'CM', badges: ['top10_enamed'], path: { ...path, slug: `t-${uuid().slice(0, 8)}` } as never }).returning();
+      return b!;
+    };
+    const approved = await mk('Biblioteca aprovada', 'seed_approved');
+    const draft = await mk('Biblioteca rascunho', 'seed_draft');
+    const [a, b] = await dbm.db.insert(dbm.cards).values([
+      { boardId: approved.id, title: 'A', status: 'approved' as const, pathOrder: 1, didactics: { nivel: 1, modulo: 'M1', risco: 'nenhum' } as never },
+      { boardId: approved.id, title: 'B', status: 'approved' as const, pathOrder: 2, didactics: { nivel: 2, modulo: 'M1', risco: 'nenhum' } as never },
+    ]).returning();
+    await dbm.db.insert(dbm.cardPrereqs).values({ cardId: b!.id, prereqCardId: a!.id });
+    await dbm.db.insert(dbm.cards).values({ boardId: draft.id, title: 'C', status: 'draft' });
+
+    const list = await call(student, 'GET', '/editorial/seeds');
+    const items = list.json.data as unknown as { id: string; badges: string[]; cardCount: number; levels: number[] }[];
+    expect(items.find((x) => x.id === draft.id)).toBeUndefined();
+    expect(items.find((x) => x.id === approved.id)).toMatchObject({ badges: ['top10_enamed'], cardCount: 2, levels: [1, 2] });
+    expect((await call(student, 'GET', `/editorial/seeds/${draft.id}`)).status).toBe(404);
+    expect((await call(student, 'GET', `/editorial/seeds/${approved.id}`)).status).toBe(200);
+
+    await dbm.db.execute(sql`delete from entitlement_grants where user_id = ${student}`); // a signup trial would make this user Pro
+    const copied = await call(student, 'POST', '/editorial/copy', { boardId: approved.id });
+    expect(copied.status).toBe(200);
+    const [copy] = await dbm.db.select().from(dbm.boards).where(eq(dbm.boards.id, copied.json.data!.id!));
+    expect(copy).toMatchObject({ badges: [], path: expect.objectContaining({ versao: '2026.1' }) });
+    const copyCards = await dbm.db.select().from(dbm.cards).where(eq(dbm.cards.boardId, copy!.id));
+    expect(copyCards.map((c) => c.pathOrder).sort()).toEqual([1, 2]);
+    const prereqs = await dbm.db.select().from(dbm.cardPrereqs).where(eq(dbm.cardPrereqs.cardId, copyCards.find((c) => c.title === 'B')!.id));
+    expect(prereqs[0]?.prereqCardId).toBe(copyCards.find((c) => c.title === 'A')!.id);
+    const second = await call(student, 'POST', '/editorial/copy', { boardId: approved.id });
+    expect(second.json.error?.message).toBe('boards'); // Free: one sample
+
+    // report: from the seed card and from the copy (points at the original); never a stranger's private card
+    const fromSeed = await call(other, 'POST', '/editorial/report', { cardId: a!.id, note: 'dose errada' });
+    expect(fromSeed.status).toBe(200);
+    const fromCopy = await call(student, 'POST', '/editorial/report', { cardId: copyCards.find((c) => c.title === 'B')!.id, note: 'fonte antiga' });
+    const [queued] = await dbm.db.select().from(dbm.reviewQueue).where(eq(dbm.reviewQueue.id, fromCopy.json.data!.id!));
+    expect(queued).toMatchObject({ cardId: b!.id, status: 'pending', flagSource: 'user_disagree', note: 'fonte antiga' });
+    expect((await call(other, 'POST', '/editorial/report', { cardId: copyCards[0]!.id, note: 'x' })).status).toBe(404);
+    expect((await call(other, 'POST', '/editorial/report', { cardId: a!.id, note: '  ' })).status).toBe(422);
+  });
+
   it('publish: never a student private board; needs the reviewer CRM; the version records name and CRM (rule 6)', async () => {
     const reviewer = await newUser('reviewer');
     const student = await newUser();

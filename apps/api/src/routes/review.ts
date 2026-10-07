@@ -15,7 +15,7 @@ export const reviewRoutes = new Hono<Env>()
   .get('/queue', async (c) => {
     const q = parseWith(queueQuerySchema, c.req.query());
     if (!q.ok) return send(q);
-    const opts = { now: new Date(), limit: q.data.limit };
+    const opts = { now: new Date(), limit: q.data.limit, studyOrder: q.data.studyOrder };
     return send(q.data.boardId ? await getBoardQueue(c.get('userId'), q.data.boardId, opts) : await getDailyQueue(c.get('userId'), opts));
   })
   .get('/hub', async (c) => send(await getReviewHub(c.get('userId'), new Date())))

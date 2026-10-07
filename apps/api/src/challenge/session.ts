@@ -88,7 +88,7 @@ export const startSession: StartSession = async (userId, input) => {
   if (unavailable) return err('validation', unavailable);
   return run(userId, async (tx, s) => {
     const [items, drawable] = await Promise.all([
-      buildSession(tx, userId, input.kind, input.boardId, limit, new Date(), opts.data.order, input.filter),
+      buildSession(tx, userId, input.kind, input.boardId, limit, new Date(), opts.data.order, input.filter, input.studyOrder),
       // D-575: the cards a challenge can draw from (live, not a note, not suspended); same flight as the queue
       input.kind === 'board' && idSchema.safeParse(input.boardId).success
         ? tx.select({ n: count() }).from(s.cards).where(and(eq(s.cards.boardId, input.boardId!), isNull(s.cards.deletedAt), isNull(s.cards.suspendedAt), ne(s.cards.type, 'note')))

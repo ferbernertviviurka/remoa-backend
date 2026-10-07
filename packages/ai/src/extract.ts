@@ -296,7 +296,10 @@ export async function extractWithMeta(
   fetchImpl?: typeof fetch,
   deadlineAt = Date.now() + GENERATE_BUDGET_MS,
   maxCards = DEFAULT_MAX_CARDS,
+  generic = false,
 ): Promise<{ extracted: Extracted; meta: ExtractMeta }> {
+  // D-1470: area OUTRO (non-medical map) gets the same prompt without the medical framing; the subject comes from the source text.
+  const system = generic ? extractPrompt.replace('cards de estudo de medicina', 'cards de estudo') : extractPrompt;
   const offline = (error?: AiError): { extracted: Extracted; meta: ExtractMeta } => ({
     extracted: capCards(extractOffline(text, source), maxCards),
     meta: { model: 'offline-extract', promptVersion: EXTRACT_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: 0, ...(error ? { error } : {}) },
@@ -320,7 +323,7 @@ export async function extractWithMeta(
       try {
         // No reasoning (G22 production model): GPT-6 Luna took 13–16 s per slice thinking, DeepSeek V4.1 Flash hit the 45 s timeout.
         const done = await generateJson(extractReply(source, chunk), {
-          fn: 'extract', system: extractPrompt, user: extractUser(chunk, maxCards - merged.cards.length), temperature: 0, reasoning: false, signal: AbortSignal.timeout(remaining), fetchImpl,
+          fn: 'extract', system, user: extractUser(chunk, maxCards - merged.cards.length), temperature: 0, reasoning: false, signal: AbortSignal.timeout(remaining), fetchImpl,
         });
         tokensIn += done.tokensIn;
         tokensOut += done.tokensOut;

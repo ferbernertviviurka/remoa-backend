@@ -69,7 +69,7 @@ export type Env = { Variables: { requestId: string; log: Logger; userId: string;
 
 export const fail = (error: AppError) => Response.json({ error } satisfies HttpErrorBody, { status: errorHttpStatus[error.code] });
 
-export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockStripe, anki }: { verifyToken: VerifyToken; webOrigin: string | string[]; grade?: GradeAnswer; stream?: GradeStream; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe>; anki?: AnkiPort }) {
+export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockStripe, anki, ready = () => true }: { verifyToken: VerifyToken; webOrigin: string | string[]; grade?: GradeAnswer; stream?: GradeStream; stripe?: StripePort; mockStripe?: ReturnType<typeof createMockStripe>; anki?: AnkiPort; ready?: () => boolean }) {
   const app = new Hono<Env>();
   // WEB_ORIGIN allow-list (validated in @remoa/config); the first one is canonical (Stripe/mock return URLs)
   const origins = [webOrigin].flat();
@@ -123,7 +123,9 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
 
   // G18/G22: booleans, status and model id only. /health is public: the problem texts (key invalid, no credit) stay in the boot
   // log and `pnpm ai:doctor` (G22 qa, P-619)
+  // D-1123: 503 until the boot warm-up (warmup.ts) is done, so Railway's healthcheck (railway.json) routes traffic only after it
   app.get('/health', (c) => {
+    if (!ready()) return c.json({ ok: false, warming: true }, 503);
     const { status, model } = aiHealth();
     return c.json({ ok: true, email: emailHealth(), ai: { status, model } });
   });

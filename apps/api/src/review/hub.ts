@@ -200,7 +200,8 @@ export async function computeReviewHub(userId: string, now: Date): Promise<Revie
     states: total,
     retention: { d7: retentionPoints(7, 1), d30: retentionPoints(30, 1), d90: retentionPoints(30, 3) },
     activity,
-    areas: areas.map((area) => {
+    // D-1470: "Outro assunto" only shows when the user has cards in it.
+    areas: areas.filter((a) => a !== 'OUTRO' || (cardsByArea.get(a) ?? 0) > 0).map((area) => {
       const x = perArea.get(area);
       return { area, cards: cardsByArea.get(area) ?? 0, dueToday: dueByArea.get(area) ?? 0, attempts: x?.n ?? 0, accuracy: x ? ratio(x.n, x.hits) : null };
     }),

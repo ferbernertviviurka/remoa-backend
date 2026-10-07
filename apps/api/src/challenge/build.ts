@@ -1,7 +1,7 @@
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { pick } from '../pick';
 import {
-  challengeItemSchema, ok, type CardType, type CaseStage, type QueueFilter, type ChallengeItem, type ChallengeMode, type FsrsMemory, type QueueItem, type Result,
+  challengeItemSchema, ok, type CardType, type CaseStage, type QueueFilter, type StudyOrder, type ChallengeItem, type ChallengeMode, type FsrsMemory, type QueueItem, type Result,
 } from '@remoa/contracts';
 import { retrievability } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
@@ -233,8 +233,8 @@ export function flowOrder(cardIds: string[], edges: { from: string; to: string }
 }
 
 /** FR-1: queue (F03) -> frozen items, in the caller's transaction (D-1094: 2 flights). Board sessions respect the daily new limit (FRD open question, provisional yes). */
-export async function buildSession(tx: Tx, userId: string, kind: 'daily' | 'board', boardId: string | undefined, limit: number, now: Date, order: 'random' | 'flow' = 'random', filter?: QueueFilter): Promise<Result<StoredItem[]>> {
-  const q = await queueIn(tx, userId, kind === 'board' ? { boardId: boardId! } : { filter }, { now, limit });
+export async function buildSession(tx: Tx, userId: string, kind: 'daily' | 'board', boardId: string | undefined, limit: number, now: Date, order: 'random' | 'flow' = 'random', filter?: QueueFilter, studyOrder?: StudyOrder): Promise<Result<StoredItem[]>> {
+  const q = await queueIn(tx, userId, kind === 'board' ? { boardId: boardId! } : { filter }, { now, limit, studyOrder });
   if (!q.ok) return q;
   const ctx = await loadCtx(tx, userId, q.data);
   const items = q.data.map((i) => buildItem(i, ctx)).filter((x): x is StoredItem => x !== null);

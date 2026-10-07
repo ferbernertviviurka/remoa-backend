@@ -4,6 +4,7 @@ import {
   DEFAULT_PREFERENCES, PLAN_LIMITS, effectivePref, effectiveNewCardsPerDay, err, ok, reminderHourSchema, themes,
   type Preferences, type UpdatePreferences,
 } from '@remoa/contracts';
+import type { Tx } from '@remoa/db';
 import { dbm } from '../db';
 import { planOf } from '../billing/plan';
 import { setPref } from '../notifications/service';
@@ -12,8 +13,9 @@ import { invalidate } from '../cache';
 type Row = { theme: string; reduceMotion: boolean | null; reminderHour: number; newCardsPerDay: number | null; emailProductNews: boolean };
 
 /** P-301 (D-743): the review reminder e-mail lives in notification_preferences 'review_reminder'; the two old booleans both read it. */
-const reminderEmail = async (userId: string) => {
-  const { db, notificationPreferences: n } = await dbm();
+const reminderEmail = async (userId: string, tx?: Tx) => {
+  const { db: server, notificationPreferences: n } = await dbm();
+  const db = tx ?? server;
   const [row] = await db.select({ inApp: n.inApp, email: n.email }).from(n).where(and(eq(n.userId, userId), eq(n.key, 'review_reminder')));
   return effectivePref('review_reminder', row ?? null).email;
 };
@@ -32,9 +34,10 @@ export async function getPreferences(userId: string, planCap: number | null): Pr
   return (await loadPreferences(userId))(planCap);
 }
 /** The two reads in parallel; the plan cap is applied after (D-1094: /me reads it beside the entitlements). */
-export async function loadPreferences(userId: string): Promise<(planCap: number | null) => Preferences> {
-  const { db, userPreferences: t } = await dbm();
-  const [[r], reminder] = await Promise.all([db.select(pick(t, 'theme', 'reduceMotion', 'reminderHour', 'newCardsPerDay', 'emailProductNews')).from(t).where(eq(t.userId, userId)), reminderEmail(userId)]);
+export async function loadPreferences(userId: string, tx?: Tx): Promise<(planCap: number | null) => Preferences> {
+  const { db: server, userPreferences: t } = await dbm();
+  const db = tx ?? server; // P-541: /me passes its run()
+  const [[r], reminder] = await Promise.all([db.select(pick(t, 'theme', 'reduceMotion', 'reminderHour', 'newCardsPerDay', 'emailProductNews')).from(t).where(eq(t.userId, userId)), reminderEmail(userId, tx)]);
   return (planCap) => toPrefs(r, planCap, reminder);
 }
 

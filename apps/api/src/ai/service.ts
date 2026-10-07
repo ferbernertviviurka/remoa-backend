@@ -582,7 +582,7 @@ async function executeGeneration(jobId: string) {
     const room = await cardRoom(job.userId);
     if (room === 0) throw new JobError('cards');
     const live = aiMode() === 'live';
-    const { extracted, meta } = await extractWithMeta(text, AI_DRAFT_SOURCE, cancellable, undefined, room ?? undefined);
+    const { extracted, meta } = await extractWithMeta(text, AI_DRAFT_SOURCE, cancellable, undefined, room ?? undefined, input.area === 'OUTRO');
     if (ac.signal.aborted) return; // canceled: the cancel already ended the job and gave the unit back
     model = meta.model;
     latencyMs = meta.latencyMs;

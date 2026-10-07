@@ -105,3 +105,10 @@ describe('literalIn on live replies', () => {
     expect(literalIn(caseText, '\n…\n')).toBe(false);
   });
 });
+
+describe('prompt extract/v2, area OUTRO (D-1470)', () => {
+  it('has the medical phrase the generic variant replaces', async () => {
+    const { readFileSync } = await import('node:fs');
+    expect(readFileSync(new URL('../prompts/extract/v2.md', import.meta.url), 'utf8')).toContain('cards de estudo de medicina');
+  });
+});

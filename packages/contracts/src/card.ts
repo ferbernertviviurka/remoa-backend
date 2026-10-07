@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { assetLicenses, cardShapes, cardStatuses, cardTypes } from './enums';
 import { idSchema, positionSchema, timestampSchema } from './common';
+import { cardSourceSchema, didacticsSchema } from './content';
 
 // --- Payload parts ---------------------------------------------------------
 /** D-201: each step may carry an image (asset the user can read). */
@@ -120,6 +121,14 @@ export const cardSchema = z.object({
   sourceCardId: idSchema.nullable().optional(),
   /** G22 (CCR-072): verbatim passage of the input an AI-generated card came from. Absent/null = not AI-generated or offline. */
   sourceExcerpt: z.string().nullable().optional(),
+  /** F31 (CCR-080): trail metadata (`cards.didactics`); absent/null = not a trail card. */
+  didactics: didacticsSchema.nullable().optional(),
+  /** F31: primary sources (`cards.sources`); absent = not loaded or none. */
+  sources: z.array(cardSourceSchema).optional(),
+  /** F31 (D-1459): study order in the trail (`cards.path_order`); null = outside the trail. */
+  pathOrder: z.number().int().nullable().optional(),
+  /** F31: `card_prereqs` of this card (same board). */
+  prereqCardIds: z.array(idSchema).optional(),
 });
 export type Card = z.infer<typeof cardSchema>;
 

@@ -35,7 +35,7 @@ export function cardPreview(type: string, payload: unknown): CardPreview | undef
   }
 }
 
-type CardRow = Omit<typeof import('@remoa/db').cards.$inferSelect, 'sourceCardId' | 'createdAt' | 'deletedAt'>;
+type CardRow = Omit<typeof import('@remoa/db').cards.$inferSelect, 'sourceCardId' | 'createdAt' | 'deletedAt' | 'didactics' | 'sources' | 'pathOrder'>; // F31 fields: wired by T3/T4
 // payload is returned as stored: an unedited card may still hold `{}` for its type.
 const toDetail = (r: CardRow) => ({
   id: r.id, boardId: r.boardId, type: r.type, shape: r.shape, title: r.title, front: r.front, frontAssetId: r.frontAssetId, back: r.back, backAssetId: r.backAssetId, size: sizeOf(r), tags: r.tags, source: r.source,

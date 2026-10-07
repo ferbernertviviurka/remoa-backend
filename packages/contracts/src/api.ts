@@ -4,7 +4,7 @@ import type { Grade, MapState } from './enums';
 import type { Result } from './errors';
 import type { Board, BoardGraph, BoardListQuery, BoardSummary, CreateBoardInput, DeleteBoardResult, MapOp, UpdateBoardInput } from './board';
 import type { AssetRef, AssetView, CardDetail, Rubric, SaveCardInput, UploadCompleteInput, UploadSignInput, UploadSignOutput } from './card';
-import type { Attempt, CardStudyAction, CardStudyState, FsrsMemory, IntervalPreview, QueueItem, RecordAttemptOutput, RetrievabilityMap } from './review';
+import type { Attempt, CardStudyAction, CardStudyState, FsrsMemory, IntervalPreview, QueueItem, StudyOrder, RecordAttemptOutput, RetrievabilityMap } from './review';
 import type {
   AnswerInput,
   AnswerOutput,
@@ -104,8 +104,8 @@ export type VerdictToGrade = (
 ) => Grade;
 // F03 server
 export type RecordAttempt = (attempt: Attempt) => Async<RecordAttemptOutput>;
-export type GetDailyQueue = (userId: string, opts: { now: Date; limit?: number }) => Async<QueueItem[]>;
-export type GetBoardQueue = (userId: string, boardId: string, opts: { now: Date; limit?: number }) => Async<QueueItem[]>;
+export type GetDailyQueue = (userId: string, opts: { now: Date; limit?: number; studyOrder?: StudyOrder }) => Async<QueueItem[]>;
+export type GetBoardQueue = (userId: string, boardId: string, opts: { now: Date; limit?: number; studyOrder?: StudyOrder }) => Async<QueueItem[]>;
 export type GetRetrievability = (userId: string, boardId: string, now: Date) => Async<RetrievabilityMap>;
 /** F03 FR-9 (D-491): POST /v1/review/cards/:id/:action. */
 export type SetCardStudy = (userId: string, cardId: string, action: CardStudyAction) => Async<CardStudyState>;

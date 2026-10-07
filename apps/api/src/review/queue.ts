@@ -1,7 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   PLAN_LIMITS, PREVIEW_MAX_NODES, cacheTags, REVIEW_HUB_AHEAD_DAYS, type Area, type QueueFilter, effectiveNewCardsPerDay, err, idSchema, ok, type ChallengeMode, type CardType, type FsrsCardState, type FsrsMemory, type GetBoardQueue,
-  type BoardSummary, type GetDailyQueue, type Result, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
+  type BoardSummary, type StudyOrder, type GetDailyQueue, type Result, type GetRetrievability, type MapState, type QueueItem, type RetrievabilityMap,
 } from '@remoa/contracts';
 import { aggregate, CURVE, mapState, retrievability, STEADY_FROM } from '@remoa/fsrs';
 import type { Tx } from '@remoa/db';
@@ -177,7 +177,11 @@ const subAlive = sql`(case c.type
   when 'image' then exists (select 1 from jsonb_array_elements(${arrayOf('masks')}) as e(v) where jsonb_typeof(e.v) = 'object' and e.v->>'id' = f.sub_id)
   else f.sub_id = '' end)`;
 
-export type Scope = { userId: string; boardId: string | null; filter?: Pick<QueueFilter, 'boardIds' | 'area'> };
+export type Scope = { userId: string; boardId: string | null; filter?: Pick<QueueFilter, 'boardIds' | 'area'>; /** F31 FR-10: false = "Misturar" (F03 order) */ trail?: boolean };
+/** F31 FR-10 (D-1480): trail mode applies to boards with `path` and cards with `path_order`; everything else keeps the F03 order. */
+const trailOn = (s: Scope) => (s.trail === false ? sql`false` : sql`(b.path is not null and c.path_order is not null)`);
+/** Position of a new card in its board: trail cards by path_order, then the rest by `order` (F03). Same expression in the rank and in the output column. */
+const freshPos = (s: Scope) => sql`(case when ${trailOn(s)} then c.path_order::float8 else 1e9 + c."order"::float8 end)`;
 /** Cards (c) and boards (b) an item may come from: the board, or the daily scope (non-archived) narrowed by the Revisar filter. */
 const scopeSql = (s: Scope) => sql.join([
   s.boardId ? sql`c.board_id = ${s.boardId}` : sql`b.archived_at is null`,
@@ -198,8 +202,8 @@ const stateItemsSql = (s: Scope, where: SQL) => sql`
 
 /** New items: live, active cards of the user's own boards (or of the board) whose step/mask has no state yet. */
 const freshSql = (s: Scope) => sql`
-  select c.id as card_id, c.board_id, c.type, sx.sub_id, sx.ord, c."order" as ord_card, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms,
-    row_number() over (partition by c.board_id order by c."order", c.id, sx.ord) as board_rank
+  select c.id as card_id, c.board_id, c.type, sx.sub_id, sx.ord, ${freshPos(s)} as ord_card, (extract(epoch from b.updated_at) * 1000)::float8 as board_ms,
+    row_number() over (partition by c.board_id order by ${freshPos(s)}, c.id, sx.ord) as board_rank
   from boards b join cards c on c.board_id = b.id
   cross join lateral (
     select '' as sub_id, 0::bigint as ord where c.type in ('concept', 'case')
@@ -209,7 +213,9 @@ const freshSql = (s: Scope) => sql`
   ) sx
   where c.deleted_at is null and c.suspended_at is null and c.type <> 'note' and ${scopeSql(s)}
     and ${s.boardId ? sql`true` : sql`b.user_id = ${s.userId} and c.board_id = any(array(select id from boards where user_id = ${s.userId} and archived_at is null))`}
-    and not exists (select 1 from fsrs_state f where f.user_id = ${s.userId} and f.card_id = c.id and f.sub_id = sx.sub_id)`;
+    and not exists (select 1 from fsrs_state f where f.user_id = ${s.userId} and f.card_id = c.id and f.sub_id = sx.sub_id)
+    and ${s.trail === false ? sql`true` : sql`(not ${trailOn(s)} or not exists (select 1 from card_prereqs p where p.card_id = c.id
+      and not exists (select 1 from fsrs_state f where f.user_id = ${s.userId} and f.card_id = p.prereq_card_id and f.last_review is not null)))`}`; // prerequisites seen at least once (any sub_id)
 
 type Row = { g: 'due' | 'new' | 'weak' | 'ahead'; card_id: string; board_id: string; type: CardType; sub_id: string; r: number; due_ms: number; ord: number; ord_card: number; board_ms: number };
 const lim = (n: number | null | SQL) => (n === null ? sql`` : sql`limit ${n}`);
@@ -272,9 +278,9 @@ export function budgetOf(row: { pref: number | null; introduced: number } | unde
  * G21 D-1094: one flight. The study day is a CTE of each statement (no dayWindow first); the budget inputs, the queue rows and the plan
  * (same transaction, D-1095) go out together. New items are fetched up to `limit` and `newBoundSql`, then cut to the plan's budget here.
  */
-const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number; filter?: QueueFilter }) => {
+const queueFor = async (tx: Tx, userId: string, boardId: string | null, opts: { now: Date; limit?: number; filter?: QueueFilter; studyOrder?: StudyOrder }) => {
   const f = opts.filter;
-  const scope: Scope = { userId, boardId, filter: f };
+  const scope: Scope = { userId, boardId, filter: f, trail: opts.studyOrder !== 'mixed' };
   const n = opts.limit ?? null;
   const rowsOf = async (q: SQL | null) => sortQueueRows(q ? await tx.execute<QueueSqlRow>(withWindow(userId, opts.now, q)) : []);
   if (f?.ahead) return (await rowsOf(queueRowsSql(scope, { now: opts.now, endMs: W.endMs, due: false, weak: false, fresh: false, ahead: n }))).ahead;
@@ -297,13 +303,13 @@ export const getDailyQueue: GetDailyQueue = async (userId, opts) => ok(await run
 export const getFilteredQueue = async (userId: string, filter: QueueFilter, opts: { now: Date; limit?: number }) => ok(await run(userId, (tx) => queueFor(tx, userId, null, { ...opts, filter })));
 
 /** The queue of one board inside the caller's transaction. Same flight: an unreadable board has no items either, the check picks the answer. */
-export async function boardQueueIn(tx: Tx, userId: string, boardId: string, opts: { now: Date; limit?: number }): Promise<Result<QueueItem[]>> {
+export async function boardQueueIn(tx: Tx, userId: string, boardId: string, opts: { now: Date; limit?: number; studyOrder?: StudyOrder }): Promise<Result<QueueItem[]>> {
   if (!idSchema.safeParse(boardId).success) return err('not_found', 'board not found');
   const [[b], items] = await Promise.all([tx.execute<{ id: string }>(sql`select id from boards where id = ${boardId}`), queueFor(tx, userId, boardId, opts)]);
   return b ? ok(items) : err<QueueItem[]>('not_found', 'board not found');
 }
 /** Daily, filtered (G15) or board queue inside the caller's transaction (D-1094: `POST /v1/challenge/start` builds in one transaction). */
-export const queueIn = (tx: Tx, userId: string, q: { boardId?: string; filter?: QueueFilter }, opts: { now: Date; limit?: number }): Promise<Result<QueueItem[]>> =>
+export const queueIn = (tx: Tx, userId: string, q: { boardId?: string; filter?: QueueFilter }, opts: { now: Date; limit?: number; studyOrder?: StudyOrder }): Promise<Result<QueueItem[]>> =>
   q.boardId !== undefined ? boardQueueIn(tx, userId, q.boardId, opts) : queueFor(tx, userId, null, { ...opts, filter: q.filter }).then((items) => ok(items));
 
 export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) =>
@@ -312,16 +318,25 @@ export const getBoardQueue: GetBoardQueue = async (userId, boardId, opts) =>
 /**
  * FR-8 + G01, one pass over the user's cards/states (D-058: computed on read, no job). Per board: due items today (same rule as the
  * queue), card-level state counts and the graph thumbnail (<= PREVIEW_MAX_NODES cards by order, positions in the bounding box of
- * all live cards, same span for x and y so the aspect ratio is kept).
+ * all live cards, same span for x and y so the aspect ratio is kept). G21 D-1117: `boards` is an SQL uuid array (the list's page
+ * subquery), so cards, states, the study day and edges go out together with the caller's other statements (one flight, was 3).
+ * Cards are the page's non-archived boards (the page is the user's own boards, so this is the old daily scope narrowed to the page).
  */
-export async function boardListExtras(tx: Tx, userId: string, now: Date, boardIds: string[]) {
-  const [withNotes, states, win] = await Promise.all([loadCards(tx, userId, null, true), loadStates(tx, userId, null), dayWindow(tx, userId, now)]);
+export async function boardListExtras(tx: Tx, userId: string, now: Date, boards: SQL) {
+  const [withNotes, states, win, edgeRows] = await Promise.all([
+    tx.execute<CardSqlRow>(cardsSql(userId, sql`b.archived_at is null and c.board_id = any(${boards})`, true)).then((r) => r.map(toCardRow)),
+    loadStates(tx, userId, null),
+    dayWindow(tx, userId, now),
+    tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
+      sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${boards})`,
+    ),
+  ]);
+  return boardExtrasFrom(withNotes, states, win.endMs, now, edgeRows);
+}
+
+/** Pure part of boardListExtras (exported for the byte-identity test). */
+export function boardExtrasFrom(withNotes: CardRow[], states: Map<string, StateRow>, endMs: number, now: Date, edgeRows: readonly { board_id: string; from_card_id: string; to_card_id: string }[]) {
   const cards = withNotes.filter((c) => c.type !== 'note');
-  const edgeRows = boardIds.length
-    ? await tx.execute<{ board_id: string; from_card_id: string; to_card_id: string }>(
-        sql`select e.board_id, e.from_card_id, e.to_card_id from edges e join cards f on f.id = e.from_card_id and f.deleted_at is null join cards t on t.id = e.to_card_id and t.deleted_at is null where e.board_id = any(${uuids(boardIds)})`,
-      )
-    : [];
   const out = new Map<string, { dueCount: number; stateCounts: Record<MapState, number>; preview: BoardSummary['preview'] }>();
   const of = (id: string) => {
     let o = out.get(id);
@@ -330,7 +345,7 @@ export async function boardListExtras(tx: Tx, userId: string, now: Date, boardId
   };
   for (const it of itemsOf(active(cards), false)) {
     const m = states.get(stateKey(it.cardId, it.subId));
-    if (m && isDue(m, win.endMs)) of(it.boardId).dueCount++;
+    if (m && isDue(m, endMs)) of(it.boardId).dueCount++;
   }
   const byBoard = new Map<string, CardRow[]>();
   for (const c of withNotes) byBoard.set(c.boardId, [...(byBoard.get(c.boardId) ?? []), c]);

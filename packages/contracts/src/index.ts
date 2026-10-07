@@ -28,3 +28,4 @@ export * from './notifications';
 export * from './calendar';
 export * from './blog';
 export * from './cache';
+export * from './content';
