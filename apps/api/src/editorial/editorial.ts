@@ -1,5 +1,6 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
-import { err, ok, parseWith, reviewDecisionSchema, resolveDisputeInputSchema, publishVersionInputSchema } from '@remoa/contracts';
+import { err, ok, parseWith, reviewDecisionSchema, resolveDisputeInputSchema, publishVersionInputSchema, type SeedApprover } from '@remoa/contracts';
+import type { Tx } from '@remoa/db';
 import { pick } from '../pick';
 import { planOf } from '../billing/plan';
 import { assertQuota, limitFor, overTotal } from '../billing/quota';
@@ -291,6 +292,33 @@ export async function publishBoard(userId: string, body: unknown) {
   return published;
 }
 
+/**
+ * Institutional approval (Fernando, 2026-10-07): the admin approves a F31 ready-made map (`path` set, `seed_draft`) as "Aprovado por
+ * Remoa". Every live card → approved (no reviewer, rubric untouched), one `board_versions` edition like publishBoard (D-1503 columns)
+ * with `approvedBy: 'remoa'` and no name/CRM, board → seed_approved keeping its temporal mark. Runs inside withAdmin's transaction.
+ * The physician path (publishBoard, reviewer with CRM) is unchanged; the F10 queue rows stay pending so a physician can still sign later.
+ */
+export async function approveInstitutional(tx: Tx, boardId: string) {
+  const { boards, cards, edges, boardVersions } = await dbm();
+  const [board] = await tx.select(pick(boards, 'id', 'version', 'path', 'temporalMark')).from(boards)
+    .where(and(eq(boards.id, boardId), eq(boards.status, 'seed_draft'), sql`${boards.archivedAt} is null`)).for('update');
+  if (!board?.path || !board.temporalMark) return err('conflict', 'not a ready-made map draft');
+  const allCards = await tx.update(cards).set({ status: 'approved', reviewerId: null, updatedAt: new Date() })
+    .where(and(eq(cards.boardId, board.id), sql`${cards.deletedAt} is null`)).returning(pick(cards, ...CARD_COLS));
+  // same gate as publishBoard (P-672): only cards written by the verified content:build
+  if (!allCards.length || allCards.some((c) => c.pathOrder === null)) return err('conflict', 'trail card outside the verified build');
+  const allEdges = await tx.select(pick(edges, ...EDGE_COLS)).from(edges).where(eq(edges.boardId, board.id));
+  const next = board.version + 1;
+  const approvedBy: SeedApprover = 'remoa';
+  await tx.insert(boardVersions).values({
+    boardId: board.id, version: next, changelog: `${board.temporalMark}: Aprovado por Remoa (conteúdo ${board.path.versao})`,
+    snapshot: { cards: allCards, edges: allEdges, temporalMark: board.temporalMark, approvedBy, reviewerName: null, reviewerCrm: null },
+    reviewerId: null, approvedAt: new Date(),
+  });
+  await tx.update(boards).set({ status: 'seed_approved', version: next, reviewerId: null, updatedAt: new Date() }).where(eq(boards.id, board.id));
+  return ok({ version: next, cards: allCards.length, temporalMark: board.temporalMark, contentVersion: board.path.versao, approvedBy });
+}
+
 export async function listDrafts(userId: string) {
   const who = await reviewer(userId);
   if (!who) return err('not_found', 'not found');
@@ -311,8 +339,9 @@ export async function listSeeds(onlyId?: string) {
   // Rule 6 provenance: who signed the latest published edition (snapshot written by publishBoard).
   const ids = rows.map((b) => b.id);
   const signed = ids.length
-    ? await db.execute<{ board_id: string; reviewer_name: string | null; reviewer_crm: string | null; approved_at: string | null }>(sql`
-        select distinct on (board_id) board_id, snapshot->>'reviewerName' as reviewer_name, snapshot->>'reviewerCrm' as reviewer_crm, approved_at
+    ? await db.execute<{ board_id: string; approved_by: SeedApprover; reviewer_name: string | null; reviewer_crm: string | null; approved_at: string | null }>(sql`
+        select distinct on (board_id) board_id, coalesce(snapshot->>'approvedBy', 'reviewer') as approved_by,
+          snapshot->>'reviewerName' as reviewer_name, snapshot->>'reviewerCrm' as reviewer_crm, approved_at
         from board_versions where board_id = any(${uuids(ids)}) order by board_id, version desc`)
     : [];
   const stats = ids.length
@@ -330,7 +359,7 @@ export async function listSeeds(onlyId?: string) {
       id: b.id, title: b.title, area: b.area, temporalMark: b.temporalMark, version: b.version, badges: b.badges,
       slug: b.path?.slug ?? null, modules: b.path?.modulos ?? [], contentVersion: b.path?.versao ?? null,
       cardCount: n, estimatedMinutes: Math.ceil(n * MINUTES_PER_CARD), levels: [...(count.get(b.id)?.levels ?? [])].sort(),
-      reviewerName: v?.reviewer_name ?? null, reviewerCrm: v?.reviewer_crm ?? null, approvedAt: v?.approved_at ? new Date(v.approved_at) : null,
+      approvedBy: v?.approved_by ?? null, reviewerName: v?.reviewer_name ?? null, reviewerCrm: v?.reviewer_crm ?? null, approvedAt: v?.approved_at ? new Date(v.approved_at) : null,
     };
   }));
 }

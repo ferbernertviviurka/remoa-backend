@@ -115,6 +115,15 @@ export const boardPathSchema = z.object({
 });
 export type BoardPath = z.infer<typeof boardPathSchema>;
 
+/**
+ * Who approved the published edition of a ready-made map (`approvedBy` on /v1/editorial/seeds, /seeds/:id, /v1/public/mapas-prontos):
+ * `reviewer` = a physician (reviewerName + reviewerCrm set, rule 6); `remoa` = institutional approval by the admin (2026-10-07),
+ * shown as "Aprovado por Remoa", reviewerName/reviewerCrm null, never presented as a medical review. null = no edition recorded.
+ */
+export const seedApprovers = ['reviewer', 'remoa'] as const;
+export const seedApproverSchema = z.enum(seedApprovers);
+export type SeedApprover = z.infer<typeof seedApproverSchema>;
+
 // --- File format: mapa.yaml --------------------------------------------------------
 const fileCardId = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'slug-m1-001').max(80);
 /** The template keeps `AAAA-MM-DD` until the source is read; content:lint rejects it, the build never writes it. */
