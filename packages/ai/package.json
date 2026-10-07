@@ -12,6 +12,7 @@
     "test": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --coverage",
     "eval": "tsx scripts/eval.ts",
+    "eval:desafios": "tsx scripts/eval-desafios.ts",
     "doctor": "tsx scripts/doctor.ts",
     "smoke": "tsx scripts/smoke.ts",
     "prompts:lint": "tsx scripts/prompts-lint.ts"
