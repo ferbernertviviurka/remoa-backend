@@ -2,7 +2,7 @@
 // one generateJson call per batch (GEN_BATCH_SIZE), one retry per batch at most. Every kept question passed the server guards
 // (literal evidence, grounded numbers, no duplicate) and is saved as `draft` (rule 6) through the server connection.
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   err, generatedQuestionSchema, ok, questionBankServerSchema, EMPTY_QUESTION_STATS,
@@ -346,12 +346,17 @@ export function toRow(
   });
 }
 
+/** FR-17: a saved question always has an ENAMED area and topic. Anything else counts as shortfall. */
+function keepTagged(rows: QuestionBankServer[]): QuestionBankServer[] {
+  return rows.filter((r) => Boolean(r.enamedAreaId) && Boolean(r.enamedTopicId));
+}
+
 // --- Store (server connection) -------------------------------------------------------------------------------------
 
 export type QuestionStore = {
   /** The board (owner only) and the scope's live cards; null = not the user's board. */
   context(userId: string, boardId: string, scope: ChallengeScope): Promise<MapContext | null>;
-  /** FR-19: saved, not archived, latest version, never put in a session, every cited card inside the scope. Oldest first. */
+  /** FR-19: saved, tagged, not archived, latest version, never put in a session, every cited card inside the scope. Oldest first. */
   unseen(userId: string, boardId: string, cardIds: readonly string[], type: QuestionType, difficulty: QuestionDifficulty | null, limit: number): Promise<QuestionBankServer[]>;
   /** Every stem saved on the map (FR-12), newest first. */
   stems(userId: string, boardId: string): Promise<string[]>;
@@ -402,6 +407,7 @@ export const dbStore: QuestionStore = {
     const { db, questionBank: q } = await dbm();
     const rows = await db.select().from(q).where(and(
       eq(q.userId, userId), eq(q.boardId, boardId), eq(q.type, type), ne(q.status, 'archived'),
+      isNotNull(q.enamedAreaId), isNotNull(q.enamedTopicId),
       difficulty ? eq(q.difficulty, difficulty) : undefined,
       sql`cardinality(${q.cardIds}) > 0 and ${q.cardIds} <@ ${uuids(cardIds)}`,
       sql`not exists (select 1 from question_bank n where n.supersedes_id = ${q.id})`,
@@ -633,10 +639,11 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
           const id = deps.newId();
           return toRow(c, { id, userId: input.userId, ctx, prompt, model, seed: input.seed ? `${input.seed}:${c.question.enunciado}` : id, now, classified: classified.get(i) ?? null });
         });
-        await store.save(input.userId, rows);
-        fresh.push(...rows);
-        mapStems.push(...rows.map((r) => r.stem));
-        recent.unshift(...rows.map((r) => r.stem).reverse());
+        const stored = keepTagged(rows);
+        await store.save(input.userId, stored);
+        fresh.push(...stored);
+        mapStems.push(...stored.map((r) => r.stem));
+        recent.unshift(...stored.map((r) => r.stem).reverse());
       } catch (e) {
         await refund();
         throw e;

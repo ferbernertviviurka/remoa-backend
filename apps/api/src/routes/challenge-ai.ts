@@ -315,8 +315,9 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
     io.tx(userId, (st) => advance(st, userId, sessionId, io.now())).then(() => fillAhead(userId, sessionId), () => undefined);
 
   return {
-    // FR-2 format 2 (map): the session service only. Format 1 (generated, D-1566): the first question only (a saved one first, else the
-    // model, FR-19). One quota unit for the session, and only after a model call (D-1637); the rest come one per step through `fill`.
+    // FR-2 format 2 (map): the session service only. Format 1 (D-1643): one generation for the whole count. `generateQuestions` reuses
+    // the bank first and writes the rest in batches of at most 10, one quota unit per batch (FR-6, FR-19, FR-60). A short batch still
+    // fills the next step through `fill`.
     async start(userId, cfg, requestId) {
       if (cfg.format === 'map') {
         const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { now: io.now() }));
@@ -326,8 +327,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       if (cfg.enamedTopicId) return err('validation', 'enamed_topic_not_supported_yet');
       const id = randomUUID();
       const gen = await io.generate({
-        userId, boardId: cfg.boardId, scope: cfg.scope, n: 1, questionType: typeAt(cfg, 0), difficulty: cfg.difficulty, requestId,
-        charge: 'once', focus: { seed: id, index: 0 },
+        userId, boardId: cfg.boardId, scope: cfg.scope, n: cfg.n, questionType: cfg.questionType ?? 'mixed', difficulty: cfg.difficulty, requestId,
       });
       if (!gen.ok) return gen;
       const g = gen.data;

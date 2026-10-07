@@ -20,6 +20,7 @@ const C2 = '22222222-2222-4222-8222-222222222222';
 const C3 = '33333333-3333-4333-8333-333333333333';
 const AREA = '66666666-6666-4666-8666-666666666666';
 const DOMAIN = '77777777-7777-4777-8777-777777777777';
+const TOPIC = '88888888-8888-4888-8888-888888888888';
 const PERIOD = '2026-10-07';
 
 // Synthetic clinical-style text for the guards; not reference material.
@@ -31,7 +32,7 @@ const CARDS = [
 ];
 const ctx = (over: Partial<MapContext> = {}): MapContext => ({
   boardId: BOARD, boardVersion: 3, title: 'Síndrome sintética X', area: 'CM', cards: CARDS, edges: [{ fromCardId: C1, toCardId: C2, label: 'leva a' }],
-  tags: { areaId: AREA, domainId: DOMAIN, competencyId: null, topicId: null }, topicName: null, ...over,
+  tags: { areaId: AREA, domainId: DOMAIN, competencyId: null, topicId: TOPIC }, topicName: 'Tema sintético', ...over,
 });
 
 type Disc = { enunciado: string; resposta_esperada: string; pontos_essenciais: string[]; explicacao: string; dificuldade: string; cards: string[]; evidencias: { card: string; trecho: string }[] };
@@ -72,6 +73,11 @@ const systemOf = (call: number) => (ask.mock.calls[call]?.[1] as { system: strin
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The suite mocks the model. A developer `.env` with AI=mock (or no live key) must not take the offline path.
+  vi.stubEnv('AI', 'live');
+  vi.stubEnv('OPENROUTER_API_KEY', 'test-not-a-secret');
+  vi.stubEnv('AI_BASE_URL', 'http://127.0.0.1');
+  vi.stubEnv('AI_MODEL', 'test/model');
   reserve.mockResolvedValue({ ok: true, quota: { key: 'ai_question_batches', used: 1, limit: 5, period: PERIOD, remaining: 4, nearLimit: false }, refund: vi.fn() });
   refund.mockResolvedValue(undefined);
 });
@@ -206,7 +212,8 @@ describe('generateQuestions: reuse and batches', () => {
 
   it('D-1639: without a map topic, one classifier call stores a closed-list theme and its confidence, unconfirmed', async () => {
     const topicId = '00000000-0000-4000-8000-000000000009';
-    const { store, saved } = memStore({ context: ctx({ topics: [{ id: topicId, code: 'sepse', name: 'Sepse' }] }) });
+    const untagged = { areaId: AREA, domainId: DOMAIN, competencyId: null, topicId: null };
+    const { store, saved } = memStore({ context: ctx({ topics: [{ id: topicId, code: 'sepse', name: 'Sepse' }], tags: untagged, topicName: null }) });
     ask.mockResolvedValueOnce(discReply(disc())).mockResolvedValueOnce(reply({ classificacoes: [{ tema: 'Sepse', confianca: 0.82 }] }));
     const r = await generateQuestions(input({ n: 1 }), deps(store));
     expect(r.ok && r.data.calls).toBe(1);
@@ -217,13 +224,15 @@ describe('generateQuestions: reuse and batches', () => {
     expect(reserve).toHaveBeenCalledTimes(1);
   });
 
-  it('D-1639: a classifier name outside the list is dropped, and a map that already has a topic skips the call', async () => {
+  it('D-1647: a classifier name outside the list is not saved, and a map that already has a topic skips the call', async () => {
     const topicId = '00000000-0000-4000-8000-000000000009';
     const topics = [{ id: topicId, code: 'sepse', name: 'Sepse' }];
-    const dropped = memStore({ context: ctx({ topics }) });
+    const dropped = memStore({ context: ctx({ topics, tags: { areaId: AREA, domainId: DOMAIN, competencyId: null, topicId: null }, topicName: null }) });
     ask.mockResolvedValueOnce(discReply(disc())).mockResolvedValueOnce(reply({ classificacoes: [{ tema: 'Tema inventado', confianca: 0.9 }] }));
-    await generateQuestions(input({ n: 1 }), deps(dropped.store));
-    expect(dropped.saved[0]).toMatchObject({ enamedTopicId: null, enamedConfidence: null });
+    const r = await generateQuestions(input({ n: 1 }), deps(dropped.store));
+    expect(r.ok && r.data.generated).toBe(0);
+    expect(r.ok && r.data.shortfall).toBe(1);
+    expect(dropped.saved).toHaveLength(0);
 
     ask.mockReset();
     const inherited = memStore({ context: ctx({ topics, tags: { areaId: AREA, domainId: DOMAIN, competencyId: null, topicId } }) });
@@ -272,14 +281,14 @@ describe('generateQuestions: reuse and batches', () => {
     }
   });
 
-  it('saves drafts with prompt id/version, model, inherited ENAMED tags and topic left unconfirmed', async () => {
+  it('saves drafts with prompt id/version, model and the map ENAMED area and topic', async () => {
     const { store, saved } = memStore();
     ask.mockResolvedValueOnce(discReply(disc()));
     await generateQuestions(input(), deps(store));
     const row = questionBankServerSchema.parse(saved[0]);
     expect(row).toMatchObject({
       status: 'draft', source: 'ai', promptId: 'gerar-perguntas-discursivas', promptVersion: 'desafios/gerar-perguntas-discursivas@v1', model: 'test/model',
-      boardVersion: 3, cardIds: [C2], enamedAreaId: AREA, enamedDomainId: DOMAIN, enamedTopicId: null, enamedConfirmed: false, enamedConfidence: null,
+      boardVersion: 3, cardIds: [C2], enamedAreaId: AREA, enamedDomainId: DOMAIN, enamedTopicId: TOPIC, enamedConfirmed: true, enamedConfidence: null,
       evidences: [{ cardId: C2, excerpt: 'Imediatamente, idealmente em até 1 hora do reconhecimento.' }],
     });
   });

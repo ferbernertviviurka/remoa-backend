@@ -1,8 +1,25 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runChallengeEval } from '../eval/desafios/run';
 import { runOfflineEval } from '../src/eval';
 import { reportMarkdown, runModelEval } from './eval-model';
+
+// F32: 40 correções, 10 mapas de geração e 6 resumos, só com respostas gravadas. Falha aqui derruba `pnpm ai:eval`.
+const desafios = runChallengeEval();
+console.log(JSON.stringify({
+  desafios: {
+    ok: desafios.ok,
+    gates: desafios.gates,
+    correcao: desafios.grading.n,
+    geracao: desafios.generation.maps,
+    resumo: desafios.summary.fixtures,
+  },
+}));
+if (!desafios.ok) {
+  console.error('ai eval desafios failed');
+  process.exit(1);
+}
 
 // F05: the offline grader must stay within 3 points of the baseline.
 const BASELINE = 0.9;

@@ -490,9 +490,8 @@ describe('start (serviço)', () => {
     const f = fixture({ bank });
     f.generate.mockResolvedValue(ok({ questions: bank.map((b) => ({ id: b.id })) as never, requested: 5, reused: 1, generated: 1, shortfall: 3, calls: 1, discarded: { evidence: 0, numbers: 0, format: 0, duplicate: 0 }, stoppedBy: 'quota' }));
     const r = await f.service.start(USER, cfg({ format: 'generated', n: 5, questionType: 'mixed', difficulty: 'hard' }), 'r1');
-    const id = r.ok ? (r.data.session as { id: string }).id : '';
     expect(f.generate).toHaveBeenCalledWith({
-      userId: USER, boardId: BOARD, scope: { kind: 'board' }, n: 1, questionType: 'objective', difficulty: 'hard', requestId: 'r1', charge: 'once', focus: { seed: id, index: 0 },
+      userId: USER, boardId: BOARD, scope: { kind: 'board' }, n: 5, questionType: 'mixed', difficulty: 'hard', requestId: 'r1',
     });
     expect(r.ok && r.data.generation).toEqual({ requested: 5, reused: 1, generated: 1, shortfall: 3, stoppedBy: 'quota' });
     expect(f.mem.items.map((i) => i.bankId)).toEqual(bank.map((b) => b.id));
@@ -511,7 +510,27 @@ describe('start (serviço)', () => {
     expect(f.mem.sessions).toHaveLength(0);
   });
 
-  it('D-1566: one question per step — the next is generated while the student answers, one card each, and the session ends when none comes', async () => {
+  it('D-1643: a full batch is attached at the start and is not generated again while the student answers', async () => {
+    const bank = [objective(), discursive(), objective(), discursive(), objective()];
+    const f = fixture({ bank });
+    f.generate.mockResolvedValue(ok({
+      questions: bank.map((b) => ({ id: b.id })) as never, requested: 5, reused: 0, generated: 5, shortfall: 0, calls: 1,
+      discarded: { evidence: 0, numbers: 0, format: 0, duplicate: 0 }, stoppedBy: null,
+    }));
+    const app = appFor(f.service, randomUUID());
+    const res = await send(app, 'POST', '/sessions', cfg({ format: 'generated', n: 5, questionType: 'mixed', grading: 'end' }));
+    const { data } = (await res.json()) as { data: { id: string; total: number; current: { id: string; type: string } } };
+    expect(data.total).toBe(5);
+    expect(data.current.type).toBe('objective');
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    expect(f.mem.items).toHaveLength(5);
+    await send(app, 'POST', `/sessions/${data.id}/answers`, { itemId: data.current.id, answer: { kind: 'dont_know' } });
+    const second = ((await (await send(app, 'GET', `/sessions/${data.id}`)).json()) as { data: { position: number; current: { type: string } } }).data;
+    expect(second).toMatchObject({ position: 1, current: { type: 'discursive' } });
+    expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a short batch still fills the next step, and the session ends when nothing more comes', async () => {
     const [q1, q2] = [objective(), discursive()];
     const f = fixture({ bank: [q1, q2] });
     const one = (b?: BankRow) => ok({
@@ -530,10 +549,10 @@ describe('start (serviço)', () => {
     await answer(data.current.id);
     const second = await get();
     expect(second).toMatchObject({ position: 1, total: 5, current: { type: 'discursive' } });
-    expect(f.generate.mock.calls.map(([i]) => [i.n, i.questionType, i.charge, i.focus])).toEqual([
-      [1, 'objective', 'once', { seed: data.id, index: 0 }],
-      [1, 'discursive', 'none', { seed: data.id, index: 1 }],
-      [1, 'objective', 'none', { seed: data.id, index: 2 }],
+    expect(f.generate.mock.calls.map(([i]) => [i.n, i.questionType, i.charge, i.focus?.index])).toEqual([
+      [5, 'mixed', undefined, undefined],
+      [1, 'discursive', 'none', 1],
+      [1, 'objective', 'none', 2],
     ]);
     await answer(second.current!.id);
     expect(await get()).toMatchObject({ status: 'finished', total: 2, current: null });
@@ -555,7 +574,7 @@ describe('start (serviço)', () => {
     const { data } = (await res.json()) as { data: { id: string; total: number; current: { id: string } } };
     await send(app, 'POST', `/sessions/${data.id}/answers`, { itemId: data.current.id, answer: { kind: 'dont_know' } });
     const second = (await (await send(app, 'GET', `/sessions/${data.id}`)).json()) as { data: { status: string; current: { id: string } | null } };
-    expect(f.generate.mock.calls.map(([i]) => i.charge)).toEqual(['once', 'once', 'none']);
+    expect(f.generate.mock.calls.map(([i]) => i.charge)).toEqual([undefined, 'once', 'none']);
     expect(second.data.status).toBe('active');
 
     await send(app, 'POST', `/sessions/${data.id}/answers`, { itemId: second.data.current!.id, answer: { kind: 'dont_know' } });
