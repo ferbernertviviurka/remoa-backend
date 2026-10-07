@@ -1,0 +1,12 @@
+{
+  "recorded": false,
+  "note": "Escrita à mão (D-1470): mapa de outro assunto, entrada sintética. Gravar ao vivo com AI_EVAL_LIVE=1 AI_EVAL_CASES=grader-outro.",
+  "model": "eval/reserva:free",
+  "replies": [
+    {
+      "model": "eval/reserva:free",
+      "choices": [{ "message": { "role": "assistant", "content": "{\"verdict\":\"correct\",\"matched\":[\"Tomada da Bastilha em 14 de julho de 1789\"],\"missing\":[],\"criticalError\":false,\"sourceQuote\":\"Tomada da Bastilha em 14 de julho de 1789\",\"feedback\":\"Você acertou o marco e a data. Não faltou nenhum ponto. Fonte: Livro de História.\"}" } }],
+      "usage": { "prompt_tokens": 300, "completion_tokens": 60 }
+    }
+  ]
+}

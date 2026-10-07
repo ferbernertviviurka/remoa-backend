@@ -8,3 +8,4 @@
 - rubric/v2 (G22): card como dado delimitado; só o conteúdo do card; `source` vem do servidor.
 - extract/v2 (G22): texto de origem como dado; cada card com `question`, `answer` e `sourceExcerpt` literal; conexões com nome; `LIMITE DE CARDS` vindo do servidor; texto sem conteúdo devolve lista vazia.
 - grader/v4 (G22, D-1438): mesmas regras e blocos de dado da v3, mas resposta em JSON (`response_format: json_object`) em vez da ferramenta `grade` forçada, que falhava no provedor gratuito (rodada ao vivo de 2026-10-06); `sourceQuote` literal ou `null`.
+- grader/v4-generic (D-1470, CCR-083): a v4 sem a persona médica ("estudante", sem "clinicamente", erro crítico = afirmação contrária à rubrica), usada quando o mapa é da área OUTRO; vem do `generic` da entrada.

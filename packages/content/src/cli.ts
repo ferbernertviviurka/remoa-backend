@@ -1,15 +1,15 @@
 // `pnpm content:<command> [slug...]` (F31 FR-31–FR-34). Exit code 1 on any error.
-// T2 plugs `verify` and `dossier` by adding entries to `commands` (e.g. `verify: { help, run: (a) => import('./verify').then((m) => m.run(a)) }`).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { contentReviewDecisionSchema, verifyResultSchema } from '@remoa/contracts';
+import { contentReviewDecisionSchema } from '@remoa/contracts';
 import postgres from 'postgres';
 import { buildMap, SEED_OWNER_ID, type Put } from './build';
 import { checkImages, toWebp } from './images';
 import { formatIssues, hasErrors, lintBundle } from './lint';
 import { CONTENT_ROOT, listSlugs, loadBundle } from './load';
 import { renderReport } from './report';
+import { currentVerdicts } from './verify';
 
 const say = (s: string) => process.stdout.write(`${s}\n`);
 const OUT = fileURLToPath(new URL('../.out', import.meta.url));
@@ -20,11 +20,11 @@ const slugsOf = (args: string[], withTemplates: boolean) => {
   return named.length ? named : listSlugs().filter((s) => withTemplates || !s.startsWith('_'));
 };
 
-/** `<slug>/<file>` lines that parse with the schema (verificacao.json is an array; decisoes.jsonl one decision per line). */
-function readRows<T>(file: string, schema: { safeParse: (x: unknown) => { success: true; data: T } | { success: false } }, jsonl: boolean): T[] {
+/** `<slug>/decisoes.jsonl` lines that parse with the schema (one decision per line). */
+function readRows<T>(file: string, schema: { safeParse: (x: unknown) => { success: true; data: T } | { success: false } }): T[] {
   if (!existsSync(file)) return [];
   const text = readFileSync(file, 'utf8');
-  const rows: unknown[] = jsonl ? text.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)) : JSON.parse(text);
+  const rows: unknown[] = text.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
   return rows.flatMap((r) => {
     const p = schema.safeParse(r);
     return p.success ? [p.data] : [];
@@ -82,7 +82,7 @@ export const commands: Record<string, Command> = {
     },
   },
   build: {
-    help: 'build <slug...|--all> [--publicar]   seed_draft idempotente no DATABASE_URL (FR-33); --publicar só testa o portão (FR-28)',
+    help: 'build <slug...|--all> [--publicar]   seed_draft idempotente no DATABASE_URL (FR-33), só com content:verify verde; --publicar só testa o portão (FR-28)',
     async run(args) {
       if (!args.length) return say('informe o slug ou --all'), 1;
       const url = process.env.DATABASE_URL;
@@ -98,8 +98,8 @@ export const commands: Record<string, Command> = {
             ownerId: process.env.CONTENT_OWNER_ID ?? SEED_OWNER_ID,
             put,
             status: args.includes('--publicar') ? 'seed_approved' : 'seed_draft',
-            verify: readRows(join(b.dir, 'verificacao.json'), verifyResultSchema, false),
-            decisions: readRows(join(b.dir, 'decisoes.jsonl'), contentReviewDecisionSchema, true),
+            verify: currentVerdicts(b), // stale verdicts (card or evidence changed) count as missing
+            decisions: readRows(join(b.dir, 'decisoes.jsonl'), contentReviewDecisionSchema),
           }));
           if (r.ok) say(`${slug}: ${r.data.created ? 'criado' : 'atualizado'} ${r.data.boardId} (seed_draft) cards=${r.data.cards} conexoes=${r.data.edges} prereqs=${r.data.prereqs} imagens=${r.data.assets} removidos=${r.data.removed}`);
           else {
@@ -113,6 +113,14 @@ export const commands: Record<string, Command> = {
       }
       return code;
     },
+  },
+  verify: {
+    help: 'verify <slug...> [--only id,id]   IA confere cada card contra a evidência (FR-22); só cards novos ou mudados; -> <slug>/verificacao.json (AI_TIMEOUT_MS_VERIFY=240000 recomendado: 20 cards por chamada)',
+    run: (a) => import('./verify').then((m) => m.run(a)),
+  },
+  dossier: {
+    help: 'dossier <slug...>   dossiê do revisor médico, HTML e PDF (FR-26) -> <slug>/dossie/',
+    run: (a) => import('./dossier').then((m) => m.run(a)),
   },
   report: {
     help: 'report   metas × feito, Matriz e pendências -> docs/content/enamed/RELATORIO-COBERTURA.md (FR-34)',

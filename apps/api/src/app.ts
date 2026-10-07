@@ -11,6 +11,7 @@ import { accountSecurityRoutes } from './routes/account-security';
 import { accountProfileRoutes } from './routes/account-profile';
 import { publicRoutes } from './routes/public';
 import { publicBlogRoutes } from './blog/public';
+import { publicSeedRoutes } from './editorial/public';
 import { accountLegalRoutes, publicLegalRoutes } from './account/legal';
 import { notificationsRoutes } from './notifications/routes';
 import { calendarRoutes, publicCalendarRoutes } from './calendar/routes';
@@ -151,6 +152,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.route('/v1/public/calendar', publicCalendarRoutes); // G18 F25: .ics from the e-mail, HMAC token
   app.route('/v1/public/legal', publicLegalRoutes); // G19 P-416: current legal versions, single source for the web sign-up
   app.route('/v1/public/blog', publicBlogRoutes); // G19 F27: no auth, published posts only
+  app.route('/v1/public/mapas-prontos', publicSeedRoutes); // G23 F31: no auth, seed_approved only, first 10 cards
   app.route('/v1/public', publicRoutes({ stripe, viewer })); // F13 unsubscribe: no auth, signed token; F17 shared links: optional session
   app.use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mapFileSchema, type ContentReviewDecision, type VerifyResult } from '@remoa/contracts';
 import postgres from 'postgres';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildMap, publishGate, stableId, type BuildOptions } from './build';
+import { buildMap, publishGate, stableId, verifyGate, type BuildOptions } from './build';
 import { loadBundle } from './load';
 import { rawMap, SLUG, TEST_TARGETS, writeFixture } from './test-fixture';
 
@@ -16,9 +16,16 @@ describe('publishGate (FR-28)', () => {
     expect(publishGate(map, allVerified, allApproved)).toEqual([]);
     expect(publishGate(map, [], [])).toEqual(['10 card(s) sem verificação', '10 de 10 card(s) sem "aprovo" do revisor']);
     const contra = allVerified.map((v, i) => (i === 0 ? { ...v, veredito: 'contradiz' as const } : v));
-    expect(publishGate(map, contra, allApproved)).toEqual(['1 card(s) com contradiz: t-m0-001']);
+    expect(publishGate(map, contra, allApproved)).toEqual(['1 card(s) com contradiz: t-m0-001', 'sustenta 9 de 10, abaixo de 98%']);
     const later = [...allApproved, { cardId: 't-m1-001', decisao: 'ajustar' as const, nota: 'rever' }];
     expect(publishGate(map, allVerified, later)).toEqual(['1 de 10 card(s) sem "aprovo" do revisor']);
+  });
+
+  it('verifyGate (FR-22): every card verified, no contradiz, at least 98% sustenta', () => {
+    expect(verifyGate(map, allVerified)).toEqual([]);
+    const parcial = allVerified.map((v, i) => (i === 0 ? { ...v, veredito: 'parcial' as const } : v));
+    expect(verifyGate(map, parcial)).toEqual(['sustenta 9 de 10, abaixo de 98%']);
+    expect(verifyGate(map, allVerified.slice(1))).toEqual(['1 card(s) sem verificação']);
   });
 
   it('stableId is a deterministic uuid', () => {
@@ -52,7 +59,7 @@ describe.skipIf(!sql)('content:build (DB)', () => {
     edit?.(m);
     return loadBundle(slug, writeFixture({ map: m, slug }));
   };
-  const opts = (ownerId: string, extra: Partial<BuildOptions> = {}): BuildOptions => ({ ownerId, targets: { [slug]: TEST_TARGETS[SLUG]! }, ...extra });
+  const opts = (ownerId: string, extra: Partial<BuildOptions> = {}): BuildOptions => ({ ownerId, targets: { [slug]: TEST_TARGETS[SLUG]! }, range: { min: 1, max: 120 }, verify: allVerified, ...extra });
   const counts = async (tx: postgres.TransactionSql, boardId: string) => (await tx`
     select (select count(*)::int from boards where path->>'slug' = ${slug}) boards,
       (select count(*)::int from cards where board_id = ${boardId}) cards,
@@ -110,12 +117,13 @@ describe.skipIf(!sql)('content:build (DB)', () => {
     expect(out.keep.map((r) => r.status)).toEqual(['approved', 'draft']);
   });
 
-  it('refuses to publish: closed gate, open gate (reviewer only) and an already published board', async () => {
+  it('refuses: unverified draft (P-672), closed gate, open gate (reviewer only) and an already published board', async () => {
     const out = await rolledBack(async (tx) => {
       const owner = randomUUID();
       await tx`insert into auth.users (id, email) values (${owner}, ${`${owner}@test.remoa`})`;
       const b = fixture();
-      const closed = await buildMap(tx, b, opts(owner, { status: 'seed_approved' }));
+      const closed = await buildMap(tx, b, opts(owner, { status: 'seed_approved', verify: [] }));
+      const unverified = await buildMap(tx, b, opts(owner, { verify: allVerified.map((v, i) => (i === 2 ? { ...v, veredito: 'contradiz' as const } : v)) }));
       const verify = b.map!.cards.map((c) => ({ cardId: c.id, veredito: 'sustenta' as const, motivo: 'ok' }));
       const decisions = b.map!.cards.map((c) => ({ cardId: c.id, decisao: 'aprovo' as const }));
       const open = await buildMap(tx, b, opts(owner, { status: 'seed_approved', verify, decisions }));
@@ -127,9 +135,10 @@ describe.skipIf(!sql)('content:build (DB)', () => {
       const noOwner = await buildMap(tx, b, opts(randomUUID()));
       const template = await buildMap(tx, loadBundle('_template'), opts(owner));
       const broken = await buildMap(tx, fixture((m) => void (m.cards[0]!.fontes = [])), opts(owner));
-      return { closed, open, boardsAfterRefusal, published, noOwner, template, broken };
+      return { closed, unverified, open, boardsAfterRefusal, published, noOwner, template, broken };
     });
     expect(out.closed).toMatchObject({ ok: false, error: { code: 'publish_gate', details: ['10 card(s) sem verificação', '10 de 10 card(s) sem "aprovo" do revisor'] } });
+    expect(out.unverified).toMatchObject({ ok: false, error: { code: 'verify_gate', details: ['1 card(s) com contradiz: t-m2-001', 'sustenta 9 de 10, abaixo de 98%'] } });
     expect(out.open).toMatchObject({ ok: false, error: { code: 'reviewer_only' } });
     expect(out.boardsAfterRefusal).toBe(0);
     expect(out.published).toMatchObject({ ok: false, error: { code: 'published' } });

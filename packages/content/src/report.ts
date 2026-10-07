@@ -2,13 +2,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { enamedAreaToArea } from '@remoa/contracts';
+import { MATRIZ_COMPETENCIAS, MATRIZ_DOMINIOS } from './matriz';
 import { checkImages } from './images';
 import { hasErrors, lintBundle } from './lint';
 import { CONTENT_ROOT, listSlugs, loadBundle, type Bundle } from './load';
 import { TARGETS, tally, type Metas } from './targets';
 
-/** Portaria Inep 478/2025: 21 domains, 15 competences (the names are not in the repo; the report counts what maps declare). */
-const MATRIX = { dominios: 21, competencias: 15 } as const;
 const KEYS: (keyof Metas)[] = ['cards', 'casos', 'fluxogramas', 'imagens', 'macetes', 'pegadinhas'];
 
 export function renderReport(root = CONTENT_ROOT, today = new Date().toISOString().slice(0, 10)): string {
@@ -39,12 +38,18 @@ export function renderReport(root = CONTENT_ROOT, today = new Date().toISOString
     const names = maps.filter((m) => m.mapa.area === area).map((m) => m.mapa.slug);
     out.push(`| ${area} | ${names.length ? names.join(', ') : '**sem cobertura**'} |`);
   }
-  for (const k of ['dominios', 'competencias'] as const) {
-    const by = new Map<string, Set<string>>();
-    for (const m of maps) for (const d of m.mapa[k]) by.set(d, (by.get(d) ?? new Set()).add(m.mapa.slug));
-    out.push('', `### ${k === 'dominios' ? 'Domínios' : 'Competências'}: ${by.size} de ${MATRIX[k]} declarados nos mapas`, '');
-    if (!by.size) out.push('Nenhum declarado ainda (`mapa.' + k + '`).');
-    for (const [d, s] of [...by].sort(([a], [b]) => a.localeCompare(b))) out.push(`- ${d}: ${[...s].join(', ')}`);
+  for (const [k, title, names] of [['dominios', 'Domínios', MATRIZ_DOMINIOS], ['competencias', 'Competências', MATRIZ_COMPETENCIAS]] as const) {
+    const by = new Map<string, string[]>();
+    for (const m of maps) for (const d of m.mapa[k]) by.set(d, [...(by.get(d) ?? []), m.mapa.slug]);
+    const ids = Object.keys(names);
+    const covered = ids.filter((id) => by.has(id));
+    out.push('', `### ${title}: ${covered.length} de ${ids.length} cobertos (Portaria Inep 478/2025)`, '', '**Cobertos**', '');
+    if (!covered.length) out.push('Nenhum ainda (`mapa.' + k + '`).');
+    for (const id of covered) out.push(`- ${id} ${names[id as keyof typeof names]}: ${by.get(id)!.join(', ')}`);
+    out.push('', '**Não cobertos**', '');
+    for (const id of ids.filter((i) => !by.has(i))) out.push(`- ${id} ${names[id as keyof typeof names]}`);
+    const unknown = [...by.keys()].filter((id) => !(id in names));
+    if (unknown.length) out.push('', `**Ids fora da Matriz**: ${unknown.join(', ')}`);
   }
   const tags = new Map<string, number>();
   for (const m of maps) for (const c of m.cards) for (const t of c.tags) tags.set(t, (tags.get(t) ?? 0) + 1);

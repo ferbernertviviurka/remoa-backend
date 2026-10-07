@@ -75,8 +75,15 @@ const offlineVerdict = (input: GraderInput): GradedVerdict => {
 };
 
 /** JSON mode, not a forced `grade` tool call: the free provider failed the forced call with a non-fallback error (D-1438). Temperature 0: the same answer gets the same verdict (D-1441). No reasoning: it cost ~8 s per grade on the free model (D-1442). */
+/** D-1470: a board of another subject (area OUTRO) gets neutral wording; same replace-at-runtime pattern as extract's `generic`. */
+export const genericGrader = (prompt: string) => prompt
+  .replace('um estudante de medicina', 'um estudante')
+  .replace('mesmo que esteja clinicamente certo', 'mesmo que esteja certo')
+  .replace('droga, dose, via ou conduta contrária à rubrica', 'afirmação contrária à rubrica');
+const versionOf = (input: GraderInput) => (input.generic ? `${GRADER_PROMPT_VERSION}-generic` : GRADER_PROMPT_VERSION);
+
 const graderCall = (input: GraderInput, fetchImpl?: typeof fetch) => ({
-  fn: 'grader', system: graderPrompt, user: graderUser(input), json: true, temperature: 0, reasoning: false as const, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
+  fn: 'grader', system: input.generic ? genericGrader(graderPrompt) : graderPrompt, user: graderUser(input), json: true, temperature: 0, reasoning: false as const, fetchImpl, signal: AbortSignal.timeout(GRADE_BUDGET_MS),
 });
 
 /** `error` (G22, D-1413): the provider failed and the local grader answered; the API marks it `fallback` and gives the quota back. */
@@ -93,7 +100,7 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
   const offline = (): GradeEvent[] => {
     const verdict = offlineVerdict(input);
     const pieces = verdict.feedback.split(/(?<=\s)/).filter(Boolean);
-    return [...pieces.map((feedback) => ({ feedback })), { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } }];
+    return [...pieces.map((feedback) => ({ feedback })), { verdict, meta: { promptVersion: versionOf(input), tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } }];
   };
   if (aiMode() !== 'live' || blankAnswer(input.answer)) {
     for (const event of offline()) yield event;
@@ -117,11 +124,11 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
       }
     }
     const verdict = toVerdict(gradeReplySchema.parse(parseJsonText(acc)), input, model);
-    yield { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn, tokensOut, latencyMs: Date.now() - started } };
+    yield { verdict, meta: { promptVersion: versionOf(input), tokensIn, tokensOut, latencyMs: Date.now() - started } };
   } catch (e) {
     const error = asAiError(e);
     if (shown) {
-      yield { verdict: offlineVerdict(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started, error } };
+      yield { verdict: offlineVerdict(input), meta: { promptVersion: versionOf(input), tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started, error } };
       return;
     }
     for (const event of offline()) yield event.meta ? { ...event, meta: { ...event.meta, error } } : event;
@@ -131,14 +138,14 @@ export async function* streamGrade(input: GraderInput, fetchImpl?: typeof fetch)
 export async function gradeWithMeta(input: GraderInput, fetchImpl?: typeof fetch): Promise<{ verdict: GradedVerdict; meta: GradeMeta }> {
   const started = Date.now();
   if (aiMode() !== 'live' || blankAnswer(input.answer)) {
-    return { verdict: offlineVerdict(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
+    return { verdict: offlineVerdict(input), meta: { promptVersion: versionOf(input), tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started } };
   }
   try {
     const done = await generateJson(gradeReplySchema, graderCall(input, fetchImpl));
     const verdict = toVerdict(done.data, input, done.model);
-    return { verdict, meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: Date.now() - started } };
+    return { verdict, meta: { promptVersion: versionOf(input), tokensIn: done.tokensIn, tokensOut: done.tokensOut, latencyMs: Date.now() - started } };
   } catch (e) {
-    return { verdict: offlineVerdict(input), meta: { promptVersion: GRADER_PROMPT_VERSION, tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started, error: asAiError(e) } };
+    return { verdict: offlineVerdict(input), meta: { promptVersion: versionOf(input), tokensIn: 0, tokensOut: 0, latencyMs: Date.now() - started, error: asAiError(e) } };
   }
 }
 

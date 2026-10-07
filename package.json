@@ -26,6 +26,8 @@
     "content:images": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts images",
     "content:build": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts build",
     "content:report": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts report",
+    "content:verify": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts verify",
+    "content:dossier": "pnpm --silent --filter @remoa/content exec tsx --env-file-if-exists=../../.env src/cli.ts dossier",
     "coverage": "turbo test:coverage",
     "emails:check": "pnpm --silent --filter @remoa/api exec tsx src/emails/cli.ts check",
     "emails:test": "pnpm --silent --filter @remoa/api exec tsx src/emails/cli.ts test",
