@@ -184,11 +184,19 @@ export const questionBankItemPublicSchema = z
     enamedAreaId: idSchema.nullable(),
     enamedDomainId: idSchema.nullable(),
     enamedTopicId: idSchema.nullable(),
+    /** Display name of the closed-list topic. Null until one is chosen. Never the answer. */
+    enamedTopicName: z.string().min(1).max(200).nullable(),
+    /** True when the map inherited the topic, or the student confirmed a closed-list suggestion. */
+    enamedConfirmed: z.boolean(),
     stats: questionStatsSchema,
     createdAt: timestampSchema,
   })
   .strict();
 export type QuestionBankItemPublic = z.infer<typeof questionBankItemPublicSchema>;
+
+/** A closed-list ENAMED topic the student may confirm. Name only: never an answer. */
+export const enamedTopicOptionSchema = z.object({ id: idSchema, name: z.string().min(1).max(200) }).strict();
+export type EnamedTopicOption = z.infer<typeof enamedTopicOptionSchema>;
 
 export const enamedTaxonomyNodeSchema = z
   .object({ id: idSchema, code: z.string().min(1), kind: z.enum(enamedTaxonomyKinds), parentId: idSchema.nullable(), name: z.string().min(1), matrixRef: idSchema.nullable() })

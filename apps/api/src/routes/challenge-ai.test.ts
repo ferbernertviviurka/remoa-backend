@@ -63,7 +63,9 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     dispute: vi.fn(async () => ok({ attemptId: ID, disputed: true })),
     bank: vi.fn(async () => ok([])),
     archive: vi.fn(async () => ok({ id: ID, status: 'archived' as const })),
-    edit: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado novo', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
+    edit: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado novo', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: false, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
+    confirmTopic: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: true, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
+    topics: vi.fn(async () => ok([])),
     report: vi.fn(async () => ok({ itemId: ID, reported: true as const })),
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
@@ -121,7 +123,7 @@ describe('rotas /v1/challenge-ai: nada de gabarito na resposta', () => {
   it('a clean public response goes out as { ok, data } and a service error keeps its status', async () => {
     const service = mockService({
       session: vi.fn(async () => err('not_found', 'session_not_found')),
-      bank: vi.fn(async () => ok([{ id: ID, boardId: BOARD, type: 'objective', difficulty: 'easy', stem: 'Enunciado', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 }])),
+      bank: vi.fn(async () => ok([{ id: ID, boardId: BOARD, type: 'objective', difficulty: 'easy', stem: 'Enunciado', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: false, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 }])),
     });
     const app = appFor(service);
     const a = await send(app, 'POST', `/sessions/${ID}/answers`, { itemId: ID, answer: { kind: 'text', text: 'resposta' } });
@@ -235,6 +237,40 @@ describe('rotas /v1/challenge-ai: entrada estrita', () => {
     expect(edited.status).toBe(200);
     expect(JSON.parse(await edited.text()).data).toMatchObject({ stem: 'Enunciado novo', status: 'draft' });
     expect(service.edit).toHaveBeenCalledWith(USER, ID, { stem: 'Enunciado novo', difficulty: 'easy' });
+  });
+
+  it('confirming a topic returns the public row and refuses a body that is not just the topic id', async () => {
+    const topic = '00000000-0000-4000-8000-000000000077';
+    const row = { id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: topic, enamedTopicName: 'Sepse', enamedConfirmed: true, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 };
+    const service = mockService({ confirmTopic: vi.fn(async () => ok(row)) });
+    const app = appFor(service);
+    const res = await send(app, 'POST', `/bank/${ID}/confirm`, { topicId: topic });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, data: { enamedConfirmed: true, enamedTopicId: topic, enamedTopicName: 'Sepse', stem: 'Enunciado' } });
+    expect(service.confirmTopic).toHaveBeenCalledWith(USER, ID, { topicId: topic });
+    const dirty = await send(app, 'POST', `/bank/${ID}/confirm`, { topicId: topic, expectedAnswer: SECRET });
+    expect(dirty.status).toBe(422);
+    expect(await dirty.text()).not.toContain(SECRET);
+    expect(service.confirmTopic).toHaveBeenCalledTimes(1);
+    const leaked = appFor(mockService({ confirmTopic: vi.fn(async () => ok({ ...row, correctKey: SECRET })) }));
+    const hidden = await send(leaked, 'POST', `/bank/${ID}/confirm`, { topicId: topic });
+    expect(hidden.status).toBe(500);
+    expect(await hidden.text()).not.toContain(SECRET);
+  });
+
+  it('lists closed-list topics and refuses a query that is not just the area', async () => {
+    const topic = '00000000-0000-4000-8000-000000000077';
+    const service = mockService({ topics: vi.fn(async () => ok([{ id: topic, name: 'Sepse' }])) });
+    const app = appFor(service);
+    const res = await send(app, 'GET', `/topics?areaId=${topic}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, data: [{ id: topic, name: 'Sepse' }] });
+    expect(service.topics).toHaveBeenCalledWith(USER, topic);
+    expect((await send(app, 'GET', `/topics?areaId=${topic}&correctKey=A`)).status).toBe(422);
+    const leaked = appFor(mockService({ topics: vi.fn(async () => ok([{ id: topic, name: 'Sepse', expectedAnswer: SECRET }])) }));
+    const hidden = await send(leaked, 'GET', '/topics');
+    expect(hidden.status).toBe(500);
+    expect(await hidden.text()).not.toContain(SECRET);
   });
 
   it('bank filters are parsed and passed on (board, area, difficulty, type, status)', async () => {
@@ -364,6 +400,8 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     afterGrade: async (_u, spec) => { mem.grades.push(spec); },
     archive: async () => null,
     edit: async () => null,
+    confirmTopic: async () => null,
+    topics: async () => [],
     report: async () => null,
   };
   let units = o.units ?? 100;
