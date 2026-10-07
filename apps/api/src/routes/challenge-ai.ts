@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
@@ -7,7 +8,7 @@ import {
   generateSummaryInputSchema, gradedBy as gradedByValues, grades, idSchema, mapSummaryPublicSchema, ok, parseWith, questionBankItemPublicSchema,
   questionDifficulties, questionStatuses, questionTypes, verdicts,
   type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey, type CardRubricServer,
-  type AppError, type ChallengeConfig, type ErrorCode, type GradedBy, type Grade, type Result, type Verdict,
+  type AppError, type ChallengeConfig, type ErrorCode, type GradedBy, type Grade, type QuestionType, type Result, type Verdict,
 } from '@remoa/contracts';
 import { challengeLimits, numbersGrounded } from '@remoa/ai';
 import type { Tx } from '@remoa/db';
@@ -22,7 +23,7 @@ import {
   type CardDue, type GradeDeps, type GradeErrorCode, type GradeInput, type GradeOutcome, type GradedAttempt, type PriorAttempt, type Schedule,
 } from '../challenge-ai/grade';
 import {
-  acceptAnswer, advance, answerHash as sessionAnswerHash, getSession, recordAttempt, sessionStore, startSession,
+  acceptAnswer, advance, answerHash as sessionAnswerHash, appendBankItem, endEarly, getSession, recordAttempt, sessionStore, startSession,
   type ItemRow, type SessionRow, type SessionStore,
 } from '../challenge-ai/session';
 import { generateSummary, listSummaries, type GenerateSummaryInput } from '../challenge-ai/summary';
@@ -225,12 +226,52 @@ const gradedOf = (all: readonly StoredAttempt[], attemptNo: number) => all.find(
 
 // --- Service over the existing modules ------------------------------------------------------------------------------------
 
+/** FR-2 mixed, one question per step: objective on even steps, discursive on odd ones (n = 5: 3 + 2, as the batch split did). */
+const typeAt = (cfg: ChallengeConfig, at: number): QuestionType =>
+  !cfg.questionType || cfg.questionType === 'mixed' ? (at % 2 ? 'discursive' : 'objective') : cfg.questionType;
+
 export function createChallengeAiService(io: Io): ChallengeAiService {
-  const advanceQuietly = (userId: string, sessionId: string) => io.tx(userId, (st) => advance(st, userId, sessionId, io.now())).catch(() => undefined);
+  const filling = new Map<string, Promise<void>>();
+  const build = (s: SessionRow, at: number, focus: number) => {
+    const key = `${s.id}:${at}`;
+    const running = filling.get(key) ?? (async () => {
+      const cfg = s.params;
+      const gen = await io.generate({
+        userId: s.userId, boardId: cfg.boardId, scope: cfg.scope, n: 1, questionType: typeAt(cfg, at), difficulty: cfg.difficulty,
+        requestId: 'challenge-fill', charge: 'none', focus: { seed: s.id, index: focus },
+      }).catch(() => null);
+      const q = gen?.ok ? gen.data.questions[0] : undefined;
+      if (q) await io.tx(s.userId, (st) => appendBankItem(st, s.userId, s.id, at, q.id));
+    })().finally(() => filling.delete(key));
+    filling.set(key, running);
+    return running;
+  };
+  const missingAt = (s: SessionRow, at: number) => io.tx(s.userId, async (st) => at < s.total && !(await st.itemAt(s.userId, s.id, at)));
+  /**
+   * D-1566: format 1 builds one question per step, in order (no gaps): `ahead` while the student answers, the current step if it is
+   * still missing, else the next. The current step gets a second try on another card; nothing for it ends the session there (FR-8).
+   */
+  const fill = async (userId: string, sessionId: string, ahead: boolean) => {
+    const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
+    if (!s || s.status !== 'active' || s.format !== 'generated') return;
+    const at = s.position;
+    if (await missingAt(s, at)) await build(s, at, at);
+    const current = !(await missingAt(s, at));
+    if (ahead) {
+      if (current && (await missingAt(s, at + 1))) await build(s, at + 1, at + 1);
+      return;
+    }
+    if (current) return;
+    await build(s, at, at + s.total);
+    await io.tx(userId, (st) => endEarly(st, userId, sessionId, io.now()));
+  };
+  const fillAhead = (userId: string, sessionId: string) => void fill(userId, sessionId, true).catch(() => undefined);
+  const advanceQuietly = (userId: string, sessionId: string) =>
+    io.tx(userId, (st) => advance(st, userId, sessionId, io.now())).then(() => fillAhead(userId, sessionId), () => undefined);
 
   return {
-    // FR-2 format 2 (map): the session service only. Format 1 (generated): the generate service first (saved questions first, the model only
-    // for the shortfall, FR-19), then the session service with the questions it returned.
+    // FR-2 format 2 (map): the session service only. Format 1 (generated, D-1566): the first question only (a saved one first, else the
+    // model, FR-19), paying one unit for the whole session; the rest come one per step through `fill`.
     async start(userId, cfg, requestId) {
       if (cfg.format === 'map') {
         const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { now: io.now() }));
@@ -238,19 +279,25 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       }
       // FR-20 (one ENAMED topic across maps) needs a bank query by topic that is not built yet: refuse instead of ignoring the field
       if (cfg.enamedTopicId) return err('validation', 'enamed_topic_not_supported_yet');
+      const id = randomUUID();
       const gen = await io.generate({
-        userId, boardId: cfg.boardId, scope: cfg.scope, n: cfg.n, questionType: cfg.questionType ?? 'mixed', difficulty: cfg.difficulty, requestId,
+        userId, boardId: cfg.boardId, scope: cfg.scope, n: 1, questionType: typeAt(cfg, 0), difficulty: cfg.difficulty, requestId,
+        charge: 'once', focus: { seed: id, index: 0 },
       });
       if (!gen.ok) return gen;
       const g = gen.data;
       if (!g.questions.length) return err('not_found', 'no_questions');
-      const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { bankIds: g.questions.map((q) => q.id), now: io.now() }));
+      const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { id, bankIds: g.questions.map((q) => q.id), now: io.now() }));
       if (!r.ok) return r;
+      fillAhead(userId, id);
       const generation = generationMetaSchema.parse({ requested: g.requested, reused: g.reused, generated: g.generated, shortfall: g.shortfall, stoppedBy: g.stoppedBy });
       return ok({ session: r.data, generation });
     },
 
-    session: (userId, sessionId) => io.tx(userId, (st) => getSession(st, userId, sessionId, io.now())),
+    async session(userId, sessionId) {
+      await fill(userId, sessionId, false).catch(() => undefined);
+      return io.tx(userId, (st) => getSession(st, userId, sessionId, io.now()));
+    },
 
     // FR-37/FR-38: the answer is stored as `pending` and committed BEFORE the model is called (no transaction open during the call);
     // the verdict goes in a new row (D-1605). The answer is accepted only for the open item of an active session.
@@ -374,11 +421,12 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       });
 
       if (s.status !== 'expired') {
-        await io.tx(userId, (st) => (s.status === 'active' ? st.moveTo(userId, sessionId, s.total, now) : Promise.resolve()));
+        await io.tx(userId, (st) => (s.status === 'active' ? st.moveTo(userId, sessionId, rows.length, now) : Promise.resolve()));
         await io.data.saveScore(userId, sessionId, { correct: score.correct, partial: score.partial, incorrect: score.incorrect, pending: score.pending });
       }
       return ok({
-        sessionId: s.id, boardId: s.boardId, format: s.format, status: s.status === 'active' ? 'finished' : s.status, total: s.total, score, items,
+        // D-1566: a generated session finished early counts the questions it built, not the n it was asked for
+        sessionId: s.id, boardId: s.boardId, format: s.format, status: s.status === 'active' ? 'finished' : s.status, total: rows.length, score, items,
       } satisfies ChallengeReport);
     },
 
@@ -424,11 +472,12 @@ const toStored = (r: Raw): StoredAttempt => ({
 });
 
 export const dbData: DataPort = {
+  // asServer: covered, missing and hint have no `authenticated` grant (D-1633)
   attempts: (userId, itemId) => run(userId, async (tx) =>
-    (await exec(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where item_id = ${itemId} and user_id = ${userId} order by attempt_no, created_at`)).map(toStored)),
+    (await asServer<Raw>(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where item_id = ${itemId} and user_id = ${userId} order by attempt_no, created_at`)).map(toStored)),
 
   sessionAttempts: (userId, sessionId) => run(userId, async (tx) =>
-    (await exec(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where user_id = ${userId}
+    (await asServer<Raw>(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where user_id = ${userId}
       and item_id in (select id from challenge_items where session_id = ${sessionId} and user_id = ${userId}) order by attempt_no, created_at`)).map(toStored)),
 
   items: (userId, sessionId) => run(userId, async (tx) =>

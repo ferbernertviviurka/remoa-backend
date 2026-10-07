@@ -284,7 +284,9 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
   const mem: Mem = { sessions: [], items: [], rows: [], disputes: [], scores: [], grades: [], refs: new Map(Object.entries(o.refs ?? {})) };
   const counts = (id: string) => {
     const its = mem.items.filter((i) => i.sessionId === id);
-    return { total: its.length, aiUnits: its.filter((i) => ['discursive', 'hidden_card', 'edge', 'case'].includes(i.type)).length };
+    const s = mem.sessions.find((x) => x.id === id)!;
+    const total = Math.max(its.length, s.format === 'generated' && s.status === 'active' ? s.params.n : 0);
+    return { total, aiUnits: its.filter((i) => ['discursive', 'hidden_card', 'edge', 'case'].includes(i.type)).length };
   };
   const store: SessionStore = {
     boardCards: async () => ({ cards: [], edges: [] }),
@@ -292,6 +294,9 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     createSession: async (s, items) => {
       mem.sessions.push({ ...s, status: 'active', position: 0, total: 0, aiUnits: 0, finishedAt: null });
       for (const i of items) mem.items.push({ ...i, sessionId: s.id });
+    },
+    appendItem: async (_u, sessionId, i) => {
+      if (!mem.items.some((x) => x.sessionId === sessionId && (x.position === i.position || x.bankId === i.bankId))) mem.items.push({ ...i, sessionId });
     },
     session: async (userId, id) => {
       const s = mem.sessions.find((x) => x.id === id && x.userId === userId);
@@ -421,7 +426,10 @@ describe('start (serviço)', () => {
     const f = fixture({ bank });
     f.generate.mockResolvedValue(ok({ questions: bank.map((b) => ({ id: b.id })) as never, requested: 5, reused: 1, generated: 1, shortfall: 3, calls: 1, discarded: { evidence: 0, numbers: 0, format: 0, duplicate: 0 }, stoppedBy: 'quota' }));
     const r = await f.service.start(USER, cfg({ format: 'generated', n: 5, questionType: 'mixed', difficulty: 'hard' }), 'r1');
-    expect(f.generate).toHaveBeenCalledWith({ userId: USER, boardId: BOARD, scope: { kind: 'board' }, n: 5, questionType: 'mixed', difficulty: 'hard', requestId: 'r1' });
+    const id = r.ok ? (r.data.session as { id: string }).id : '';
+    expect(f.generate).toHaveBeenCalledWith({
+      userId: USER, boardId: BOARD, scope: { kind: 'board' }, n: 1, questionType: 'objective', difficulty: 'hard', requestId: 'r1', charge: 'once', focus: { seed: id, index: 0 },
+    });
     expect(r.ok && r.data.generation).toEqual({ requested: 5, reused: 1, generated: 1, shortfall: 3, stoppedBy: 'quota' });
     expect(f.mem.items.map((i) => i.bankId)).toEqual(bank.map((b) => b.id));
     expect(f.mem.items.map((i) => i.type)).toEqual(['objective', 'discursive']);
@@ -437,6 +445,36 @@ describe('start (serviço)', () => {
     expect(await f.service.start(USER, cfg({ format: 'generated', n: 5, enamedTopicId: randomUUID() }), 'r')).toMatchObject({ ok: false, error: { code: 'validation' } });
     expect(f.generate).not.toHaveBeenCalled();
     expect(f.mem.sessions).toHaveLength(0);
+  });
+
+  it('D-1566: one question per step — the next is generated while the student answers, one card each, and the session ends when none comes', async () => {
+    const [q1, q2] = [objective(), discursive()];
+    const f = fixture({ bank: [q1, q2] });
+    const one = (b?: BankRow) => ok({
+      questions: (b ? [{ id: b.id }] : []) as never, requested: 1, reused: 0, generated: b ? 1 : 0, shortfall: b ? 0 : 1, calls: 1,
+      discarded: { evidence: 0, numbers: 0, format: 0, duplicate: 0 }, stoppedBy: null,
+    });
+    f.generate.mockResolvedValueOnce(one(q1)).mockResolvedValueOnce(one(q2)).mockResolvedValue(one());
+    const app = appFor(f.service, randomUUID());
+    const res = await send(app, 'POST', '/sessions', cfg({ format: 'generated', n: 5, questionType: 'mixed', grading: 'end' }));
+    const { data } = (await res.json()) as { data: { id: string; total: number; current: { id: string } } };
+    expect(data.total).toBe(5);
+    const answer = async (itemId: string) =>
+      expect((await send(app, 'POST', `/sessions/${data.id}/answers`, { itemId, answer: { kind: 'dont_know' } })).status).toBe(200);
+    const get = async () => ((await (await send(app, 'GET', `/sessions/${data.id}`)).json()) as { data: { status: string; total: number; position: number; current: { id: string; type: string } | null } }).data;
+
+    await answer(data.current.id);
+    const second = await get();
+    expect(second).toMatchObject({ position: 1, total: 5, current: { type: 'discursive' } });
+    expect(f.generate.mock.calls.map(([i]) => [i.n, i.questionType, i.charge, i.focus])).toEqual([
+      [1, 'objective', 'once', { seed: data.id, index: 0 }],
+      [1, 'discursive', 'none', { seed: data.id, index: 1 }],
+      [1, 'objective', 'none', { seed: data.id, index: 2 }],
+    ]);
+    await answer(second.current!.id);
+    expect(await get()).toMatchObject({ status: 'finished', total: 2, current: null });
+    expect(f.generate.mock.calls.at(-1)![0].focus).toEqual({ seed: data.id, index: 2 + 5 }); // a second try on another card first
+    expect(f.mem.items.map((i) => i.bankId)).toEqual([q1.id, q2.id]);
   });
 });
 
@@ -540,7 +578,7 @@ describe('answers (serviço): só o resultado público', () => {
     expect(res.status).toBe(200);
     expect((await res.json()) as unknown).toMatchObject({ data: { verdict: null, gradedBy: 'pending', rating: null, canRetry: false } });
     expect(f.mem.rows.map((r) => r.gradedBy)).toEqual(['pending']);
-    expect(f.mem.sessions[0]!.status).toBe('finished'); // the only item was final
+    expect(f.mem.sessions[0]!.position).toBe(1); // the item was final: the session moved on
   });
 
   it('grading at the end only records the answer (no model call) and the finish grades it, with the report free of the reference', async () => {

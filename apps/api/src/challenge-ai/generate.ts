@@ -15,6 +15,7 @@ import {
 import { createLogger } from '@remoa/log';
 import { refundAt, reserveAi } from '../billing/quota';
 import { invalidate } from '../cache';
+import { shuffle } from '../challenge/build';
 import { asServer, dbm, pgArray, run, uuids } from '../db';
 import { matchClosedTopic } from './rubric';
 
@@ -390,6 +391,13 @@ export type GenerateInput = {
   /** Shuffle seed; default the row id. Same seed and same question = same A–D order. */
   seed?: string;
   requestId?: string;
+  /**
+   * D-1566: default one `ai_question_batches` unit per model batch. `once`: one unit up front, back if nothing is delivered (a session
+   * paying for all its questions); `none`: the caller already paid (the next question of that session).
+   */
+  charge?: 'once' | 'none';
+  /** D-1566: the question must cite this card: the scope's card, else the `index`-th of the scope in a `seed` order (one card per step). */
+  focus?: { seed: string; index: number };
 };
 
 export type GenerateOutput = {
@@ -426,6 +434,13 @@ function scopeLabel(scope: ChallengeScope, ctx: MapContext): string {
   return 'o mapa inteiro';
 }
 
+function focusRef(scope: ChallengeScope, refs: ReadonlyMap<string, ScopeCard>, f: { seed: string; index: number }) {
+  const all = [...refs].sort(([, a], [, b]) => (a.id < b.id ? -1 : 1));
+  const order = shuffle(all, f.seed);
+  const [ref, card] = (scope.kind === 'card' && all.find(([, c]) => c.id === scope.cardId)) || order[f.index % order.length]!;
+  return { ref, card };
+}
+
 /** FR-2 mixed: half discursive (rounded down), the rest objective. */
 const plan = (n: number, t: GenerateInput['questionType']): [QuestionType, number][] =>
   t === 'mixed' ? ([['discursive', Math.floor(n / 2)], ['objective', n - Math.floor(n / 2)]] as [QuestionType, number][]).filter(([, k]) => k > 0) : [[t, n]];
@@ -449,6 +464,20 @@ async function ask(type: QuestionType, prompt: ChallengePrompt, vars: Record<str
  * question was discarded. A failed retry keeps what the first call gave.
  */
 export async function generateQuestions(input: GenerateInput, deps: GenerateDeps = defaultDeps): Promise<Result<GenerateOutput>> {
+  if (input.charge !== 'once') return generateBatches(input, deps);
+  const held = await reserveAi(input.userId, 'ai_question_batches', deps.now());
+  if (!held.ok) return held;
+  try {
+    const r = await generateBatches({ ...input, charge: 'none' }, deps);
+    if (!r.ok || !r.data.questions.length) await held.refund().catch(() => undefined);
+    return r;
+  } catch (e) {
+    await held.refund().catch(() => undefined);
+    throw e;
+  }
+}
+
+async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promise<Result<GenerateOutput>> {
   const { store } = deps;
   const ctx = await store.context(input.userId, input.boardId, input.scope);
   if (!ctx) return err('not_found', 'board not found');
@@ -457,6 +486,7 @@ export async function generateQuestions(input: GenerateInput, deps: GenerateDeps
   const difficulty = input.difficulty === 'mixed' ? null : input.difficulty;
   const { genBatchSize, dupThreshold } = challengeLimits();
   const { text: mapa, refs } = serializeMap(ctx);
+  const focus = input.focus ? focusRef(input.scope, refs, input.focus) : null;
   const log = createLogger({ requestId: input.requestId ?? 'challenge-generate' });
   const out: GenerateOutput = { questions: [], requested: input.n, reused: 0, generated: 0, shortfall: 0, calls: 0, discarded: noDiscards(), stoppedBy: null };
   let failure: AppError | null = null;
@@ -477,25 +507,29 @@ export async function generateQuestions(input: GenerateInput, deps: GenerateDeps
     const prompt = loadChallengePrompt(PROMPT_FOR[type]);
     const baseVars = {
       assunto: ctx.title, area: AREA_LABEL[ctx.area] ?? ctx.area, tema: ctx.topicName ?? 'não informado', publico: PUBLICO,
-      dificuldade: NIVEL[input.difficulty], escopo: scopeLabel(input.scope, ctx), mapa,
+      dificuldade: NIVEL[input.difficulty], mapa,
+      escopo: focus
+        ? `${scopeLabel(input.scope, ctx)}. Esta pergunta é sobre o card [${focus.ref}] (${focus.card.title}): cite-o nas evidências e use as conexões dele no mapa`
+        : scopeLabel(input.scope, ctx),
     };
 
     while (missing > 0 && !out.stoppedBy) {
       const size = Math.min(genBatchSize, missing);
-      const held = await reserveAi(input.userId, 'ai_question_batches', deps.now());
-      if (!held.ok) {
+      const held = input.charge ? null : await reserveAi(input.userId, 'ai_question_batches', deps.now());
+      if (held && !held.ok) {
         out.stoppedBy = 'quota';
         failure = held.error;
         break;
       }
-      const period = held.quota.period;
-      let refunded = false;
+      const period = held?.quota.period;
+      let refunded = !period;
       const refund = async () => {
         if (refunded) return;
         refunded = true;
-        await refundAt(input.userId, 'ai_question_batches', period).catch(() => undefined);
+        await refundAt(input.userId, 'ai_question_batches', period!).catch(() => undefined);
       };
       const kept: Candidate[] = [];
+      const offFocus: Candidate[] = [];
       let model = '';
       const existingStems = () => [...mapStems!, ...kept.map((k) => k.question.enunciado)];
       const avoid = () => [...kept.map((k) => k.question.enunciado).reverse(), ...recent!].slice(0, RECENT_STEMS);
@@ -520,8 +554,13 @@ export async function generateQuestions(input: GenerateInput, deps: GenerateDeps
         log.info('ai_call', { event: 'ai_call', fn: 'generate', model: reply.model.slice(0, 80), latencyMs: Math.round(reply.latencyMs), status: 'ok', attempt });
         const screened = screenReply(type, reply.items, refs, existingStems(), dupThreshold);
         addDiscards(out.discarded, screened.discarded);
-        kept.push(...screened.kept.slice(0, size - kept.length));
+        const onFocus = focus ? screened.kept.filter((k) => k.cardIds.includes(focus.card.id)) : screened.kept;
+        offFocus.push(...screened.kept.filter((k) => !onFocus.includes(k)));
+        log.info('generate_screened', { event: 'generate_screened', attempt, items: reply.items.length, kept: onFocus.length, offFocus: screened.kept.length - onFocus.length, ...screened.discarded });
+        kept.push(...onFocus.slice(0, size - kept.length));
       }
+      // the focus card is a preference: a grounded question on another card of the map beats an empty step
+      kept.push(...offFocus.slice(0, size - kept.length));
 
       try {
         const now = deps.now();

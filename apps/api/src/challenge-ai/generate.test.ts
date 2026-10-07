@@ -121,6 +121,36 @@ describe('generateQuestions: server guards', () => {
     expect(systemOf(1)).toContain(`- ${fresh.enunciado}`); // the retry is told about the one already kept
   });
 
+  it('D-1566: a focus card goes into the prompt; a question on another card is only a fallback when none cites it', async () => {
+    const other = disc({ enunciado: 'Qual o alvo de PAM com vasopressor?', resposta_esperada: 'PAM ≥ 65 mmHg.', pontos_essenciais: ['PAM ≥ 65 mmHg'], explicacao: '', cards: ['c3'], evidencias: [{ card: 'c3', trecho: 'PAM ≥ 65 mmHg' }] });
+    const focused = input({ scope: { kind: 'card', cardId: C2 }, focus: { seed: 's', index: 3 } });
+    const a = memStore();
+    ask.mockResolvedValueOnce(discReply(other)).mockResolvedValueOnce(discReply(disc()));
+    await generateQuestions(focused, deps(a.store));
+    expect(systemOf(0)).toContain('[c2] (Tempo do antimicrobiano)');
+    expect(a.saved.map((q) => q.stem)).toEqual([disc().enunciado]);
+
+    const b = memStore();
+    ask.mockReset().mockResolvedValue(discReply(other));
+    await generateQuestions(focused, deps(b.store));
+    expect(b.saved.map((q) => q.stem)).toEqual([other.enunciado]);
+  });
+
+  it('D-1566: charge once holds one unit for the whole session and gives it back when nothing comes; none spends no unit', async () => {
+    const held = vi.fn().mockResolvedValue(undefined);
+    reserve.mockResolvedValue({ ok: true, quota: { key: 'ai_question_batches', used: 1, limit: 5, period: PERIOD, remaining: 4, nearLimit: false }, refund: held });
+    ask.mockResolvedValue(discReply(disc({ evidencias: [{ card: 'c2', trecho: 'texto que não está no card' }] })));
+    expect(await generateQuestions(input({ charge: 'once' }), deps(memStore().store))).toMatchObject({ ok: true, data: { generated: 0 } });
+    expect(reserve).toHaveBeenCalledTimes(1);
+    expect(held).toHaveBeenCalledTimes(1);
+    expect(refund).not.toHaveBeenCalled();
+
+    reserve.mockClear();
+    ask.mockResolvedValue(discReply(disc()));
+    expect(await generateQuestions(input({ charge: 'none' }), deps(memStore().store))).toMatchObject({ ok: true, data: { generated: 1 } });
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
   it('retries at most once per batch and returns what remains with the shortfall', async () => {
     const { store, saved } = memStore();
     ask.mockResolvedValue(discReply(disc({ evidencias: [{ card: 'c2', trecho: 'texto que não está no card' }] })));
