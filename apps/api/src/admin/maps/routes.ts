@@ -3,7 +3,7 @@
 // or `{ institutional: true }` for a F31 ready-made map ("Aprovado por Remoa", decision of 2026-10-07).
 import { Hono, type Context } from 'hono';
 import { sql, type SQL } from 'drizzle-orm';
-import { adminErrors, adminMapListQuerySchema, err, ok, parseWith, type AdminAction, type AdminMapPage, type AdminMapRow, type Result } from '@remoa/contracts';
+import { adminErrors, adminMapListQuerySchema, err, ok, parseWith, seedApproveInputSchema, type AdminAction, type AdminMapPage, type AdminMapRow, type Result } from '@remoa/contracts';
 import type { Tx } from '@remoa/db';
 import { getBoard } from '../../boards/boards';
 import { dbm } from '../../db';
@@ -125,19 +125,31 @@ async function reviewRecorded(tx: Tx, boardId: string) {
   return !!r?.name?.trim() && !!normalizeCrm(r.crm) && r.drafts === 0;
 }
 
+/** F31 trail map in `seed_draft` (path.slug + temporal_mark): institutional approval without physician CRM (D-1522). */
+async function trailReadyMadeSeed(tx: Tx, boardId: string) {
+  const [r] = await tx.execute<{ trail: boolean }>(sql`
+    select (path is not null and temporal_mark is not null and coalesce(path->>'slug', '') <> '') as trail
+    from boards where id = ${boardId}`);
+  return !!r?.trail;
+}
+
 const seedAction = (name: 'seed.approve' | 'seed.unpublish', from: string, to: 'seed_approved' | 'seed_draft') =>
   action(name, async (tx, audit, b, body) => {
     const { boards } = await dbm();
     if (b.status !== from) return conflict();
-    // Institutional approval (2026-10-07): "Aprovado por Remoa", no physician; only F31 ready-made maps. Explicit `true` only.
-    if (to === 'seed_approved' && (body as { institutional?: unknown } | null)?.institutional === true) {
-      audit.before({ status: b.status, reviewerId: b.reviewer_id, version: b.version });
-      const r = await approveInstitutional(tx, b.id as string);
-      if (!r.ok) return conflict();
-      audit.after({ status: to, approvedBy: r.data.approvedBy, version: r.data.version, cards: r.data.cards, temporalMark: r.data.temporalMark, contentVersion: r.data.contentVersion });
-      return r;
+    if (to === 'seed_approved') {
+      const parsed = parseWith(seedApproveInputSchema, body);
+      if (!parsed.ok) return parsed;
+      const useInstitutional = parsed.data.institutional === true || await trailReadyMadeSeed(tx, b.id as string);
+      if (useInstitutional) {
+        audit.before({ status: b.status, reviewerId: b.reviewer_id, version: b.version });
+        const r = await approveInstitutional(tx, b.id as string);
+        if (!r.ok) return conflict();
+        audit.after({ status: to, approvedBy: r.data.approvedBy, version: r.data.version, cards: r.data.cards, temporalMark: r.data.temporalMark, contentVersion: r.data.contentVersion });
+        return r;
+      }
+      if (!(await reviewRecorded(tx, b.id as string))) return conflict();
     }
-    if (to === 'seed_approved' && !(await reviewRecorded(tx, b.id as string))) return conflict();
     audit.before({ status: b.status, reviewerId: b.reviewer_id });
     const rows = await tx.update(boards).set({ status: to, updatedAt: new Date() }).where(sql`${boards.id} = ${b.id as string} and ${boards.status} = ${from}`).returning({ id: boards.id });
     if (!rows.length) return conflict();
