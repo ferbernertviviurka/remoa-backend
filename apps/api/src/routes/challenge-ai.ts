@@ -3,7 +3,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   aiAnswerInputSchema, aiAnswerItemInputSchema, aiAnswerResultSchema, aiChallengeItemPublicSchema, aiChallengeItemServerSchema,
-  aiChallengeSessionPublicSchema, aiItemTypes, cardRubricServerSchema, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, disputeVerdictInputSchema, err,
+  aiChallengeSessionPublicSchema, aiItemTypes, cardRubricServerSchema, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, disputeVerdictInputSchema, enamedTopicOptionSchema, err,
   generateSummaryInputSchema, gradedBy as gradedByValues, grades, idSchema, mapSummaryPublicSchema, ok, parseWith, questionBankItemPublicSchema,
   questionDifficulties, questionStatuses, questionTypes, verdicts,
   type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey, type CardRubricServer,
@@ -103,6 +103,9 @@ export const bankQuerySchema = z
   .strict();
 export type BankQuery = z.infer<typeof bankQuerySchema>;
 
+/** GET /topics. Optional area: only topics of that ENAMED area. An unknown parameter is a 422. */
+export const topicsQuerySchema = z.object({ areaId: idSchema.optional() }).strict();
+
 /** Finish and dispute take no body: the only valid one is empty (or `{}`). Anything else is a 422. */
 const emptyBody = z.object({}).strict();
 
@@ -119,6 +122,7 @@ export type ChallengeAiService = {
   archive(userId: string, bankId: string): Promise<Result<unknown>>;
   edit(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
   confirmTopic(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
+  topics(userId: string, areaId: string | null): Promise<Result<unknown>>;
   report(userId: string, itemId: string): Promise<Result<unknown>>;
   summarize(input: GenerateSummaryInput): Promise<Result<unknown>>;
   summaries(userId: string, boardId: string): Promise<Result<unknown>>;
@@ -167,6 +171,8 @@ export type DataPort = {
   edit(userId: string, bankId: string, stem: string, difficulty?: string): Promise<unknown | 'numbers' | null>;
   /** Sets the topic only when it is a taxonomy topic of the question's area. `'closed'` = not in that list. */
   confirmTopic(userId: string, bankId: string, topicId: string): Promise<unknown | 'closed' | null>;
+  /** Closed-list topic names. `areaId` limits them to that area row; null lists every topic. */
+  topics(userId: string, areaId: string | null): Promise<{ id: string; name: string }[]>;
   /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
   report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
 };
@@ -407,6 +413,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       if (row === 'closed') return err('validation', 'topic_not_in_list');
       return row ? ok(row) : err('not_found', 'question_not_found');
     },
+    topics: async (userId, areaId) => ok(await io.data.topics(userId, areaId)),
     report: async (userId, itemId) => {
       const row = await io.data.report(userId, itemId);
       return row ? ok(row) : err('not_found', 'item_not_found');
@@ -642,6 +649,7 @@ export const dbData: DataPort = {
       if (!mine) return null;
       const [row] = await asServer<Raw>(tx, sql`update question_bank q
         set enamed_topic_id = t.id,
+            enamed_area_id = coalesce(q.enamed_area_id, (select a.id from enamed_taxonomy a where a.kind = 'area' and a.code = t.area::text limit 1)),
             enamed_domain_id = case when d.kind = 'domain' then d.id else q.enamed_domain_id end,
             enamed_confirmed = true
         from enamed_taxonomy t
@@ -657,6 +665,12 @@ export const dbData: DataPort = {
     await invalidate('question.changed', { userId, mapId: written.board_id ? String(written.board_id) : undefined });
     return publicBank(written);
   },
+
+  topics: (userId, areaId) => run(userId, async (tx) => {
+    const area = areaId ? sql`and t.area = (select area from enamed_taxonomy where id = ${areaId} and kind = 'area')` : sql``;
+    const rows = await exec(tx, sql`select t.id, t.name from enamed_taxonomy t where t.kind = 'topic' ${area} order by t.name, t.id limit 200`);
+    return rows.map((r) => ({ id: String(r.id), name: String(r.name) }));
+  }),
 
   report: async (userId, itemId) => {
     const queued = await run(userId, async (tx) => {
@@ -798,6 +812,11 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       return sendPublic(c, 'dispute', disputeResultSchema, await service.dispute(c.get('userId'), id));
     })
     // FR-18: the caller's own questions, without the reference.
+    .get('/topics', async (c) => {
+      const q = parseWith(topicsQuerySchema, c.req.query());
+      if (!q.ok) return errorResponse(q.error);
+      return sendPublic(c, 'topics', z.array(enamedTopicOptionSchema).max(200), await service.topics(c.get('userId'), q.data.areaId ?? null));
+    })
     .get('/bank', async (c) => {
       const q = parseWith(bankQuerySchema, c.req.query());
       if (!q.ok) return errorResponse(q.error);

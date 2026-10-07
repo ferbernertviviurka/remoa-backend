@@ -64,6 +64,7 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     archive: vi.fn(async () => ok({ id: ID, status: 'archived' as const })),
     edit: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado novo', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: false, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
     confirmTopic: vi.fn(async () => ok({ id: ID, boardId: BOARD, type: 'discursive', difficulty: 'easy', stem: 'Enunciado', source: 'ai', status: 'draft', enamedAreaId: null, enamedDomainId: null, enamedTopicId: null, enamedTopicName: null, enamedConfirmed: true, stats: { seen: 0, correct: 0, partial: 0, incorrect: 0 }, createdAt: T0 })),
+    topics: vi.fn(async () => ok([])),
     report: vi.fn(async () => ok({ itemId: ID, reported: true as const })),
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
@@ -256,6 +257,21 @@ describe('rotas /v1/challenge-ai: entrada estrita', () => {
     expect(await hidden.text()).not.toContain(SECRET);
   });
 
+  it('lists closed-list topics and refuses a query that is not just the area', async () => {
+    const topic = '00000000-0000-4000-8000-000000000077';
+    const service = mockService({ topics: vi.fn(async () => ok([{ id: topic, name: 'Sepse' }])) });
+    const app = appFor(service);
+    const res = await send(app, 'GET', `/topics?areaId=${topic}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, data: [{ id: topic, name: 'Sepse' }] });
+    expect(service.topics).toHaveBeenCalledWith(USER, topic);
+    expect((await send(app, 'GET', `/topics?areaId=${topic}&correctKey=A`)).status).toBe(422);
+    const leaked = appFor(mockService({ topics: vi.fn(async () => ok([{ id: topic, name: 'Sepse', expectedAnswer: SECRET }])) }));
+    const hidden = await send(leaked, 'GET', '/topics');
+    expect(hidden.status).toBe(500);
+    expect(await hidden.text()).not.toContain(SECRET);
+  });
+
   it('bank filters are parsed and passed on (board, area, difficulty, type, status)', async () => {
     const service = mockService();
     const area = randomUUID();
@@ -375,6 +391,7 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     archive: async () => null,
     edit: async () => null,
     confirmTopic: async () => null,
+    topics: async () => [],
     report: async () => null,
   };
   let units = o.units ?? 100;

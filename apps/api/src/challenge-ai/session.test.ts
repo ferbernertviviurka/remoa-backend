@@ -310,7 +310,8 @@ describe('acceptAnswer / recordAttempt / advance', () => {
   it('Simulado allows one attempt', async () => {
     const { store, pub, first } = await started('mock');
     ok(await recordAttempt(store, userId, pub.id, { itemId: first.id, answer: answerFor(first, 'uma') }, T0));
-    expect(await recordAttempt(store, userId, pub.id, { itemId: first.id, answer: answerFor(first, 'outra') }, T0))
+    // dont_know differs from every first answer. A second choice or the same step order would be the stored attempt, not a new one.
+    expect(await recordAttempt(store, userId, pub.id, { itemId: first.id, answer: { kind: 'dont_know' } }, T0))
       .toMatchObject({ ok: false, error: { message: 'no_attempts_left' } });
   });
 

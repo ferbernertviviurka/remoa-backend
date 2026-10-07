@@ -192,6 +192,10 @@ export const questionBankItemPublicSchema = z
   .strict();
 export type QuestionBankItemPublic = z.infer<typeof questionBankItemPublicSchema>;
 
+/** A closed-list ENAMED topic the student may confirm. Name only: never an answer. */
+export const enamedTopicOptionSchema = z.object({ id: idSchema, name: z.string().min(1).max(200) }).strict();
+export type EnamedTopicOption = z.infer<typeof enamedTopicOptionSchema>;
+
 export const enamedTaxonomyNodeSchema = z
   .object({ id: idSchema, code: z.string().min(1), kind: z.enum(enamedTaxonomyKinds), parentId: idSchema.nullable(), name: z.string().min(1), matrixRef: idSchema.nullable() })
   .strict();
