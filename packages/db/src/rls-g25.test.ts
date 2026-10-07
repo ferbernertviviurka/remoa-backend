@@ -51,6 +51,9 @@ describe.skipIf(!sql)('F30 challenge AI RLS', () => {
         shuffleMap: await denied(u, (q) => q`select shuffle_map from challenge_items`),
         correctKey: await denied(u, (q) => q`select correct_key from question_bank`),
         expectedAnswer: await denied(u, (q) => q`select expected_answer from question_bank`),
+        missingPoints: await denied(u, (q) => q`select missing from challenge_attempts`),
+        coveredPoints: await denied(u, (q) => q`select covered from challenge_attempts`),
+        hintColumn: await denied(u, (q) => q`select hint from challenge_attempts`),
         rubrics: await denied(u, (q) => q`select 1 from card_rubrics`),
         clientInsert: await denied(u, (q) => q`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, verdict, graded_by)
           values (${i}, ${u}, 2, '{}', 'h', 'correct', 'ai')`),
@@ -66,7 +69,8 @@ describe.skipIf(!sql)('F30 challenge AI RLS', () => {
     }).catch((e: { out?: Record<string, unknown> }) => { if (e.out) return e.out; throw e; });
     expect(out).toEqual({
       updateVerdict: true, disputeWithOther: true, dispute: true, directDelete: true, crossUserItem: true,
-      ownerItems: 1, ownerPublic: true, referenceRef: true, shuffleMap: true, correctKey: true, expectedAnswer: true, rubrics: true, clientInsert: true,
+      ownerItems: 1, ownerPublic: true, referenceRef: true, shuffleMap: true, correctKey: true, expectedAnswer: true,
+      missingPoints: true, coveredPoints: true, hintColumn: true, rubrics: true, clientInsert: true,
       otherSessions: 0, anonTaxonomy: 1, anonSessions: true, cascade: 0,
     });
   });

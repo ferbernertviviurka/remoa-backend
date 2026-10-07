@@ -126,6 +126,30 @@ describe('startSession — formato 2 (mapa)', () => {
     expect(mem.items.find((i) => i.type === 'case')!.subId).toBe('diagnosis');
   });
 
+  it('a case with three stages asks them in order and does not reveal a later answer', async () => {
+    const caso = card({
+      type: 'case', title: 'Caso longo', order: 1,
+      payload: {
+        caseSteps: [
+          { stage: 'presentation', text: 'Etapa alfa' },
+          { stage: 'diagnosis', text: 'Etapa beta secreta' },
+          { stage: 'management', text: 'Etapa gama secreta' },
+        ],
+      },
+    });
+    const { store, mem } = fakeStore([caso]);
+    ok(await startSession(store, userId, mapCfg({ n: 5 }), { now: T0 }));
+    const cases = mem.items.filter((i) => i.type === 'case').sort((a, b) => a.position - b.position);
+    expect(cases.map((i) => i.subId)).toEqual(['diagnosis', 'management']);
+    const first = JSON.stringify(cases[0]!.payloadPublic);
+    const second = JSON.stringify(cases[1]!.payloadPublic);
+    expect(first).toContain('Etapa alfa');
+    expect(first).not.toContain('beta');
+    expect(first).not.toContain('gama');
+    expect(second).toContain('Etapa beta secreta');
+    expect(second).not.toContain('gama');
+  });
+
   it('respects n, CHALLENGE_SESSION_TTL_MIN and rejects an empty scope', async () => {
     const m = demoMap();
     const { store, mem } = fakeStore(m.cards, m.edges);

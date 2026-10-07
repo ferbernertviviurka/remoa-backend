@@ -235,7 +235,9 @@ GRANT SELECT ON public.challenge_sessions TO authenticated;--> statement-breakpo
 CREATE POLICY challenge_items_select ON public.challenge_items FOR SELECT TO authenticated USING (user_id = (select auth.uid()));--> statement-breakpoint
 GRANT SELECT (id, session_id, user_id, position, kind, card_id, sub_id, bank_id, type, payload_public, created_at) ON public.challenge_items TO authenticated;--> statement-breakpoint
 CREATE POLICY challenge_attempts_select ON public.challenge_attempts FOR SELECT TO authenticated USING (user_id = (select auth.uid()));--> statement-breakpoint
-GRANT SELECT ON public.challenge_attempts TO authenticated;--> statement-breakpoint
+-- missing, covered and hint are the uncovered key points (D-1633). The student reads the verdict through the API.
+GRANT SELECT (id, item_id, user_id, attempt_no, answer, answer_hash, verdict, critical_error, manipulation, feedback, used_hint, confidence,
+  graded_by, model, prompt_version, latency_ms, rating, disputed, created_at) ON public.challenge_attempts TO authenticated;--> statement-breakpoint
 CREATE POLICY map_summaries_select ON public.map_summaries FOR SELECT TO authenticated USING (user_id = (select auth.uid()));--> statement-breakpoint
 GRANT SELECT ON public.map_summaries TO authenticated;--> statement-breakpoint
 -- card_rubrics: reference material, no policy, no grant (server only).

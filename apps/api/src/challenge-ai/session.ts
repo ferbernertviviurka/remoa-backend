@@ -136,8 +136,9 @@ function candidatesOf(c: CardRow, edges: EdgeRow[], titleOf: Map<string, string>
     const p = casePayloadSchema.safeParse(c.payload);
     if (!p.success) return out;
     const st = p.data.caseSteps;
-    // stage 1 alone has nothing to reveal; with more, ask each later stage, the last first
-    const asked = st.length === 1 ? [0] : st.map((_, k) => k).slice(1).reverse();
+    // stage 1 alone has nothing to reveal; with more, ask each later stage in order.
+    // Reverse order leaked the next answer: the first item's `revealed` included the stage the next item asks.
+    const asked = st.length === 1 ? [0] : st.map((_, k) => k).slice(1);
     for (const k of asked) {
       out.push({
         cardId: c.id, subId: st[k]!.stage, shuffleMap: null,

@@ -3,10 +3,10 @@ import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   aiAnswerInputSchema, aiAnswerItemInputSchema, aiAnswerResultSchema, aiChallengeItemPublicSchema, aiChallengeItemServerSchema,
-  aiChallengeSessionPublicSchema, aiItemTypes, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, err,
+  aiChallengeSessionPublicSchema, aiItemTypes, cardRubricServerSchema, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, disputeVerdictInputSchema, err,
   generateSummaryInputSchema, gradedBy as gradedByValues, grades, idSchema, mapSummaryPublicSchema, ok, parseWith, questionBankItemPublicSchema,
   questionDifficulties, questionStatuses, questionTypes, verdicts,
-  type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey,
+  type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey, type CardRubricServer,
   type AppError, type ChallengeConfig, type ErrorCode, type GradedBy, type Grade, type Result, type Verdict,
 } from '@remoa/contracts';
 import { challengeLimits, numbersGrounded } from '@remoa/ai';
@@ -16,6 +16,7 @@ import { fail } from '../app';
 import { invalidate } from '../cache';
 import { asServer, pgArray, run } from '../db';
 import { generateQuestions, type GenerateInput, type GenerateOutput } from '../challenge-ai/generate';
+import { cardContentHash, rubricFromAnswer } from '../challenge-ai/rubric';
 import {
   answerHash as gradeAnswerHash, gradeAnswer, gradeBatch, publicResult,
   type CardDue, type GradeDeps, type GradeErrorCode, type GradeInput, type GradeOutcome, type GradedAttempt, type PriorAttempt, type Schedule,
@@ -129,7 +130,8 @@ export type StoredAttempt = {
 
 /** What the grader needs from the reference, resolved on the server from `reference_ref`. Lives only inside one request. */
 export type Reference = {
-  correctKey: AlternativeKey | null; expectedAnswer?: string; keyPoints?: string[]; assunto: string; evidence: string; neighbors: string;
+  correctKey: AlternativeKey | null; expectedAnswer?: string; keyPoints?: string[]; rubric?: CardRubricServer;
+  assunto: string; evidence: string; neighbors: string;
 };
 
 export type ScoreRow = { correct: number; partial: number; incorrect: number; pending: number };
@@ -201,7 +203,10 @@ const toServerItem = (r: ItemRow): AiChallengeItemServer =>
   });
 
 const withReference = (item: AiChallengeItemServer, ref: Reference): AiChallengeItemServer =>
-  aiChallengeItemServerSchema.parse({ ...item, correctKey: ref.correctKey, expectedAnswer: ref.expectedAnswer, keyPoints: ref.keyPoints });
+  aiChallengeItemServerSchema.parse({
+    ...item, correctKey: ref.correctKey, expectedAnswer: ref.expectedAnswer,
+    keyPoints: ref.rubric?.essentialPoints ?? ref.keyPoints, ...(ref.rubric ? { rubric: ref.rubric } : {}),
+  });
 
 /** A stored graded row as the answer result (a repeated answer returns it: no new row, no model call). */
 function storedResult(a: StoredAttempt, s: SessionRow): AiAnswerResult {
@@ -448,7 +453,7 @@ export const dbData: DataPort = {
         evidence: clip(evidence), neighbors: '',
       };
     }
-    const [card] = await exec(tx, sql`select title, front, back, payload from cards where id = ${ref.cardId}`);
+    const [card] = await exec(tx, sql`select title, front, back, payload, didactics from cards where id = ${ref.cardId}`);
     if (!card) return null;
     const payload = rec(json(card.payload));
     let expected: string | null = null;
@@ -462,10 +467,20 @@ export const dbData: DataPort = {
       expected = text(rec((Array.isArray(payload.masks) ? payload.masks : []).find((m) => rec(m).id === ref.subId)).label);
     }
     if (!expected && item.type !== 'next_step') return null;
+    const didactics = rec(json(card.didactics));
+    const hash = cardContentHash(text(card.front), text(card.back), text(didactics.porQue));
+    const [stored] = await asServer<Raw>(tx, sql`select essential_points, accepted_variants, critical_errors, status from card_rubrics
+      where card_id = ${ref.cardId} and card_hash = ${hash} order by created_at desc limit 1`);
+    const parsedRubric = stored ? cardRubricServerSchema.safeParse({
+      essentialPoints: strs(stored.essential_points), acceptedVariants: strs(stored.accepted_variants),
+      criticalErrors: strs(stored.critical_errors), status: stored.status,
+    }) : null;
+    const rubric = parsedRubric?.success ? parsedRubric.data : expected ? rubricFromAnswer(expected) ?? undefined : undefined;
     const near = await exec(tx, sql`select c2.title from edges e join cards c2 on c2.id = case when e.from_card_id = ${ref.cardId} then e.to_card_id else e.from_card_id end
       where (e.from_card_id = ${ref.cardId} or e.to_card_id = ${ref.cardId}) and c2.deleted_at is null limit 5`);
     return {
-      correctKey: null, expectedAnswer: expected ?? undefined, assunto, neighbors: near.map((n) => String(n.title)).join('; '),
+      correctKey: null, expectedAnswer: expected ?? undefined, keyPoints: rubric?.essentialPoints, rubric, assunto,
+      neighbors: near.map((n) => String(n.title)).join('; '),
       evidence: clip([text(card.title), text(card.front), text(card.back)].filter((s): s is string => s !== null).join('\n')),
     };
   }),
@@ -730,8 +745,13 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
     .post('/attempts/:id/dispute', async (c) => {
       const id = paramId(c.req.param('id'));
       if (!id) return notFound('attempt not found');
-      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
-      if (!body.ok) return errorResponse(body.error);
+      const raw = (await readJson(c)) ?? {};
+      const named = disputeVerdictInputSchema.safeParse(raw);
+      if (!emptyBody.safeParse(raw).success && !named.success) {
+        const body = parseWith(disputeVerdictInputSchema, raw);
+        if (!body.ok) return errorResponse(body.error);
+      }
+      if (named.success && named.data.attemptId !== id) return errorResponse({ code: 'validation', message: 'attempt_mismatch' });
       return sendPublic(c, 'dispute', disputeResultSchema, await service.dispute(c.get('userId'), id));
     })
     // FR-18: the caller's own questions, without the reference.

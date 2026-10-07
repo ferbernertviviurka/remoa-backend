@@ -16,6 +16,7 @@ import { createLogger } from '@remoa/log';
 import { refundAt, reserveAi } from '../billing/quota';
 import { invalidate } from '../cache';
 import { asServer, dbm, pgArray, run, uuids } from '../db';
+import { matchClosedTopic } from './rubric';
 
 // --- Map context ---------------------------------------------------------------------------------------------------
 
@@ -41,6 +42,8 @@ export type MapContext = {
   /** Inherited from the board's matrix item (FR-17); never invented here. */
   tags: EnamedTags;
   topicName: string | null;
+  /** Closed list for a suggested topic. Absent in fixtures that do not classify. */
+  topics?: readonly { id: string; code: string; name: string }[];
 };
 
 const TYPE_LABEL: Record<string, string> = { concept: 'conceito', flow: 'fluxograma', image: 'imagem', case: 'caso', note: 'conteúdo' };
@@ -176,7 +179,7 @@ export function checkedDifficulty(claimed: QuestionDifficulty, cited: number): Q
 /** FR-10: no "todas/nenhuma das anteriores" (nor "todas as acima", "todas as alternativas"). */
 const CATCH_ALL = /\b(?:todas|nenhuma)\s+(?:as|das)\s+(?:anteriores|acima|alternativas)\b|\b(?:todas|nenhuma)\s+(?:acima|anteriores)\b/;
 
-export type Candidate = { question: GeneratedQuestion; cardIds: string[]; difficulty: QuestionDifficulty };
+export type Candidate = { question: GeneratedQuestion; cardIds: string[]; difficulty: QuestionDifficulty; suggestedTopic?: string | null };
 
 /**
  * One reply through FR-8 (each `trecho` literal in the cited card), FR-9 (every number of the question, answer and explanation in
@@ -241,7 +244,7 @@ export function screenReply(
       discarded.format++;
       continue;
     }
-    passed.push({ question: parsed.data, cardIds, difficulty });
+    passed.push({ question: parsed.data, cardIds, difficulty, suggestedTopic: item.tema_enamed_sugerido?.trim() || null });
   }
   const keep = new Set(keepDistinctStems(passed.map((p) => p.question.enunciado), existing, threshold));
   discarded.duplicate += passed.length - keep.size;
@@ -274,14 +277,15 @@ export function toRow(
     notes = q.notas_distratores ? remapLetters(q.notas_distratores, s.from) : null;
   }
   const { tags } = meta.ctx;
+  const topicId = tags.topicId ?? matchClosedTopic(c.suggestedTopic, meta.ctx.topics ?? []);
   return questionBankServerSchema.parse({
     id: meta.id, userId: meta.userId, boardId: meta.ctx.boardId, boardVersion: meta.ctx.boardVersion, cardIds: c.cardIds,
     type: alternatives ? 'objective' : 'discursive', difficulty: c.difficulty, stem: q.enunciado, alternatives, correctKey,
     expectedAnswer: q.resposta_esperada, keyPoints: q.pontos_essenciais, explanation: q.explicacao || null, distractorNotes: notes,
     evidences: q.evidencias.map((e) => ({ cardId: e.card, excerpt: e.trecho })),
-    enamedAreaId: tags.areaId, enamedDomainId: tags.domainId, enamedCompetencyId: tags.competencyId, enamedTopicId: tags.topicId,
-    // FR-17: confirmed only when the topic comes from the map; no classifier here (a later task proposes one with confidence)
-    enamedConfidence: null, enamedConfirmed: tags.topicId !== null,
+    enamedAreaId: tags.areaId, enamedDomainId: tags.domainId, enamedCompetencyId: tags.competencyId, enamedTopicId: topicId,
+    // Confirmed only when the map already had the topic. A closed-list match stays unconfirmed.
+    enamedConfidence: null, enamedConfirmed: tags.topicId !== null && topicId === tags.topicId,
     source: 'ai', promptId: meta.prompt.meta.id, promptVersion: meta.prompt.promptVersion, model: meta.model, status: 'draft',
     stats: EMPTY_QUESTION_STATS, version: 1, supersedesId: null, createdAt: meta.now,
   });
@@ -327,11 +331,14 @@ export const dbStore: QuestionStore = {
           select t.id, t.kind, t.parent_id, t.name from enamed_taxonomy t join up on t.id = up.parent_id
         ) select id, kind, name from up`) : [];
       const of = (kind: string) => chain.find((r) => r.kind === kind);
+      const [areaRow] = of('area') ? [] : await tx.execute<{ id: string }>(sql`select id from enamed_taxonomy where kind = 'area' and code = ${board.area} limit 1`);
+      const topics = await tx.execute<{ id: string; code: string; name: string }>(sql`select id, code, name from enamed_taxonomy where kind = 'topic' and area = ${board.area}`);
       return {
         boardId, boardVersion: board.version, title: board.title, area: board.area,
         cards: all.filter((c) => ids.has(c.id)), edges: edges.filter((e) => ids.has(e.fromCardId) && ids.has(e.toCardId)),
-        tags: { areaId: of('area')?.id ?? null, domainId: of('domain')?.id ?? null, competencyId: of('competency')?.id ?? null, topicId: of('topic')?.id ?? null },
+        tags: { areaId: of('area')?.id ?? areaRow?.id ?? null, domainId: of('domain')?.id ?? null, competencyId: of('competency')?.id ?? null, topicId: of('topic')?.id ?? null },
         topicName: of('topic')?.name ?? null,
+        topics,
       };
     });
   },

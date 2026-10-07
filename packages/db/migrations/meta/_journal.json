@@ -295,6 +295,13 @@
       "when": 1791379630601,
       "tag": "0041_g25_challenge_ai",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791403200000,
+      "tag": "0042_g25_attempt_columns",
+      "breakpoints": true
     }
   ]
 }
