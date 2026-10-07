@@ -3,7 +3,8 @@ import { config as loadEnv } from 'dotenv';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-loadEnv({ path: fileURLToPath(new URL('../../../.env', import.meta.url)), quiet: true });
+// override: the .env wins over variables set on the command line (an inline AI_MODEL_VERIFY ran Opus and drained the credit).
+loadEnv({ path: fileURLToPath(new URL('../../../.env', import.meta.url)), quiet: true, override: true });
 import { join } from 'node:path';
 import { contentReviewDecisionSchema } from '@remoa/contracts';
 import postgres from 'postgres';

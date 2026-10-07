@@ -253,6 +253,12 @@ describe('local counter', () => {
 });
 
 describe('guards', () => {
+  it('Opus and the auto router are refused whatever the env says', () => {
+    const c = { ...aiConfig(), requireFree: false, production: false };
+    expect(refusal('anthropic/claude-opus-5.5', c)).toMatch(/blocked/);
+    expect(refusal('openrouter/auto', c)).toMatch(/blocked/);
+    expect(refusal('vendor/paid', c)).toBeNull();
+  });
   it('AI_REQUIRE_FREE refuses a paid id and a :free id with a non-zero catalog price', () => {
     const c = { ...aiConfig(), requireFree: true, production: false };
     expect(refusal('vendor/paid', c)).toMatch(/:free/);
