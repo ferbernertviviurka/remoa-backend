@@ -53,6 +53,8 @@ export type SessionStore = {
   /** asServer: reads correct_key, filtered by user_id. */
   bankQuestions(userId: string, ids: string[]): Promise<BankRow[]>;
   createSession(s: NewSession, items: NewItem[]): Promise<void>;
+  /** asServer: one more item of a session already created (format 1, D-1566); a taken position or a question already asked is left out. */
+  appendItem(userId: string, sessionId: string, item: NewItem): Promise<void>;
   /** `lock`: FOR UPDATE, so answers and advances of one session are serialised. */
   session(userId: string, sessionId: string, lock: boolean): Promise<SessionRow | null>;
   /** RLS: payload_public only (no reference column is selected). */
@@ -235,15 +237,18 @@ function bankItems(sessionId: string, cfg: ChallengeConfig, ids: string[], rows:
 
 // --- session lifecycle -------------------------------------------------------------------------------------------------
 
-export type StartOptions = { bankIds?: string[]; now?: Date; env?: NodeJS.ProcessEnv };
+export type StartOptions = { id?: string; bankIds?: string[]; now?: Date; env?: NodeJS.ProcessEnv };
 
-/** FR-37: creates the session and its frozen items. Format 2 from the board's cards; format 1 from `bankIds` (never generates). */
+/**
+ * FR-37: creates the session and its frozen items. Format 2 from the board's cards; format 1 from `bankIds` (never generates). D-1566:
+ * format 1 counts `n` items while active; the ones not built yet come through `appendBankItem` one step ahead of the student.
+ */
 export async function startSession(store: SessionStore, userId: string, config: unknown, opts: StartOptions = {}): Promise<Result<AiChallengeSessionPublic>> {
   const parsed = parseWith(challengeConfigSchema, config);
   if (!parsed.ok) return parsed;
   const cfg = parsed.data;
   const now = opts.now ?? new Date();
-  const id = randomUUID();
+  const id = opts.id ?? randomUUID();
   let items: NewItem[];
   if (cfg.format === 'map') {
     const { cards, edges } = await store.boardCards(cfg.boardId);
@@ -259,10 +264,29 @@ export async function startSession(store: SessionStore, userId: string, config: 
   const expiresAt = new Date(now.getTime() + challengeLimits(opts.env).sessionTtlMin * 60_000);
   await store.createSession({ id, userId, boardId: cfg.boardId, scope: cfg.scope, format: cfg.format, params: cfg, startedAt: now, expiresAt }, items);
   const session: SessionRow = {
-    id, userId, boardId: cfg.boardId, format: cfg.format, status: 'active', position: 0, expiresAt, params: cfg, total: items.length,
+    id, userId, boardId: cfg.boardId, format: cfg.format, status: 'active', position: 0, expiresAt, params: cfg,
+    total: cfg.format === 'generated' ? Math.max(cfg.n, items.length) : items.length,
     aiUnits: items.filter((i) => (AI_GRADED_TYPES as readonly string[]).includes(i.type)).length,
   };
   return ok(toPublic(session, items[0]!.payloadPublic));
+}
+
+/** D-1566: the item at `position` of an active format-1 session, from one bank question. Already there = nothing to do. */
+export async function appendBankItem(store: SessionStore, userId: string, sessionId: string, position: number, bankId: string): Promise<Result<null>> {
+  const s = await store.session(userId, sessionId, true);
+  if (!s || s.status !== 'active' || s.format !== 'generated' || position >= s.total) return err('conflict', 'session_not_open');
+  if (await store.itemAt(userId, sessionId, position)) return ok(null);
+  const built = bankItems(sessionId, s.params, [bankId], await store.bankQuestions(userId, [bankId]));
+  if (!built.ok) return built;
+  await store.appendItem(userId, sessionId, { ...built.data[0]!, position });
+  return ok(null);
+}
+
+/** D-1566: no next question could be built: the session ends at its current position (FR-8, it delivers what it has). */
+export async function endEarly(store: SessionStore, userId: string, sessionId: string, now = new Date()): Promise<void> {
+  const s = await store.session(userId, sessionId, true);
+  if (!s || s.status !== 'active' || (await store.itemAt(userId, sessionId, s.position))) return;
+  await store.moveTo(userId, sessionId, s.position, now);
 }
 
 /** An active session past its expires_at is written as expired; returns the row with its current status. */
@@ -401,9 +425,17 @@ export function sessionStore(tx: Tx): SessionStore {
           type text, payload_public jsonb, reference_ref jsonb, shuffle_map jsonb)`);
       await invalidate('challenge.finished', { userId: s.userId });
     },
+    async appendItem(userId, sessionId, i) {
+      await asServer(tx, sql`insert into challenge_items (id, session_id, user_id, position, kind, card_id, sub_id, bank_id, type, payload_public, reference_ref, shuffle_map)
+        select ${i.id}, ${sessionId}, ${userId}, ${i.position}, ${i.kind}, ${i.cardId}, ${i.subId}, ${i.bankId}, ${i.type}, ${JSON.stringify(i.payloadPublic)}::jsonb,
+          ${JSON.stringify(i.referenceRef)}::jsonb, ${i.shuffleMap ? JSON.stringify(i.shuffleMap) : null}::jsonb
+        where not exists (select 1 from challenge_items x where x.session_id = ${sessionId} and x.bank_id = ${i.bankId})
+        on conflict (session_id, position) do nothing`);
+    },
     async session(userId, sessionId, lock) {
       const [r] = await asServer<Raw>(tx, sql`select s.id, s.user_id, s.board_id, s.format, s.status, s.position, s.expires_at, s.params,
-          (select count(*)::int from challenge_items i where i.session_id = s.id) as total,
+          greatest((select count(*)::int from challenge_items i where i.session_id = s.id),
+            case when s.format = 'generated' and s.status = 'active' then (s.params->>'n')::int else 0 end) as total,
           (select count(*)::int from challenge_items i where i.session_id = s.id and i.type = any(${pgArray(AI_GRADED_TYPES, 'text')})) as ai_units
         from challenge_sessions s where s.id = ${sessionId} and s.user_id = ${userId}${lock ? sql` for update of s` : sql``}`);
       if (!r) return null;

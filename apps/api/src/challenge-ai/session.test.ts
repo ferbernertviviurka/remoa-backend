@@ -5,7 +5,7 @@ import type { SQL } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
 import { aiChallengeItemPublicSchema, type AiChallengeItemPublic, type ChallengeConfig } from '@remoa/contracts';
 import {
-  acceptAnswer, advance, cardsInScope, getSession, recordAttempt, sessionStore, startSession, toPublic,
+  acceptAnswer, advance, appendBankItem, cardsInScope, endEarly, getSession, recordAttempt, sessionStore, startSession, toPublic,
   type AttemptRow, type BankRow, type CardRow, type EdgeRow, type ItemRow, type NewAttempt, type SessionRow, type SessionStore,
 } from './session';
 
@@ -21,7 +21,9 @@ function fakeStore(cards: CardRow[] = [], edges: EdgeRow[] = [], bank: BankRow[]
   const mem: Mem = { sessions: [], items: [], attempts: [] };
   const counts = (id: string) => {
     const its = mem.items.filter((i) => i.sessionId === id);
-    return { total: its.length, aiUnits: its.filter((i) => ['discursive', 'hidden_card', 'edge', 'case'].includes(i.type)).length };
+    const s = mem.sessions.find((x) => x.id === id)!;
+    const total = Math.max(its.length, s.format === 'generated' && s.status === 'active' ? s.params.n : 0);
+    return { total, aiUnits: its.filter((i) => ['discursive', 'hidden_card', 'edge', 'case'].includes(i.type)).length };
   };
   const store: SessionStore = {
     boardCards: async () => ({ cards, edges }),
@@ -29,6 +31,9 @@ function fakeStore(cards: CardRow[] = [], edges: EdgeRow[] = [], bank: BankRow[]
     createSession: async (s, items) => {
       mem.sessions.push({ ...s, status: 'active', position: 0, total: 0, aiUnits: 0, finishedAt: null });
       for (const i of items) mem.items.push({ ...i, sessionId: s.id });
+    },
+    appendItem: async (_u, sessionId, i) => {
+      if (!mem.items.some((x) => x.sessionId === sessionId && (x.position === i.position || x.bankId === i.bankId))) mem.items.push({ ...i, sessionId });
     },
     session: async (userId, id) => {
       const s = mem.sessions.find((x) => x.id === id && x.userId === userId);
@@ -192,7 +197,7 @@ describe('startSession — formato 1 (banco)', () => {
     const discursive = bankRow({ type: 'discursive', stem: 'Enunciado sintético discursivo', alternatives: null, correctKey: null });
     const { store, mem } = fakeStore([], [], [objective, discursive]);
     const pub = ok(await startSession(store, userId, genCfg(), { bankIds: [objective.id, discursive.id], now: T0 }));
-    expect(pub).toMatchObject({ format: 'generated', total: 2, aiUnits: 1 });
+    expect(pub).toMatchObject({ format: 'generated', total: 5, aiUnits: 1 });
     expect(mem.items.map((i) => [i.kind, i.bankId, i.cardId])).toEqual([['bank', objective.id, null], ['bank', discursive.id, null]]);
     expect(mem.items[0]!.referenceRef).toEqual({ kind: 'bank', bankId: objective.id });
 
@@ -218,6 +223,26 @@ describe('startSession — formato 1 (banco)', () => {
     expect(await startSession(store, userId, genCfg(), { bankIds: [randomUUID()] })).toMatchObject({ ok: false, error: { code: 'not_found' } });
     expect(await startSession(store, userId, genCfg({ questionType: 'discursive' }), { bankIds: [q.id] }))
       .toMatchObject({ ok: false, error: { code: 'validation', message: 'question_type_mismatch' } });
+  });
+
+  it('D-1566: one question per step — counts n, takes the next one at its position, ends early when none comes', async () => {
+    const [q1, q2] = [bankRow(), bankRow({ stem: 'Segunda pergunta sintética' })];
+    const { store, mem } = fakeStore([], [], [q1, q2]);
+    const pub = ok(await startSession(store, userId, genCfg(), { bankIds: [q1.id], now: T0 }));
+    expect(pub).toMatchObject({ total: 5, position: 0 });
+    expect(await appendBankItem(store, userId, pub.id, 5, q2.id)).toMatchObject({ ok: false }); // past n
+    ok(await appendBankItem(store, userId, pub.id, 1, q2.id));
+    ok(await appendBankItem(store, userId, pub.id, 1, q1.id)); // position taken: left as is
+    ok(await appendBankItem(store, userId, pub.id, 2, q1.id)); // already asked in this session: never repeated
+    expect(mem.items.map((i) => [i.position, i.bankId])).toEqual([[0, q1.id], [1, q2.id]]);
+
+    for (const item of mem.items) {
+      ok(await recordAttempt(store, userId, pub.id, { itemId: item.id, answer: { kind: 'dont_know' } }, T0));
+      ok(await advance(store, userId, pub.id, T0));
+    }
+    expect(ok(await getSession(store, userId, pub.id, T0))).toMatchObject({ status: 'active', position: 2, current: null });
+    await endEarly(store, userId, pub.id, T0);
+    expect(ok(await getSession(store, userId, pub.id, T0))).toMatchObject({ status: 'finished', total: 2 });
   });
 });
 

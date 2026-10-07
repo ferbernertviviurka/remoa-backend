@@ -8,7 +8,7 @@ loadEnv({ path: fileURLToPath(new URL('../../../.env', import.meta.url)), quiet:
 import { join } from 'node:path';
 import { contentReviewDecisionSchema } from '@remoa/contracts';
 import postgres from 'postgres';
-import { buildMap, SEED_OWNER_ID, type Put } from './build';
+import { buildMap, SEED_OWNER_ID, stableId, type Put } from './build';
 import { checkImages, toWebp } from './images';
 import { formatIssues, hasErrors, lintBundle } from './lint';
 import { CONTENT_ROOT, listSlugs, loadBundle } from './load';
@@ -35,10 +35,13 @@ function readRows<T>(file: string, schema: { safeParse: (x: unknown) => { succes
   });
 }
 
+const isLocal = (url = '') => /[/@](localhost|127\.0\.0\.1)[:/]/.test(url);
+
 /** S3/R2 upload of the WebP variants when the bucket env is set (same variables as apps/api storage). */
 async function s3Put(): Promise<Put | undefined> {
   const e = process.env;
   if (!e.S3_ENDPOINT || !e.S3_BUCKET || !e.S3_ACCESS_KEY_ID || !e.S3_SECRET_ACCESS_KEY) return undefined;
+  say(`bucket: ${new URL(e.S3_ENDPOINT).host}/${e.S3_BUCKET}`);
   const { PutObjectCommand, S3Client } = await import('@aws-sdk/client-s3');
   const client = new S3Client({
     endpoint: e.S3_ENDPOINT, region: e.S3_REGION ?? 'auto', forcePathStyle: e.S3_URL_STYLE !== 'virtual',
@@ -63,10 +66,13 @@ export const commands: Record<string, Command> = {
     },
   },
   images: {
-    help: 'images [slug...]   SVG seguro, CREDITOS.md, máscaras; WebP w800/w1600 em packages/content/.out (FR-16/17)',
+    help: 'images [slug...] [--upload]   SVG seguro, CREDITOS.md, máscaras; WebP w800/w1600 em packages/content/.out (FR-16/17); --upload envia ao bucket S3_* nas chaves do build (sem tocar no banco, vale para mapa publicado)',
     async run(args) {
+      const put = args.includes('--upload') ? await s3Put() : undefined;
+      if (args.includes('--upload') && !put) return say('S3_* ausente: nada enviado'), 1;
+      const owner = process.env.CONTENT_OWNER_ID ?? SEED_OWNER_ID;
       let code = 0;
-      for (const slug of slugsOf(args, false)) {
+      for (const slug of slugsOf(args.filter((a) => a !== '--upload'), false)) {
         const b = loadBundle(slug);
         const issues = [...b.issues, ...checkImages(b)];
         say(formatIssues(`${slug} (imagens)`, issues));
@@ -78,8 +84,11 @@ export const commands: Record<string, Command> = {
           const webp = await toWebp(readFileSync(join(b.dir, 'imagens', f)), f.endsWith('.svg'));
           const dir = join(OUT, slug, f.replace(/\.[^.]+$/, ''));
           mkdirSync(dir, { recursive: true });
-          for (const [name, data] of Object.entries(webp.variants)) writeFileSync(join(dir, `${name}.webp`), data);
-          say(`  ${f} -> ${webp.width}x${webp.height}`);
+          for (const [name, data] of Object.entries(webp.variants)) {
+            writeFileSync(join(dir, `${name}.webp`), data);
+            if (put) await put(`assets/${owner}/${stableId(slug, 'asset', f)}/${name}.webp`, data, 'image/webp');
+          }
+          say(`  ${f} -> ${webp.width}x${webp.height}${put ? ' (enviada)' : ''}`);
         }
       }
       return code;
@@ -91,6 +100,8 @@ export const commands: Record<string, Command> = {
       if (!args.length) return say('informe o slug ou --all'), 1;
       const url = process.env.DATABASE_URL;
       if (!url) return say('DATABASE_URL não definido'), 1;
+      if (process.env.S3_ENDPOINT && isLocal(url) !== isLocal(process.env.S3_ENDPOINT))
+        return say('DATABASE_URL e S3_ENDPOINT apontam para ambientes diferentes (um local, outro remoto): as imagens iriam para o bucket errado'), 1;
       const sql = postgres(url, { max: 1, onnotice: () => {} });
       const put = await s3Put();
       if (!put) say('aviso: S3_* ausente, imagens não enviadas ao bucket (só as linhas de assets)');
