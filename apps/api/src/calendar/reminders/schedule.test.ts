@@ -161,4 +161,17 @@ describe.skipIf(!process.env.DATABASE_URL)('calendar reminders: schedule + dispa
     expect(mine(u.id)).toHaveLength(0);
     expect((await rows(late)).find((r) => r.startsWith('d0'))).toMatch(/ skipped$/);
   });
+
+  it('dispatch: a failing send fails the run (D-1570), keeps the reminder scheduled, and the next run sends it', async () => {
+    const u = await newUser();
+    const ev = await newEvent(u, '2020-05-10T17:00:00Z');
+    await replan(u.id, ev, early);
+    const at = new Date('2020-05-09T21:01:00Z');
+    const broken: Notify = async () => { throw new Error('invalid environment'); };
+    await expect(dispatch.dispatchDueReminders(at, broken)).rejects.toThrow('sends failed');
+    expect((await rows(ev)).find((r) => r.startsWith('d1'))).toMatch(/ scheduled$/);
+    await dispatch.dispatchDueReminders(at, fake());
+    expect(mine(u.id)).toHaveLength(1);
+    expect((await rows(ev)).find((r) => r.startsWith('d1'))).toMatch(/ sent$/);
+  });
 });

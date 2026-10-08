@@ -16,7 +16,8 @@ vi.mock('../billing/trial-notice', () => ({ sweepTrialNotices: m.trial }));
 vi.mock('../billing/stripe', () => ({ createStripe: vi.fn(), installStripe: vi.fn() }));
 vi.mock('../ai/service', () => ({ failStaleJobs: vi.fn(async () => 0) }));
 
-import { runDaily, runHourly } from './maintenance';
+import { runDaily, runHourly, runSteps } from './maintenance';
+import { sendOnboardingEmails } from '../onboarding/emails';
 import { maintenanceDaily, maintenanceHourly } from '../inngest/maintenance';
 
 describe('maintenance schedule (F08 FR-8)', () => {
@@ -38,6 +39,21 @@ describe('maintenance schedule (F08 FR-8)', () => {
     expect(m.trial).toHaveBeenCalledWith(now);
     expect(m.purge).not.toHaveBeenCalled();
     expect(m.expire).not.toHaveBeenCalled();
+  });
+
+  it('a step that throws does not stop the next ones (D-1570: the calendar reminders were skipped)', async () => {
+    const reminders = vi.fn(async () => ({ sent: 1 }));
+    const { out, failed } = await runSteps({ env: async () => { throw new Error('EnvError'); }, 'calendar.dispatch-reminders': reminders });
+    expect(reminders).toHaveBeenCalled();
+    expect(out).toEqual({ 'calendar.dispatch-reminders': { sent: 1 } });
+    expect(failed).toEqual(['env']);
+  });
+
+  it('hourly still runs the later sweeps when one fails, then reports the failure', async () => {
+    m.trial.mockClear();
+    vi.mocked(sendOnboardingEmails).mockRejectedValueOnce(new Error('boom'));
+    await expect(runHourly(now)).rejects.toThrow('maintenance hourly failed: onboarding');
+    expect(m.trial).toHaveBeenCalledWith(now);
   });
 
   it('registers one hourly and one daily cron', () => {

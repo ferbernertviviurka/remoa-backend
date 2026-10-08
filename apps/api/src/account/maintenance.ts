@@ -15,40 +15,64 @@ import { sweepTrialNotices } from '../billing/trial-notice';
 
 const log = createLogger({ requestId: 'job-maintenance' });
 
-/** Hourly (cron `0 * * * *`), idempotent. The review reminder moved to the review.reminder job (G18, inngest/notices.ts). */
-export async function runHourly(now = new Date()) {
-  const referrals = await sweepReferrals(now); // F18 (D-384)
-  const support = await sweepSupport(now); // F19 FR-9 (Q-046)
-  const metrics = await refreshRecentMetrics(now); // F19 FR-13 (D-458)
-  const onboarding = await sendOnboardingEmails(now); // F12 FR-8 (D-525)
-  const staleJobs = await failStaleJobs(); // G22 qa (P-617): AI jobs of a process that died give their unit back
-  const trial = await sweepTrialNotices(now); // F30 (D-1213): "teste do Pro termina em 3 dias / hoje"
-  const out = { referrals, support, metrics, onboarding, staleJobs, trial };
-  log.info('maintenance hourly done', out);
+/** Runs every step in order even when one throws (D-1570: one failing step used to skip the calendar reminders). */
+export async function runSteps(steps: Record<string, () => Promise<unknown>>) {
+  const out: Record<string, unknown> = {};
+  const failed: string[] = [];
+  for (const [step, run] of Object.entries(steps)) {
+    try {
+      out[step] = await run();
+    } catch (e) {
+      failed.push(step);
+      log.error('maintenance step failed', { step, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { out, failed };
+}
+
+async function runAll(name: string, steps: Record<string, () => Promise<unknown>>) {
+  const { out, failed } = await runSteps(steps);
+  log.info(`maintenance ${name} done`, { ...out, failed });
+  if (failed.length) throw new Error(`maintenance ${name} failed: ${failed.join(', ')}`);
   return out;
 }
 
+/** Hourly (cron `0 * * * *`), idempotent. The review reminder moved to the review.reminder job (G18, inngest/notices.ts). */
+export function runHourly(now = new Date()) {
+  return runAll('hourly', {
+    referrals: () => sweepReferrals(now), // F18 (D-384)
+    support: () => sweepSupport(now), // F19 FR-9 (Q-046)
+    metrics: () => refreshRecentMetrics(now), // F19 FR-13 (D-458)
+    onboarding: () => sendOnboardingEmails(now), // F12 FR-8 (D-525)
+    staleJobs: () => failStaleJobs(), // G22 qa (P-617): AI jobs of a process that died give their unit back
+    trial: () => sweepTrialNotices(now), // F30 (D-1213): "teste do Pro termina em 3 dias / hoje"
+  });
+}
+
 /** Daily (cron `0 6 * * *` UTC): LGPD purge and answer-text retention (F08 FR-8). */
-export async function runDaily(now = new Date()) {
-  const stripe = process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: env().webOrigins[0]! }) : undefined;
-  installStripe(stripe); // F18: the referral sweep re-applies pending credits
-  const purged = await purgeDeletedAccounts(now, stripe);
-  const expired = await expireAnswerTexts(now);
-  const cards = await purgeDeletedCards(now); // F01 P-009
-  const assets = await cleanOrphanAssets(now); // F02 P-018 (also frees the assets of the cards just purged)
-  const out = { purged, expired, cards, assets };
-  log.info('maintenance daily done', out);
-  return out;
+export function runDaily(now = new Date()) {
+  return runAll('daily', {
+    purged: async () => {
+      const stripe = process.env.STRIPE_SECRET ? createStripe({ secret: process.env.STRIPE_SECRET, webOrigin: env().webOrigins[0]! }) : undefined;
+      installStripe(stripe); // F18: the referral sweep re-applies pending credits
+      return purgeDeletedAccounts(now, stripe);
+    },
+    expired: () => expireAnswerTexts(now),
+    cards: () => purgeDeletedCards(now), // F01 P-009
+    assets: () => cleanOrphanAssets(now), // F02 P-018 (also frees the assets of the cards just purged)
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   // FR-25 (D-993): job timeouts (30 s) for every run() of this process.
-  await asJob(async () => {
-    await runDaily();
-    await runHourly();
-    // G18: the Railway cron also runs the notice jobs once (idempotent; Inngest runs them on their own schedule).
+  const failed = await asJob(async () => {
+    // G18: the Railway cron also runs the notice jobs (idempotent; Inngest runs them on their own schedule).
+    // They go first so the calendar reminders never wait on (or die with) the maintenance sweeps (D-1570).
     const { noticeJobs } = await import('../inngest/notices');
-    for (const [job, j] of Object.entries(noticeJobs)) log.info('notice job done', { job, result: await j.run(new Date()) });
+    const notices = Object.fromEntries(Object.entries(noticeJobs).map(([job, j]) => [job, () => j.run(new Date())]));
+    const { out, failed } = await runSteps({ ...notices, daily: () => runDaily(), hourly: () => runHourly() });
+    log.info('maintenance cron done', { ...out, failed });
+    return failed;
   });
-  process.exit(0);
+  process.exit(failed.length ? 1 : 0);
 }

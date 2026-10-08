@@ -99,16 +99,20 @@ export async function dispatchDueReminders(now: Date, notify: Notify) {
     select distinct user_id, kind, occurrence_date::text as occurrence_date from calendar_reminders
     where status = 'scheduled' and send_at <= ${nowIso}::timestamptz limit 1000`);
   let sent = 0;
+  let failed = 0;
   for (const g of groups) {
     try {
       const n = await sendGroup(g, now, notify);
       sent += n;
       if (n) await invalidate('calendar.changed', { userId: g.user_id }); // after COMMIT: the reminders are now `sent`
     } catch (e) {
+      failed++;
       log.error('calendar reminder failed', { userId: g.user_id, kind: g.kind, error: e instanceof Error ? e.message : String(e) }); // retried next run
     }
   }
   const out = { sent, skipped: skipped.count, canceled: canceled.count };
-  if (sent || skipped.count || canceled.count) log.info('calendar reminders', out);
+  if (sent || skipped.count || canceled.count || failed) log.info('calendar reminders', { ...out, failed });
+  // D-1570: a run where every send failed (e.g. a bad env) used to look green until the rows went stale and were skipped.
+  if (failed) throw new Error(`calendar reminders: ${failed} of ${groups.length} sends failed (retried next run)`);
   return out;
 }
