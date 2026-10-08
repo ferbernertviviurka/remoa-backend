@@ -176,12 +176,12 @@ export type ApplyMapOpsInput = z.infer<typeof applyMapOpsInputSchema>;
 
 // --- F23 mapa no celular (D-664, D-665): preferências só do aparelho, em localStorage --------------
 export const MOBILE_MAP_PREFS_KEY = 'remoa:map-mobile-prefs';
-export const MOBILE_MAP_ZOOM_MIN = 0.4;
-export const MOBILE_MAP_ZOOM_MAX = 1.8;
+export const MOBILE_MAP_ZOOM_MIN = 0.1;
+export const MOBILE_MAP_ZOOM_MAX = 3;
 /** Abaixo disto o card entra na visão geral (FR-6). */
 export const MOBILE_MAP_SEMANTIC_ZOOM = 0.8;
 export const MOBILE_MAP_MAX_VIEWPORTS = 50;
-/** Última vista de um mapa; `x`/`y` em coordenadas do fluxo (centro), `zoom` já preso a 40%–180%. */
+/** Última vista de um mapa; `x`/`y` em coordenadas do fluxo (centro), `zoom` já preso a 10%–300% (D-1572: mapas prontos grandes). */
 export const mobileMapViewSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite(),

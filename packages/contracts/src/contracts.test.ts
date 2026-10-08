@@ -143,6 +143,7 @@ describe('events', () => {
 describe('mobileMapPrefsSchema (F23)', () => {
   it('fills defaults and rejects out-of-range zoom', () => {
     expect(mobileMapPrefsSchema.parse({})).toEqual({ version: 1, heat: true, labels: true, view: 'canvas', viewports: {}, favorites: [] });
-    expect(mobileMapPrefsSchema.safeParse({ viewports: { [crypto.randomUUID()]: { x: 0, y: 0, zoom: 3 } } }).success).toBe(false);
+    const at = (zoom: number) => mobileMapPrefsSchema.safeParse({ viewports: { [crypto.randomUUID()]: { x: 0, y: 0, zoom } } }).success;
+    expect([at(0.05), at(0.1), at(3), at(3.5)]).toEqual([false, true, true, false]); // D-1572: 10–300%
   });
 });
