@@ -60,6 +60,8 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     session: vi.fn(async () => ok(publicSession())),
     answer: vi.fn(async () => ok({ attemptId: ID, attemptNo: 1, verdict: 'incorrect', gradedBy: 'ai', rating: 'again', feedback: 'Revise o gatilho.', hint: null, canRetry: false, manipulation: false })),
     finish: vi.fn(async () => ok({})),
+    retry: vi.fn(async () => ok(publicSession())),
+    pullReview: vi.fn(async () => ok({ cards: 0 })),
     dispute: vi.fn(async () => ok({ attemptId: ID, disputed: true })),
     bank: vi.fn(async () => ok([])),
     archive: vi.fn(async () => ok({ id: ID, status: 'archived' as const })),
@@ -68,6 +70,9 @@ function mockService(over: Partial<ChallengeAiService> = {}) {
     topics: vi.fn(async () => ok([])),
     taxonomy: vi.fn(async () => ok([])),
     report: vi.fn(async () => ok({ itemId: ID, reported: true as const })),
+    reportSummary: vi.fn(async () => ok({ summaryId: ID, reported: true as const })),
+    rubric: vi.fn(async () => ok({ essentialPoints: ['Ponto sintético'], acceptedVariants: [], criticalErrors: [], status: 'auto' as const })),
+    saveRubric: vi.fn(async () => ok({ essentialPoints: ['Ponto sintético'], acceptedVariants: [], criticalErrors: [], status: 'edited' as const })),
     summarize: vi.fn(async () => err('internal', 'unused')),
     summaries: vi.fn(async () => ok([])),
     ...over,
@@ -230,6 +235,12 @@ describe('rotas /v1/challenge-ai: entrada estrita', () => {
     const reported = await send(app, 'POST', `/items/${ID}/report`, {});
     expect(reported.status).toBe(200);
     expect(await reported.json()).toEqual({ ok: true, data: { itemId: ID, reported: true } });
+    const summaryReport = await send(app, 'POST', `/summaries/${ID}/report`, {});
+    expect(summaryReport.status).toBe(200);
+    expect(await summaryReport.json()).toEqual({ ok: true, data: { summaryId: ID, reported: true } });
+    expect(service.reportSummary).toHaveBeenCalledWith(USER, ID);
+    const extra = await send(app, 'POST', `/summaries/${ID}/report`, { note: 'x' });
+    expect(extra.status).toBe(422);
     const leaked = appFor(mockService({ archive: vi.fn(async () => ok({ id: ID, status: 'archived', correctKey: SECRET })) }));
     const hidden = await send(leaked, 'POST', `/bank/${ID}/archive`, {});
     expect(hidden.status).toBe(500);
@@ -300,6 +311,30 @@ describe('rotas /v1/challenge-ai: entrada estrita', () => {
     expect(hidden.status).toBe(500);
     expect(await hidden.text()).not.toContain(SECRET);
   });
+
+  it('the owner rubric has no answer, and an extra field is rejected', async () => {
+    const rubric = { essentialPoints: ['Ponto sintético'], acceptedVariants: [] as string[], criticalErrors: [] as string[], status: 'auto' as const };
+    const service = mockService({
+      rubric: vi.fn(async () => ok(rubric)),
+      saveRubric: vi.fn(async () => ok({ ...rubric, status: 'edited' as const })),
+    });
+    const app = appFor(service);
+    const got = await send(app, 'GET', `/cards/${ID}/rubric`);
+    expect(got.status).toBe(200);
+    expect(await got.json()).toEqual({ ok: true, data: rubric });
+    expect(service.rubric).toHaveBeenCalledWith(USER, ID);
+    const leaked = appFor(mockService({ rubric: vi.fn(async () => ok({ ...rubric, expectedAnswer: SECRET })) }));
+    const hidden = await send(leaked, 'GET', `/cards/${ID}/rubric`);
+    expect(hidden.status).toBe(500);
+    expect(await hidden.text()).not.toContain(SECRET);
+    const extra = await send(app, 'POST', `/cards/${ID}/rubric`, { essentialPoints: ['Ponto sintético'], acceptedVariants: [], criticalErrors: [], expectedAnswer: SECRET });
+    expect(extra.status).toBe(422);
+    expect(await extra.text()).not.toContain(SECRET);
+    expect(service.saveRubric).not.toHaveBeenCalled();
+    const saved = await send(app, 'POST', `/cards/${ID}/rubric`, { essentialPoints: ['Ponto sintético'], acceptedVariants: [], criticalErrors: [] });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).data.status).toBe('edited');
+  });
 });
 
 describe('rotas /v1/challenge-ai: quem chama e quanto', () => {
@@ -307,8 +342,11 @@ describe('rotas /v1/challenge-ai: quem chama e quanto', () => {
     const app = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (t) => (t === 'ok' ? USER : null) });
     const paths: [string, string][] = [
       ['POST', '/v1/challenge-ai/sessions'], ['GET', `/v1/challenge-ai/sessions/${ID}`], ['POST', `/v1/challenge-ai/sessions/${ID}/answers`],
-      ['POST', `/v1/challenge-ai/sessions/${ID}/finish`], ['POST', `/v1/challenge-ai/attempts/${ID}/dispute`], ['GET', '/v1/challenge-ai/bank'],
+      ['POST', `/v1/challenge-ai/sessions/${ID}/finish`], ['POST', `/v1/challenge-ai/sessions/${ID}/retry`], ['POST', `/v1/challenge-ai/sessions/${ID}/review`],
+      ['POST', `/v1/challenge-ai/attempts/${ID}/dispute`], ['GET', '/v1/challenge-ai/bank'],
+      ['GET', `/v1/challenge-ai/cards/${ID}/rubric`], ['POST', `/v1/challenge-ai/cards/${ID}/rubric`],
       ['POST', '/v1/challenge-ai/summaries'], ['GET', `/v1/challenge-ai/boards/${BOARD}/summaries`],
+      ['POST', `/v1/challenge-ai/summaries/${ID}/report`],
     ];
     for (const [method, path] of paths) {
       const res = await app.request(path, { method });
@@ -332,12 +370,12 @@ describe('rotas /v1/challenge-ai: quem chama e quanto', () => {
 // --- Service over in-memory stores (real session.ts and grade.ts) --------------------------------------------------------
 
 type Mem = {
-  sessions: (SessionRow & { finishedAt: Date | null })[]; items: ItemRow[]; rows: (StoredAttempt & { answerHash: string })[]; disputes: string[]; scores: unknown[];
+  sessions: (SessionRow & { finishedAt: Date | null })[]; items: ItemRow[]; rows: (StoredAttempt & { answerHash: string })[]; disputes: string[]; scores: unknown[]; reviews: string[];
   grades: AfterGrade[]; refs: Map<string, Reference>; advice: Map<string, StudyAdvice>;
 };
 
 function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replies?: (Veredito | Error)[]; units?: number; limitBatch?: number; card?: CardDue } = {}) {
-  const mem: Mem = { sessions: [], items: [], rows: [], disputes: [], scores: [], grades: [], refs: new Map(Object.entries(o.refs ?? {})), advice: new Map() };
+  const mem: Mem = { sessions: [], items: [], rows: [], disputes: [], scores: [], grades: [], reviews: [], refs: new Map(Object.entries(o.refs ?? {})), advice: new Map() };
   const counts = (id: string) => {
     const its = mem.items.filter((i) => i.sessionId === id);
     const s = mem.sessions.find((x) => x.id === id)!;
@@ -394,8 +432,10 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
       return mem.rows.filter((a) => ids.has(a.itemId)).sort((a, b) => a.attemptNo - b.attemptNo);
     },
     items: async (_u, sid) => mem.items.filter((i) => i.sessionId === sid).sort((a, b) => a.position - b.position),
+    labels: async (_u, sid) => mem.items.filter((i) => i.sessionId === sid).map((i) => ({ itemId: i.id, module: 'Módulo sintético', topic: i.bankId ? 'Sepse' : null })),
+    pullReview: async (_u, sid) => { mem.reviews.push(sid); return 1; },
     reference: async (_u, _s, item) => (item.bankId ? (mem.refs.get(item.bankId) ?? null) : null),
-    recentAiGradings: async () => 0,
+    recentAiGradings: async () => ({ hour: 0, day: 0 }),
     saveGraded: async (_u, itemId, g) => {
       if (mem.rows.some((x) => x.itemId === itemId && x.attemptNo === g.attemptNo && x.gradedBy !== 'pending')) return null;
       const id = randomUUID();
@@ -423,6 +463,9 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     topics: async () => [],
     taxonomy: async () => [],
     report: async () => null,
+    reportSummary: async () => null,
+    rubric: async () => null,
+    saveRubric: async () => null,
   };
   let units = o.units ?? 100;
   const queue = [...(o.replies ?? [])];
@@ -438,7 +481,7 @@ function fixture(o: { bank?: BankRow[]; refs?: Record<string, Reference>; replie
     if (next instanceof Error) throw next;
     return { text: '', model: 'test/model', tokensIn: 1, tokensOut: 1, latencyMs: 7, attempts: 1, fallback: false, billable: true as const, data: args[0].parse(next), repaired: false };
   });
-  const limits = { sessionTtlMin: 120, maxGradingsPerCardHour: 5, batchGradeMax: o.limitBatch ?? 10, genBatchSize: 10, dupThreshold: 0.8, answerMaxChars: 1200 };
+  const limits = { sessionTtlMin: 120, maxGradingsPerCardHour: 5, maxGradingsPerCardDay: 5, batchGradeMax: o.limitBatch ?? 10, genBatchSize: 10, dupThreshold: 0.8, answerMaxChars: 1200 };
   const deps: GradeDeps = { reserve, generateJson: model as unknown as typeof generateJson, limits };
   const generate = vi.fn<Io['generate']>(async () => err('internal', 'generate not stubbed'));
   const io: Io = {
@@ -703,11 +746,35 @@ describe('answers (serviço): só o resultado público', () => {
     expect(text).not.toContain(SECRET);
     expect(text).not.toMatch(LEAK);
     const report = challengeReportSchema.parse((JSON.parse(text) as { data: unknown }).data);
-    expect(report).toMatchObject({ status: 'finished', total: 1, score: { correct: 0, partial: 1, incorrect: 0, pending: 0, unanswered: 0 } });
+    expect(report).toMatchObject({ status: 'finished', total: 1, score: { correct: 0, partial: 1, incorrect: 0, pending: 0, unanswered: 0 }, groups: [{ kind: 'module', label: 'Módulo sintético', partial: 1 }, { kind: 'topic', label: 'Sepse', partial: 1 }] });
     expect(report.items[0]).toMatchObject({ verdict: 'partial', gradedBy: 'ai', rating: 'hard', stem: q.stem });
     expect(f.io.gradeBatch).toHaveBeenCalledTimes(1);
     expect(f.mem.scores).toEqual([{ correct: 0, partial: 1, incorrect: 0, pending: 0 }]);
     expect(f.mem.rows.map((r) => r.gradedBy)).toEqual(['pending', 'ai']);
+  });
+
+  it('D-1648: retry opens a new session with only the missed question, and review pulls that card due', async () => {
+    const q = discursive();
+    const f = fixture({ bank: [q], refs: { [q.id]: ref({ expectedAnswer: SECRET, keyPoints: [SECRET] }) }, replies: [reply({ veredito: 'incorreta', feedback: 'Revise o gatilho.' })] });
+    const { app, sessionId, firstItem } = await started(f, [q], { grading: 'end' });
+    await send(app, 'POST', `/sessions/${sessionId}/answers`, { itemId: firstItem, answer: { kind: 'text', text: 'Resposta sintética com tamanho suficiente' } });
+    expect((await send(app, 'POST', `/sessions/${sessionId}/finish`)).status).toBe(200);
+
+    const again = await send(app, 'POST', `/sessions/${sessionId}/retry`);
+    const body = await again.text();
+    expect(again.status).toBe(200);
+    expect(body).not.toContain(SECRET);
+    expect(body).not.toMatch(LEAK);
+    const next = aiChallengeSessionPublicSchema.parse((JSON.parse(body) as { data: unknown }).data);
+    expect(next.id).not.toBe(sessionId);
+    expect(next.total).toBe(1);
+    expect(next.current).toMatchObject({ type: 'discursive', stem: q.stem });
+    expect(f.mem.sessions).toHaveLength(2);
+
+    const review = await send(app, 'POST', `/sessions/${sessionId}/review`);
+    expect(await review.json()).toMatchObject({ ok: true, data: { cards: 1 } });
+    expect(f.mem.reviews).toEqual([sessionId]);
+    expect((await send(app, 'POST', `/sessions/${next.id}/retry`)).status).toBe(409);
   });
 
   it('D-1567: the report has the time per question, the average and the percent; under 70% the advice is written once and saved', async () => {

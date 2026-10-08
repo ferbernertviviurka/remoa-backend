@@ -141,6 +141,8 @@ export const aiChallengeSessionPublicSchema = z
     /** Session clock on the screen (D-1567). */
     startedAt: timestampSchema,
     expiresAt: timestampSchema,
+    /** FR-2: optional countdown, in seconds. Absent on older rows; null means no timer. */
+    timerSec: z.number().int().min(30).max(3 * 60 * 60).nullable().optional(),
     current: aiChallengeItemPublicSchema.nullable(),
     /** FR-4: AI gradings this session will use, shown before it starts. */
     aiUnits: z.number().int().nonnegative(),

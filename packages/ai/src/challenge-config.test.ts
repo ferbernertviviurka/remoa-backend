@@ -4,7 +4,7 @@ import { modelFor } from './config';
 
 describe('challengeLimits', () => {
   it('uses the spec defaults when unset or empty', () => {
-    const defaults = { sessionTtlMin: 120, maxGradingsPerCardHour: 5, batchGradeMax: 10, genBatchSize: 10, dupThreshold: 0.8, answerMaxChars: 1200 };
+    const defaults = { sessionTtlMin: 120, maxGradingsPerCardHour: 5, maxGradingsPerCardDay: 5, batchGradeMax: 10, genBatchSize: 10, dupThreshold: 0.8, answerMaxChars: 1200 };
     expect(challengeLimits({})).toEqual(defaults);
     expect(challengeLimits({ GEN_DUP_THRESHOLD: ' ', ANSWER_MAX_CHARS: '' })).toEqual(defaults);
   });
@@ -14,12 +14,13 @@ describe('challengeLimits', () => {
       challengeLimits({
         CHALLENGE_SESSION_TTL_MIN: '30',
         CHALLENGE_MAX_GRADINGS_PER_CARD_HOUR: '2',
+        CHALLENGE_MAX_GRADINGS_PER_CARD_DAY: '3',
         CHALLENGE_BATCH_GRADE_MAX: '4',
         GEN_BATCH_SIZE: '6',
         GEN_DUP_THRESHOLD: '0.9',
         ANSWER_MAX_CHARS: '500',
       }),
-    ).toEqual({ sessionTtlMin: 30, maxGradingsPerCardHour: 2, batchGradeMax: 4, genBatchSize: 6, dupThreshold: 0.9, answerMaxChars: 500 });
+    ).toEqual({ sessionTtlMin: 30, maxGradingsPerCardHour: 2, maxGradingsPerCardDay: 3, batchGradeMax: 4, genBatchSize: 6, dupThreshold: 0.9, answerMaxChars: 500 });
   });
 
   it('throws on a malformed value', () => {

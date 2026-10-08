@@ -51,8 +51,9 @@ export type GradeInput = {
   context: { assunto: string; publico: string; neighbors: string; evidence: string };
   elapsedMs?: number;
   targetMs?: number;
-  /** FR-40: AI gradings of this card in the last hour (the caller counts them). */
+  /** FR-40: AI gradings of this card in the last hour and the last day (the caller counts them). */
   gradingsLastHour?: number;
+  gradingsLastDay?: number;
   /** Grading a stored pending attempt (FR-35): its number is reused and the verdict goes in a new row. */
   pending?: { attemptNo: number };
 };
@@ -243,11 +244,17 @@ function plan(input: GradeInput, limits: ChallengeLimits, allowRetry: boolean): 
       },
     };
   }
-  if (input.gradingsLastHour !== undefined && input.gradingsLastHour >= limits.maxGradingsPerCardHour) return { kind: 'done', outcome: fail('rate_limited') };
+  if (overCardLimit(input, limits)) return { kind: 'done', outcome: fail('rate_limited') };
   return { kind: 'ai', job: { ctx, text, hidden } };
 }
 
 // ── AI layer ─────────────────────────────────────────────────────────────────
+
+/** FR-40: 5 AI gradings per card per hour and per day, unless the env says otherwise. */
+function overCardLimit(input: GradeInput, limits: ChallengeLimits): boolean {
+  if (input.gradingsLastHour !== undefined && input.gradingsLastHour >= limits.maxGradingsPerCardHour) return true;
+  return input.gradingsLastDay !== undefined && input.gradingsLastDay >= limits.maxGradingsPerCardDay;
+}
 
 /** FR-35: no quota -> a pending row, verdict null, no retry, no schedule. A stored pending attempt stays as it is. */
 function pendingOf(ctx: Ctx): GradeOutcome {

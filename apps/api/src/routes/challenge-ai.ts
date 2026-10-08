@@ -4,8 +4,9 @@ import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   aiAnswerInputSchema, aiAnswerItemInputSchema, aiAnswerResultSchema, aiChallengeItemPublicSchema, aiChallengeItemServerSchema,
-  aiChallengeSessionPublicSchema, aiItemTypes, cardRubricServerSchema, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, disputeVerdictInputSchema, enamedTopicOptionSchema, err,
+  aiChallengeSessionPublicSchema, aiItemTypes, cardRubricServerSchema, cardRubricStatuses, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, disputeVerdictInputSchema, enamedTopicOptionSchema, err,
   generateSummaryInputSchema, gradedBy as gradedByValues, grades, idSchema, mapSummaryPublicSchema, ok, parseWith, questionBankItemPublicSchema,
+  referenceRefSchema, shuffleMapSchema,
   questionDifficulties, questionSources, questionStatuses, questionTypes, verdicts,
   type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey, type CardRubricServer,
   type AppError, type ChallengeConfig, type ErrorCode, type GradedBy, type Grade, type QuestionType, type Result, type Verdict,
@@ -23,8 +24,8 @@ import {
   type CardDue, type GradeDeps, type GradeErrorCode, type GradeInput, type GradeOutcome, type GradedAttempt, type PriorAttempt, type Schedule,
 } from '../challenge-ai/grade';
 import {
-  acceptAnswer, advance, answerHash as sessionAnswerHash, appendBankItem, endEarly, getSession, recordAttempt, sessionStore, startSession,
-  type ItemRow, type SessionRow, type SessionStore,
+  acceptAnswer, advance, answerHash as sessionAnswerHash, appendBankItem, endEarly, getSession, recordAttempt, sessionExpiresAt, sessionStore, startSession,
+  type ItemRow, type NewItem, type SessionRow, type SessionStore,
 } from '../challenge-ai/session';
 import { generateSummary, listSummaries, type GenerateSummaryInput } from '../challenge-ai/summary';
 import { ADVICE_BELOW, scorePercent, studyAdviceSchema, writeAdvice, type AdviceCandidates, type StudyAdvice } from '../challenge-ai/advice';
@@ -57,6 +58,14 @@ export const challengeReportSchema = z
       correct: z.number().int().nonnegative(), partial: z.number().int().nonnegative(), incorrect: z.number().int().nonnegative(),
       pending: z.number().int().nonnegative(), unanswered: z.number().int().nonnegative(),
     }).strict(),
+    /** FR-33: the same score split by the card's module and by the question's ENAMED topic. */
+    groups: z.array(z.object({
+      kind: z.enum(['module', 'topic']),
+      label: z.string().min(1).max(80),
+      correct: z.number().int().nonnegative(),
+      partial: z.number().int().nonnegative(),
+      incorrect: z.number().int().nonnegative(),
+    }).strict()).max(40),
     items: z.array(z.object({
       itemId: idSchema,
       position: z.number().int().nonnegative(),
@@ -75,6 +84,32 @@ export const challengeReportSchema = z
   })
   .strict();
 export type ChallengeReport = z.infer<typeof challengeReportSchema>;
+
+export type ReportGroup = ChallengeReport['groups'][number];
+
+/** FR-33: one row per module and per ENAMED topic that a graded question belongs to. Pending and unanswered stay out. */
+export function reportGroups(
+  items: readonly { itemId: string; verdict: Verdict | null }[],
+  labels: readonly { itemId: string; module: string | null; topic: string | null }[],
+): ReportGroup[] {
+  const byId = new Map(labels.map((l) => [l.itemId, l]));
+  const acc = new Map<string, ReportGroup>();
+  for (const item of items) {
+    if (item.verdict !== 'correct' && item.verdict !== 'partial' && item.verdict !== 'incorrect') continue;
+    const label = byId.get(item.itemId);
+    for (const [kind, name] of [['module', label?.module], ['topic', label?.topic]] as const) {
+      const text = name?.trim();
+      if (!text) continue;
+      const key = `${kind}\0${text}`;
+      const g = acc.get(key) ?? { kind, label: text.slice(0, 80), correct: 0, partial: 0, incorrect: 0 };
+      g[item.verdict] += 1;
+      acc.set(key, g);
+    }
+  }
+  return [...acc.values()].slice(0, 40);
+}
+
+const reviewResultSchema = z.object({ cards: z.number().int().nonnegative() }).strict();
 
 /** FR-19/FR-8: how many questions came from the bank, how many were written now, how many are missing. Numbers only. */
 export const generationMetaSchema = z
@@ -95,6 +130,22 @@ export const editQuestionSchema = z.object({
 /** FR-17: the student confirms a topic that already exists in the closed ENAMED list. */
 export const confirmTopicSchema = z.object({ topicId: idSchema }).strict();
 export const reportResultSchema = z.object({ itemId: idSchema, reported: z.literal(true) }).strict();
+/** FR-52: the summary goes to the reviewer queue. The body stays empty. */
+export const summaryReportSchema = z.object({ summaryId: idSchema, reported: z.literal(true) }).strict();
+/** FR-26: the owner's rubric for the current card text. No expected answer, no hash. */
+export const ownerRubricSchema = z.object({
+  essentialPoints: z.array(z.string().min(1).max(400)).min(1).max(12),
+  acceptedVariants: z.array(z.string().min(1).max(400)).max(20),
+  criticalErrors: z.array(z.string().min(1).max(400)).max(12),
+  status: z.enum(cardRubricStatuses),
+}).strict();
+export type OwnerRubric = z.infer<typeof ownerRubricSchema>;
+/** The student sends the three lists. Status is set by the server. */
+export const saveRubricSchema = z.object({
+  essentialPoints: z.array(z.string().trim().min(1).max(400)).min(1).max(12),
+  acceptedVariants: z.array(z.string().trim().min(1).max(400)).max(20),
+  criticalErrors: z.array(z.string().trim().min(1).max(400)).max(12),
+}).strict();
 
 /** GET /bank query. Strict: an unknown parameter is a 422. */
 export const bankQuerySchema = z
@@ -132,6 +183,10 @@ export type ChallengeAiService = {
   session(userId: string, sessionId: string): Promise<Result<unknown>>;
   answer(userId: string, sessionId: string, body: AiAnswerItemInput, requestId: string): Promise<Result<unknown>>;
   finish(userId: string, sessionId: string, requestId: string): Promise<Result<unknown>>;
+  /** FR-33: a new session with only the incorrect and partial items. The reference stays on the server. */
+  retry(userId: string, sessionId: string): Promise<Result<unknown>>;
+  /** FR-33: missed cards whose review date is still ahead become due now. */
+  pullReview(userId: string, sessionId: string): Promise<Result<unknown>>;
   dispute(userId: string, attemptId: string): Promise<Result<unknown>>;
   bank(userId: string, query: BankQuery): Promise<Result<unknown>>;
   archive(userId: string, bankId: string): Promise<Result<unknown>>;
@@ -140,6 +195,12 @@ export type ChallengeAiService = {
   topics(userId: string, areaId: string | null): Promise<Result<unknown>>;
   taxonomy(userId: string, kind: 'area' | 'domain' | 'topic'): Promise<Result<unknown>>;
   report(userId: string, itemId: string): Promise<Result<unknown>>;
+  /** FR-52: a saved summary goes to the F10 queue, attached to a card it cites. */
+  reportSummary(userId: string, summaryId: string): Promise<Result<unknown>>;
+  /** FR-26: the rubric grading will use for this card's current text. */
+  rubric(userId: string, cardId: string): Promise<Result<unknown>>;
+  /** FR-26: the owner replaces the automatic points. An approved rubric stays. */
+  saveRubric(userId: string, cardId: string, body: unknown): Promise<Result<unknown>>;
   summarize(input: GenerateSummaryInput): Promise<Result<unknown>>;
   summaries(userId: string, boardId: string): Promise<Result<unknown>>;
 };
@@ -170,8 +231,12 @@ export type DataPort = {
   attempts(userId: string, itemId: string): Promise<StoredAttempt[]>;
   sessionAttempts(userId: string, sessionId: string): Promise<StoredAttempt[]>;
   items(userId: string, sessionId: string): Promise<ItemRow[]>;
+  /** FR-33: module title from the card and ENAMED topic name from the bank row. Missing sides are null. */
+  labels(userId: string, sessionId: string): Promise<{ itemId: string; module: string | null; topic: string | null }[]>;
+  /** FR-33: sets `due = now()` on the card itself when a missed item's review is still in the future. Returns how many moved. */
+  pullReview(userId: string, sessionId: string): Promise<number>;
   reference(userId: string, session: SessionRow, item: AiChallengeItemServer): Promise<Reference | null>;
-  recentAiGradings(userId: string, cardId: string): Promise<number>;
+  recentAiGradings(userId: string, cardId: string): Promise<{ hour: number; day: number }>;
   /** Appends the graded row (same attempt_no as the pending one). null = that attempt was graded already (a concurrent request won). */
   saveGraded(userId: string, itemId: string, g: GradedAttempt): Promise<string | null>;
   saveScore(userId: string, sessionId: string, score: ScoreRow): Promise<void>;
@@ -198,6 +263,12 @@ export type DataPort = {
   taxonomy(userId: string, kind: 'area' | 'domain' | 'topic'): Promise<{ id: string; name: string }[]>;
   /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
   report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
+  /** FR-52: null when the summary is not this user's or cites no card. */
+  reportSummary(userId: string, summaryId: string): Promise<{ summaryId: string; reported: true } | null>;
+  /** FR-26: stored rubric for the current card text, or the automatic one. null = not this user's card. `'empty'` = nothing to derive. */
+  rubric(userId: string, cardId: string): Promise<OwnerRubric | 'empty' | null>;
+  /** FR-26: writes status `edited`. `'approved'` is locked. `'numbers'` = a dose the card does not have. */
+  saveRubric(userId: string, cardId: string, points: z.infer<typeof saveRubricSchema>): Promise<OwnerRubric | 'approved' | 'numbers' | 'empty' | null>;
 };
 
 export type Io = {
@@ -258,11 +329,45 @@ const pendingResult = (attemptId: string, attemptNo: number): AiAnswerResult => 
 
 const gradedOf = (all: readonly StoredAttempt[], attemptNo: number) => all.find((a) => a.attemptNo === attemptNo && a.gradedBy !== 'pending');
 
+/** FR-33: the last graded verdict is a miss when it is incorrect or partial. */
+function missedVerdict(attempts: readonly StoredAttempt[], itemId: string): boolean {
+  const mine = attempts.filter((a) => a.itemId === itemId);
+  const top = Math.max(0, ...mine.map((a) => a.attemptNo));
+  const last = mine.filter((a) => a.attemptNo === top);
+  const final = last.find((a) => a.gradedBy !== 'pending') ?? last[0];
+  return final?.verdict === 'incorrect' || final?.verdict === 'partial';
+}
+
+/** New ids and positions. The reference is copied for the grader and never leaves `toPublic`. null = nothing to copy, or a row that does not parse. */
+function cloneMissed(rows: readonly ItemRow[]): NewItem[] | null {
+  if (!rows.length) return null;
+  const out: NewItem[] = [];
+  for (const [position, row] of rows.entries()) {
+    const id = randomUUID();
+    const base = row.payloadPublic && typeof row.payloadPublic === 'object' ? row.payloadPublic : {};
+    const pub = aiChallengeItemPublicSchema.safeParse({ ...base, id, position });
+    const ref = referenceRefSchema.safeParse(row.referenceRef);
+    const shuffle = row.shuffleMap == null ? { success: true as const, data: null } : shuffleMapSchema.safeParse(row.shuffleMap);
+    if (!pub.success || !ref.success || !shuffle.success) return null;
+    out.push({
+      id, position, kind: row.kind, cardId: row.cardId, subId: row.subId, bankId: row.bankId, type: pub.data.type,
+      payloadPublic: pub.data, referenceRef: ref.data, shuffleMap: shuffle.data,
+    });
+  }
+  return out;
+}
+
 // --- Service over the existing modules ------------------------------------------------------------------------------------
 
 /** FR-2 mixed, one question per step: objective on even steps, discursive on odd ones (n = 5: 3 + 2, as the batch split did). */
 const typeAt = (cfg: ChallengeConfig, at: number): QuestionType =>
   !cfg.questionType || cfg.questionType === 'mixed' ? (at % 2 ? 'discursive' : 'objective') : cfg.questionType;
+
+/** FR-40: counts already stored, so the grader can refuse a 6th AI grading of this card in the hour or in the day. */
+async function cardGradingCounts(io: Io, userId: string, cardId: string): Promise<{ gradingsLastHour: number; gradingsLastDay: number }> {
+  const n = await io.data.recentAiGradings(userId, cardId);
+  return { gradingsLastHour: n.hour, gradingsLastDay: n.day };
+}
 
 export function createChallengeAiService(io: Io): ChallengeAiService {
   const filling = new Map<string, Promise<void>>();
@@ -375,7 +480,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
         userId, mode: modeOf(session), item: withReference(item, ref), answer: body.answer, card, history: attempts.map(toPrior),
         context: { assunto: ref.assunto, publico: PUBLICO, neighbors: ref.neighbors, evidence: ref.evidence },
         elapsedMs: body.elapsedMs, pending: { attemptNo: rec.attemptNo },
-        gradingsLastHour: item.cardId ? await io.data.recentAiGradings(userId, item.cardId) : undefined,
+        ...(item.cardId ? await cardGradingCounts(io, userId, item.cardId) : {}),
       }, { requestId });
       if (!outcome.ok && outcome.error.code === 'quota_exceeded') {
         // FR-35: no AI unit left. The answer stays as the pending row; it is graded at finish, the student moves on
@@ -430,6 +535,7 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
               userId, mode: modeOf(s), item: withReference(toServerItem(w.row), ref), answer: w.pend.answer,
               card: w.row.cardId ? await io.data.cardDue(userId, w.row.cardId, w.row.subId || '', now) : null, history: w.mine.map(toPrior),
               context: { assunto: ref.assunto, publico: PUBLICO, neighbors: ref.neighbors, evidence: ref.evidence }, pending: { attemptNo: w.pend.attemptNo },
+              ...(w.row.cardId ? await cardGradingCounts(io, userId, w.row.cardId) : {}),
             },
           });
         }
@@ -490,11 +596,37 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
         advice = await io.advise(candidates, percent, requestId);
         await io.data.saveAdvice(userId, sessionId, advice);
       }
+      const groups = reportGroups(items, await io.data.labels(userId, sessionId));
       return ok({
         // D-1566: a generated session finished early counts the questions it built, not the n it was asked for
         sessionId: s.id, boardId: s.boardId, format: s.format, status: s.status === 'active' ? 'finished' : s.status, total: rows.length, percent, timing,
-        advice, score, items,
+        advice, score, groups, items,
       } satisfies ChallengeReport);
+    },
+
+    async retry(userId, sessionId) {
+      const now = io.now();
+      const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
+      if (!s?.boardId) return err('not_found', 'session_not_found');
+      if (s.status !== 'finished') return err('conflict', 'session_not_finished');
+      const rows = await io.data.items(userId, sessionId);
+      const attempts = await io.data.sessionAttempts(userId, sessionId);
+      const missed = rows.filter((row) => missedVerdict(attempts, row.id));
+      const built = cloneMissed(missed.slice(0, 20));
+      if (!built) return err('validation', 'nothing_to_retry');
+      const id = randomUUID();
+      const cfg = { ...s.params, n: built.length, preset: s.params.preset === 'mock' ? 'practice' as const : s.params.preset };
+      const expiresAt = sessionExpiresAt(now, cfg.timerSec);
+      await io.tx(userId, (st) => st.createSession({
+        id, userId, boardId: s.boardId!, scope: cfg.scope, format: s.format, params: cfg, startedAt: now, expiresAt,
+      }, built));
+      return io.tx(userId, (st) => getSession(st, userId, id, now));
+    },
+
+    async pullReview(userId, sessionId) {
+      const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
+      if (!s) return err('not_found', 'session_not_found');
+      return ok({ cards: await io.data.pullReview(userId, sessionId) });
     },
 
     dispute: (userId, attemptId) => io.data.dispute(userId, attemptId),
@@ -522,6 +654,24 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
     report: async (userId, itemId) => {
       const row = await io.data.report(userId, itemId);
       return row ? ok(row) : err('not_found', 'item_not_found');
+    },
+    reportSummary: async (userId, summaryId) => {
+      const row = await io.data.reportSummary(userId, summaryId);
+      return row ? ok(row) : err('not_found', 'summary_not_found');
+    },
+    rubric: async (userId, cardId) => {
+      const row = await io.data.rubric(userId, cardId);
+      if (row === 'empty') return err('validation', 'rubric_empty');
+      return row ? ok(row) : err('not_found', 'card_not_found');
+    },
+    saveRubric: async (userId, cardId, body) => {
+      const parsed = parseWith(saveRubricSchema, body);
+      if (!parsed.ok) return parsed;
+      const row = await io.data.saveRubric(userId, cardId, parsed.data);
+      if (row === 'numbers') return err('validation', 'ungrounded_number');
+      if (row === 'approved') return err('conflict', 'rubric_approved');
+      if (row === 'empty') return err('validation', 'rubric_empty');
+      return row ? ok(row) : err('not_found', 'card_not_found');
     },
     summarize: (input) => io.summarize(input),
     summaries: (userId, boardId) => io.summaries(userId, boardId),
@@ -557,6 +707,25 @@ const publicBank = (r: Raw) => ({
   stats: json(r.stats), createdAt: r.created_at,
 });
 
+const toOwnerRubric = (r: CardRubricServer): OwnerRubric => ({
+  essentialPoints: r.essentialPoints, acceptedVariants: r.acceptedVariants, criticalErrors: r.criticalErrors, status: r.status,
+});
+
+/** The caller's own card, plus the hash the rubric is tied to. */
+async function ownerCard(tx: Tx, userId: string, cardId: string) {
+  const [card] = await exec(tx, sql`select c.front, c.back, c.title, c.didactics
+    from cards c join boards b on b.id = c.board_id
+    where c.id = ${cardId} and c.deleted_at is null and b.user_id = ${userId}`);
+  if (!card) return null;
+  const didactics = rec(json(card.didactics));
+  const front = text(card.front);
+  const back = text(card.back);
+  const title = text(card.title);
+  const porQue = text(didactics.porQue);
+  const texts = [title, front, back, porQue].filter((s): s is string => s !== null);
+  return { front, back, hash: cardContentHash(front, back, porQue), texts };
+}
+
 export const dbData: DataPort = {
   // asServer: covered, missing and hint have no `authenticated` grant (D-1633)
   attempts: (userId, itemId) => run(userId, async (tx) =>
@@ -566,6 +735,27 @@ export const dbData: DataPort = {
     (await asServer<Raw>(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where user_id = ${userId}
       and item_id in (select id from challenge_items where session_id = ${sessionId} and user_id = ${userId}) order by attempt_no, created_at`)).map(toStored)),
 
+  labels: (userId, sessionId) => run(userId, async (tx) => {
+    const rows = await exec(tx, sql`select i.id, nullif(btrim(c.didactics->>'modulo'), '') as module, nullif(btrim(t.name), '') as topic
+      from challenge_items i
+      left join cards c on c.id = i.card_id
+      left join question_bank q on q.id = i.bank_id and q.user_id = i.user_id
+      left join enamed_taxonomy t on t.id = q.enamed_topic_id
+      where i.session_id = ${sessionId} and i.user_id = ${userId}`);
+    return rows.map((r) => ({ itemId: String(r.id), module: text(r.module), topic: text(r.topic) }));
+  }),
+  pullReview: async (userId, sessionId) => {
+    const rows = await run(userId, (tx) => exec(tx, sql`update fsrs_state f set due = now(), updated_at = now()
+      where f.user_id = ${userId} and f.sub_id = '' and f.due > now()
+        and f.card_id in (
+          select distinct i.card_id from challenge_items i
+          join challenge_attempts a on a.item_id = i.id and a.user_id = i.user_id
+          where i.session_id = ${sessionId} and i.user_id = ${userId} and i.card_id is not null
+            and a.verdict in ('incorrect', 'partial') and a.graded_by <> 'pending')
+      returning f.card_id`));
+    if (rows.length) await invalidate('review.answered', { userId });
+    return rows.length;
+  },
   items: (userId, sessionId) => run(userId, async (tx) =>
     (await asServer<Raw>(tx, sql`select id, session_id, position, kind, card_id, sub_id, bank_id, type, payload_public, reference_ref, shuffle_map
       from challenge_items where session_id = ${sessionId} and user_id = ${userId} order by position`)).map((r): ItemRow => ({
@@ -621,9 +811,12 @@ export const dbData: DataPort = {
   }),
 
   recentAiGradings: (userId, cardId) => run(userId, async (tx) => {
-    const [r] = await exec(tx, sql`select count(*)::int as n from challenge_attempts a join challenge_items i on i.id = a.item_id and i.user_id = a.user_id
-      where a.user_id = ${userId} and i.card_id = ${cardId} and a.graded_by = 'ai' and a.created_at > now() - interval '1 hour'`);
-    return Number(r?.n ?? 0);
+    const [r] = await exec(tx, sql`select
+        count(*) filter (where a.created_at > now() - interval '1 hour')::int as hour,
+        count(*)::int as day
+      from challenge_attempts a join challenge_items i on i.id = a.item_id and i.user_id = a.user_id
+      where a.user_id = ${userId} and i.card_id = ${cardId} and a.graded_by = 'ai' and a.created_at > now() - interval '1 day'`);
+    return { hour: Number(r?.hour ?? 0), day: Number(r?.day ?? 0) };
   }),
 
   // `answer_hash` here is the session's hash (same as the pending row), so "the same answer again" is found by recordAttempt
@@ -838,13 +1031,15 @@ export const dbData: DataPort = {
   report: async (userId, itemId) => {
     const queued = await run(userId, async (tx) => {
       const [item] = await exec(tx, sql`select card_id, bank_id from challenge_items where id = ${itemId} and user_id = ${userId}`);
-      if (!item) return null;
-      let cardId = item.card_id ? String(item.card_id) : null;
-      if (!cardId && item.bank_id) {
-        const [q] = await asServer<Raw>(tx, sql`select card_ids from question_bank where id = ${item.bank_id} and user_id = ${userId}`);
+      let cardId = item?.card_id ? String(item.card_id) : null;
+      const bankId = item?.bank_id ? String(item.bank_id) : item ? null : itemId;
+      if (!cardId && bankId) {
+        const [q] = await asServer<Raw>(tx, sql`select card_ids from question_bank where id = ${bankId} and user_id = ${userId}`);
+        if (!item && !q) return null;
         const ids = Array.isArray(q?.card_ids) ? q.card_ids : [];
         cardId = typeof ids[0] === 'string' ? ids[0] : null;
       }
+      if (!item && !bankId) return null;
       if (!cardId) return null;
       await tx.execute(sql`insert into review_queue (card_id, status, flag_source, note)
         values (${cardId}::uuid, 'pending', 'user_disagree', 'Reportado no desafio com IA.')`);
@@ -852,6 +1047,57 @@ export const dbData: DataPort = {
     });
     return queued;
   },
+
+  reportSummary: async (userId, summaryId) => {
+    const queued = await run(userId, async (tx) => {
+      const [row] = await exec(tx, sql`select cards_cited from map_summaries where id = ${summaryId} and user_id = ${userId}`);
+      if (!row) return null;
+      const cited = Array.isArray(row.cards_cited) ? row.cards_cited : [];
+      const cardId = typeof cited[0] === 'string' ? cited[0] : null;
+      if (!cardId) return null;
+      await tx.execute(sql`insert into review_queue (card_id, status, flag_source, note)
+        values (${cardId}::uuid, 'pending', 'user_disagree', 'Reportado no resumo com IA.')`);
+      return { summaryId, reported: true as const };
+    });
+    return queued;
+  },
+
+  rubric: (userId, cardId) => run(userId, async (tx) => {
+    const card = await ownerCard(tx, userId, cardId);
+    if (!card) return null;
+    const [stored] = await asServer<Raw>(tx, sql`select essential_points, accepted_variants, critical_errors, status from card_rubrics
+      where card_id = ${cardId} and card_hash = ${card.hash} limit 1`);
+    const parsed = stored ? cardRubricServerSchema.safeParse({
+      essentialPoints: strs(stored.essential_points), acceptedVariants: strs(stored.accepted_variants),
+      criticalErrors: strs(stored.critical_errors), status: stored.status,
+    }) : null;
+    if (parsed?.success) return toOwnerRubric(parsed.data);
+    const derived = card.back || card.front ? rubricFromAnswer(card.back ?? card.front ?? '') : null;
+    return derived ? toOwnerRubric(derived) : 'empty' as const;
+  }),
+
+  saveRubric: (userId, cardId, points) => run(userId, async (tx) => {
+    const card = await ownerCard(tx, userId, cardId);
+    if (!card) return null;
+    if (!card.back && !card.front) return 'empty' as const;
+    const lists = [points.essentialPoints, points.acceptedVariants, points.criticalErrors].flat();
+    if (!numbersGrounded(lists, card.texts)) return 'numbers' as const;
+    const [stored] = await asServer<Raw>(tx, sql`select status from card_rubrics where card_id = ${cardId} and card_hash = ${card.hash} limit 1`);
+    if (stored?.status === 'approved') return 'approved' as const;
+    const [row] = await asServer<Raw>(tx, sql`insert into card_rubrics (card_id, card_hash, essential_points, accepted_variants, critical_errors, status)
+      values (${cardId}, ${card.hash}, ${pgArray(points.essentialPoints, 'text')}, ${pgArray(points.acceptedVariants, 'text')}, ${pgArray(points.criticalErrors, 'text')}, 'edited')
+      on conflict (card_id, card_hash) do update set
+        essential_points = excluded.essential_points, accepted_variants = excluded.accepted_variants,
+        critical_errors = excluded.critical_errors, status = 'edited', updated_at = now()
+      where card_rubrics.status <> 'approved'
+      returning essential_points, accepted_variants, critical_errors, status`);
+    if (!row) return 'approved' as const;
+    const parsed = cardRubricServerSchema.safeParse({
+      essentialPoints: strs(row.essential_points), acceptedVariants: strs(row.accepted_variants),
+      criticalErrors: strs(row.critical_errors), status: row.status,
+    });
+    return parsed.success ? toOwnerRubric(parsed.data) : null;
+  }),
 };
 
 export const dbIo = (): Io => ({
@@ -962,6 +1208,20 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       if (limited) return limited;
       return sendPublic(c, 'finish', challengeReportSchema, await service.finish(c.get('userId'), id, c.get('requestId')));
     })
+    .post('/sessions/:id/retry', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('session not found');
+      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+      if (!body.ok) return errorResponse(body.error);
+      return sendPublic(c, 'retry', aiChallengeSessionPublicSchema, await service.retry(c.get('userId'), id));
+    })
+    .post('/sessions/:id/review', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('session not found');
+      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+      if (!body.ok) return errorResponse(body.error);
+      return sendPublic(c, 'review', reviewResultSchema, await service.pullReview(c.get('userId'), id));
+    })
     // D-1605: the flag only. No body, no grade edit.
     .post('/attempts/:id/dispute', async (c) => {
       const id = paramId(c.req.param('id'));
@@ -1017,6 +1277,19 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       if (!body.ok) return errorResponse(body.error);
       return sendPublic(c, 'report', reportResultSchema, await service.report(c.get('userId'), id));
     })
+    // FR-26: the owner reads and edits the rubric of their own card. Challenge responses still omit it.
+    .get('/cards/:id/rubric', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('card not found');
+      return sendPublic(c, 'rubric', ownerRubricSchema, await service.rubric(c.get('userId'), id));
+    })
+    .post('/cards/:id/rubric', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('card not found');
+      const body = parseWith(saveRubricSchema, (await readJson(c)) ?? null);
+      if (!body.ok) return errorResponse(body.error);
+      return sendPublic(c, 'save-rubric', ownerRubricSchema, await service.saveRubric(c.get('userId'), id, body.data));
+    })
     // FR-46: one `ai_summaries` unit is taken inside the service.
     .post('/summaries', async (c) => {
       const i = parseWith(generateSummaryInputSchema, (await readJson(c)) ?? null);
@@ -1030,5 +1303,13 @@ export const challengeAiRoutes = (service: ChallengeAiService = createChallengeA
       const id = paramId(c.req.param('id'));
       if (!id) return notFound('board not found');
       return sendPublic(c, 'summaries', z.array(mapSummaryPublicSchema).max(20), await service.summaries(c.get('userId'), id));
+    })
+    // FR-52: the student reports a saved summary. No model call.
+    .post('/summaries/:id/report', async (c) => {
+      const id = paramId(c.req.param('id'));
+      if (!id) return notFound('summary not found');
+      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+      if (!body.ok) return errorResponse(body.error);
+      return sendPublic(c, 'report-summary', summaryReportSchema, await service.reportSummary(c.get('userId'), id));
     });
 };

@@ -8,6 +8,7 @@ const int = (def: number, min: number) => z.coerce.number().int().min(min).optio
 const schema = z.object({
   CHALLENGE_SESSION_TTL_MIN: int(120, 1),
   CHALLENGE_MAX_GRADINGS_PER_CARD_HOUR: int(5, 1),
+  CHALLENGE_MAX_GRADINGS_PER_CARD_DAY: int(5, 1),
   CHALLENGE_BATCH_GRADE_MAX: int(10, 1),
   GEN_BATCH_SIZE: int(10, 1),
   GEN_DUP_THRESHOLD: z.coerce.number().gt(0).max(1).optional().transform((v) => v ?? 0.8),
@@ -17,6 +18,7 @@ const schema = z.object({
 export type ChallengeLimits = {
   sessionTtlMin: number;
   maxGradingsPerCardHour: number;
+  maxGradingsPerCardDay: number;
   batchGradeMax: number;
   genBatchSize: number;
   dupThreshold: number;
@@ -29,6 +31,7 @@ export function challengeLimits(env: NodeJS.ProcessEnv = process.env): Challenge
   return {
     sessionTtlMin: p.CHALLENGE_SESSION_TTL_MIN,
     maxGradingsPerCardHour: p.CHALLENGE_MAX_GRADINGS_PER_CARD_HOUR,
+    maxGradingsPerCardDay: p.CHALLENGE_MAX_GRADINGS_PER_CARD_DAY,
     batchGradeMax: p.CHALLENGE_BATCH_GRADE_MAX,
     genBatchSize: p.GEN_BATCH_SIZE,
     dupThreshold: p.GEN_DUP_THRESHOLD,

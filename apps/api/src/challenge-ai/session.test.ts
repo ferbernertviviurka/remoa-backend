@@ -162,6 +162,9 @@ describe('startSession — formato 2 (mapa)', () => {
     expect(pub.total).toBe(5);
     expect(new Set(mem.items.map((i) => i.cardId)).size).toBe(5); // one per card before a second from the same card
     expect(pub.expiresAt.getTime() - T0.getTime()).toBe(30 * 60_000);
+    const timed = ok(await startSession(store, userId, mapCfg({ n: 5, timerSec: 600 }), { now: T0, env: { CHALLENGE_SESSION_TTL_MIN: '30' } }));
+    expect(timed.expiresAt.getTime() - T0.getTime()).toBe(600_000);
+    expect(timed.timerSec).toBe(600);
     const empty = await startSession(fakeStore([], []).store, userId, mapCfg(), { now: T0 });
     expect(empty).toMatchObject({ ok: false, error: { code: 'not_found' } });
   });
