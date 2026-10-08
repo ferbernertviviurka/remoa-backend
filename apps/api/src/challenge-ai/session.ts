@@ -74,6 +74,7 @@ export type SessionStore = {
 export function toPublic(s: SessionRow, current: unknown): AiChallengeSessionPublic {
   return aiChallengeSessionPublicSchema.parse({
     id: s.id, boardId: s.boardId, format: s.format, status: s.status, total: s.total, position: s.position, startedAt: s.startedAt, expiresAt: s.expiresAt,
+    timerSec: s.params.timerSec,
     current: s.status === 'active' && current != null ? current : null, aiUnits: s.aiUnits,
   });
 }
@@ -239,6 +240,13 @@ function bankItems(sessionId: string, cfg: ChallengeConfig, ids: string[], rows:
 
 export type StartOptions = { id?: string; bankIds?: string[]; now?: Date; env?: NodeJS.ProcessEnv };
 
+/** The session closes at the shorter of the TTL and the optional timer. A missing timer keeps the TTL. */
+export function sessionExpiresAt(now: Date, timerSec: number | null, env?: NodeJS.ProcessEnv): Date {
+  const ttlMs = challengeLimits(env).sessionTtlMin * 60_000;
+  const timerMs = timerSec == null ? ttlMs : timerSec * 1000;
+  return new Date(now.getTime() + Math.min(ttlMs, timerMs));
+}
+
 /**
  * FR-37: creates the session and its frozen items. Format 2 from the board's cards; format 1 from `bankIds` (never generates). D-1566:
  * format 1 counts `n` items while active; the ones not built yet come through `appendBankItem` one step ahead of the student.
@@ -261,7 +269,7 @@ export async function startSession(store: SessionStore, userId: string, config: 
     if (!built.ok) return built;
     items = built.data;
   }
-  const expiresAt = new Date(now.getTime() + challengeLimits(opts.env).sessionTtlMin * 60_000);
+  const expiresAt = sessionExpiresAt(now, cfg.timerSec, opts.env);
   await store.createSession({ id, userId, boardId: cfg.boardId, scope: cfg.scope, format: cfg.format, params: cfg, startedAt: now, expiresAt }, items);
   const session: SessionRow = {
     id, userId, boardId: cfg.boardId, format: cfg.format, status: 'active', position: 0, startedAt: now, expiresAt, params: cfg,

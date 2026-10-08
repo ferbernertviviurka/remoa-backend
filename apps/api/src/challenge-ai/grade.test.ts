@@ -10,7 +10,7 @@ const ITEM = '11111111-1111-4111-8111-111111111111';
 const SESSION = '22222222-2222-4222-8222-222222222222';
 const CARD = '33333333-3333-4333-8333-333333333333';
 const USER = '44444444-4444-4444-8444-444444444444';
-const limits = { sessionTtlMin: 120, maxGradingsPerCardHour: 5, batchGradeMax: 10, genBatchSize: 10, dupThreshold: 0.8, answerMaxChars: 1200 };
+const limits = { sessionTtlMin: 120, maxGradingsPerCardHour: 5, maxGradingsPerCardDay: 5, batchGradeMax: 10, genBatchSize: 10, dupThreshold: 0.8, answerMaxChars: 1200 };
 
 // Synthetic content: nothing here is medical reference material.
 const REFERENCE = 'O passo alfa vem antes do passo beta quando o marcador gama sobe';
@@ -255,6 +255,12 @@ describe('AI layer', () => {
   it('FR-40: over the per-card hourly limit -> rate_limited before any reserve', async () => {
     const h = harness();
     expect(await gradeAnswer(input({ gradingsLastHour: 5 }), h.deps)).toMatchObject({ ok: false, error: { code: 'rate_limited' } });
+    expect(h.reserve).not.toHaveBeenCalled();
+  });
+
+  it('FR-40: over the per-card daily limit -> rate_limited before any reserve', async () => {
+    const h = harness();
+    expect(await gradeAnswer(input({ gradingsLastHour: 1, gradingsLastDay: 5 }), h.deps)).toMatchObject({ ok: false, error: { code: 'rate_limited' } });
     expect(h.reserve).not.toHaveBeenCalled();
   });
 
