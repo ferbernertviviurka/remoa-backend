@@ -175,7 +175,7 @@ export const eventSchemas = {
     })
     .strict(),
   hero_replayed: none,
-  feature_tab_selected: z.object({ feature: z.enum(['map', 'cards', 'challenge', 'grading', 'fsrs', 'enamed']) }).strict(),
+  feature_tab_selected: z.object({ feature: z.enum(['map', 'cards', 'challenge', 'grading', 'fsrs', 'enamed', 'bank']) }).strict(),
   demo_answered: z.object({ correct: z.boolean() }).strict(),
   demo_completed: none,
   pricing_toggled: z.object({ period: z.enum(['monthly', 'annual']) }).strict(),
