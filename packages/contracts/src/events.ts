@@ -229,6 +229,7 @@ export const eventSchemas = {
   // G24 landing (F16): demo and ENAMED slider. Counts and enums only, never titles or answers.
   ia_demo_viewed: none,
   calendar_demo_viewed: none,
+  bank_demo_viewed: none,
   enamed_slider_used: z.object({ control: z.enum(['prev', 'next', 'dot']) }).strict(),
   enamed_cta_clicked: none,
   ia_cta_clicked: none,
