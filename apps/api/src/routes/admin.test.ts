@@ -1,6 +1,6 @@
 // F19 T3 /v1/admin (core routes, authorization of every admin route) + suspension in requireUser. Needs local Supabase.
 import { config } from 'dotenv';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { adminMeSchema, auditPageSchema, formatAuditId } from '@remoa/contracts';
@@ -100,6 +100,19 @@ describe.skipIf(!process.env.DATABASE_URL)('F19 /v1/admin core', () => {
     expect((await call('/v1/admin/audit', { token: old })).json).toEqual({ error: { code: 'forbidden', message: 'reauth_required' } });
     expect((await call('/v1/admin/audit', { token: fakeToken(a.id, null) })).status).toBe(403);
     expect(new Date((await call('/v1/admin/me', { token: fakeToken(a.id, null) })).json.data.authenticatedAt).getTime()).toBe(0);
+  });
+
+  it('a token without amr uses the session sign-in time', async () => {
+    const a = await newUser('admin');
+    const sessionId = uuid();
+    await dbm.db.execute(sql`insert into auth.sessions (id, user_id, created_at, updated_at) values (${sessionId}::uuid, ${a.id}::uuid, now() - interval '5 minutes', now())`);
+    const { createApp } = await import('../app');
+    const local = createApp({ webOrigin: 'http://localhost:3000', verifyToken: async (token) => (token === 'session-token' ? { userId: a.id, sessionId } : null) });
+    const res = await local.request('/v1/admin/me', { headers: { authorization: 'Bearer session-token' } });
+    expect(res.status).toBe(200);
+    const at = adminMeSchema.parse((await res.json()).data).authenticatedAt.getTime();
+    expect(Math.abs(at - (Date.now() - 5 * 60_000))).toBeLessThan(20_000);
+    expect((await local.request('/v1/admin/audit', { headers: { authorization: 'Bearer session-token' } })).status).toBe(200);
   });
 
   it('GET /audit: filters (actor, result, action, period), search, a_ id, pagination', async () => {

@@ -6,7 +6,7 @@ import { randomUUID as uuid } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { err, ok } from '@remoa/contracts';
 import { createLogger } from '@remoa/log';
-import { authenticatedAt, isFresh, takeDeniedSlot, type AdminEnv } from './require-admin';
+import { authenticatedAt, isFresh, resolveAuthAt, takeDeniedSlot, type AdminEnv } from './require-admin';
 import { ipHash } from './audit';
 import { toCsv } from './export';
 import { reasonOf } from './with-admin';
@@ -25,6 +25,11 @@ describe('admin core helpers', () => {
     expect(authenticatedAt('nope')).toBeNull();
     expect(authenticatedAt(undefined)).toBeNull();
     expect(authenticatedAt(`h.${Buffer.from('{"amr":5}').toString('base64url')}.s`)).toBeNull();
+  });
+  it('resolveAuthAt keeps the token clock and falls back to the session sign-in', () => {
+    expect(resolveAuthAt(5_000, 1_000)).toBe(5_000);
+    expect(resolveAuthAt(null, 1_000)).toBe(1_000);
+    expect(resolveAuthAt(null, null)).toBeNull();
   });
   it('isFresh', () => {
     expect(isFresh(null, 1000)).toBe(false);

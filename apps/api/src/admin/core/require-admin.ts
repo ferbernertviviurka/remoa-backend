@@ -1,7 +1,7 @@
 // F19 FR-11, D-431: every /v1/admin/* request. Non-admin (or no session) = the same 404 as an unknown route + a throttled
 // `admin.access` denied row. Role, suspension and deletion are read from the database on every request (never the JWT).
 import { createMiddleware } from 'hono/factory';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { ADMIN_LIMITS, adminErrors, errorHttpStatus, type AdminUserRef, type AppError, type HttpErrorBody } from '@remoa/contracts';
 import type { Env, VerifyToken } from '../../app';
 import { dbm } from '../../db';
@@ -42,6 +42,21 @@ export function authenticatedAt(token: string | undefined): number | null {
 
 export const isFresh = (authAt: number | null, maxMs: number, now = Date.now()) => authAt !== null && now - authAt <= maxMs;
 
+/** Prefer the token's amr clock. Tokens without it use the session row's sign-in time, so a new login can leave the confirm screen. */
+export const resolveAuthAt = (fromToken: number | null, sessionCreatedAt: number | null) => fromToken ?? sessionCreatedAt;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function sessionCreatedAt(sessionId: string, userId: string): Promise<number | null> {
+  if (!UUID.test(sessionId) || !UUID.test(userId)) return null;
+  const { db } = await dbm();
+  const [row] = await db.execute<{ created_at: Date | string }>(sql`
+    select created_at from auth.sessions where id = ${sessionId}::uuid and user_id = ${userId}::uuid`);
+  if (!row) return null;
+  const at = new Date(row.created_at).getTime();
+  return Number.isFinite(at) && at > 0 ? at : null;
+}
+
 const THROTTLE_MS = 10 * 60_000;
 const PER_CALLER = 20;
 const lastDenied = new Map<string, number>();
@@ -76,7 +91,8 @@ export const requireAdmin = (verifyToken: VerifyToken) =>
           .catch((e) => c.get('log').error('admin.access audit failed', { error: e instanceof Error ? e.message : String(e) }));
       return notFound();
     }
-    const authAt = authenticatedAt(token);
+    const fromToken = authenticatedAt(token);
+    const authAt = resolveAuthAt(fromToken, fromToken === null && sessionId ? await sessionCreatedAt(sessionId, userId).catch(() => null) : null);
     c.set('userId', userId);
     c.set('sessionId', sessionId);
     c.set('admin', { id: userId, name: s.name, email: s.email });
