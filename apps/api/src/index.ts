@@ -10,6 +10,7 @@ import { gradeAnswer, streamGradeAnswer } from './ai/service';
 import { aiMode, missingConfig, validateAi } from '@remoa/ai';
 import { env as configEnv } from '@remoa/config';
 import { drainEmails } from './notifications/notify';
+import { notificationEmailsInflight, startHourlyNotificationEmails } from './notifications/hourly-emails';
 import { reconcileQuestionRuntime } from './questions/runtime/recovery';
 import { questionFeatures,questionAdmissionLimits } from './questions/runtime/config';
 import { warmUp } from './warmup';
@@ -57,9 +58,14 @@ const port = Number(process.env.PORT ?? 4000);
 const server = serve({ fetch: app.fetch, port });
 // D-1443: a 250 MB .apkg now streams through the API; Node's default 5 min for a whole request cuts slow connections. 15 min = Railway's cap.
 (server as import('node:http').Server).requestTimeout = 15 * 60_000;
-// D-992: deploys send SIGTERM; stop taking requests and give deferred e-mails up to 8 s to leave.
+// Notification e-mails are due on the clock. Inngest and the Railway cron service are not running in production, so the API sweeps them every hour.
+startHourlyNotificationEmails();
+// D-992: deploys send SIGTERM; stop taking requests and give deferred e-mails (and a sweep already in flight) up to 8 s to leave.
 process.once('SIGTERM', () => {
   server.close();
-  void drainEmails(8_000).finally(() => process.exit(0));
+  void Promise.race([
+    Promise.all([drainEmails(8_000), notificationEmailsInflight()]),
+    new Promise((r) => setTimeout(r, 8_000)),
+  ]).finally(() => process.exit(0));
 });
 process.stdout.write(`api on http://localhost:${port}\n`);

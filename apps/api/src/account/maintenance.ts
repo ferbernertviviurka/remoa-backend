@@ -1,4 +1,5 @@
 // Maintenance jobs. Scheduled by Inngest crons (inngest/maintenance.ts); `pnpm job:maintenance` still runs both once by hand.
+// Notification e-mails also run inside the API process every hour (notifications/hourly-emails.ts) when those schedulers are down.
 import { pathToFileURL } from 'node:url';
 import { asJob } from '../db';
 import { createLogger } from '@remoa/log';
