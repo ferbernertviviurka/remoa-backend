@@ -1,0 +1,27 @@
+{
+  "synthetic": true,
+  "startedAt": "2026-10-08T23:45:32.015Z",
+  "finishedAt": "2026-10-08T23:45:34.445Z",
+  "scope": "Separate creation-only sample, five waves of20 concurrent users; not a five-minute sustained load",
+  "vus": 20,
+  "count": 200,
+  "samples": 100,
+  "p50Ms": 251.42004199999997,
+  "p95Ms": 353.22012500000005,
+  "maxMs": 364.47629200000006,
+  "p95Bytes": 493286,
+  "maxQueries": 23,
+  "failures": 0,
+  "targetP95Ms": 400,
+  "serverTimingP95Ms": {
+    "db": 150,
+    "ext": 0,
+    "app": 239.6,
+    "db-sum": 378,
+    "questions_select": 37.2,
+    "questions_snapshot": 5.6,
+    "questions_freeze": 51.3,
+    "questions_public": 55.8
+  },
+  "pass": true
+}

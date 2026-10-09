@@ -3,13 +3,14 @@ import {
   type AnyPgColumn, boolean, check, foreignKey, index, integer, jsonb, pgTable, real, smallint, text, timestamp, unique, uniqueIndex, uuid,
 } from 'drizzle-orm/pg-core';
 import {
-  ALTERNATIVE_KEYS, aiItemTypes, cardRubricStatuses, challengeFormats, challengeItemKinds, challengeSessionStatuses, enamedTaxonomyKinds,
+  catalogAlternativeKeys, questionOrigins, questionVisibilities, questionCatalogStatuses, questionRightsStatuses, questionAvailabilityStatuses, aiItemTypes, cardRubricStatuses, challengeFormats, challengeItemKinds, challengeSessionStatuses, enamedTaxonomyKinds,
   gradedBy, grades, questionDifficulties, questionSources, questionStatuses, questionTypes, summaryFocuses, summarySizes, verdicts,
   type AiAnswerInput, type AiChallengeItemPublic, type ChallengeConfig, type ChallengeScope, type QuestionEvidence, type QuestionStats,
   type ReferenceRef, type ShuffleMap, type SummarySection,
 } from '@remoa/contracts';
-import { areaEnum, timestamps, userId } from './common';
+import { authUsers, areaEnum, timestamps, userId } from './common';
 import { boards, cards, matrixItems } from './content';
+import { questionSourcesCatalog } from './question-catalog';
 
 // F30 (G25, CCR-090, D-1600–D-1610). RLS, grants and the append-only trigger are hand-written in 0041. Reference material
 // (correct_key, expected_answer, key_points, explanation, distractor_notes, card_rubrics, reference_ref, shuffle_map) has no
@@ -39,20 +40,20 @@ export const enamedTaxonomy = pgTable('enamed_taxonomy', {
 /** FR-16 / D-1602: private question bank (owner only; no shared bank). Editing creates a new row (`supersedes_id`). */
 export const questionBank = pgTable('question_bank', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: userId(),
-  boardId: uuid('board_id').references(() => boards.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').references(() => authUsers.id, { onDelete: 'cascade' }),
+  boardId: uuid('board_id').references(() => boards.id, { onDelete: 'set null' }),
   boardVersion: integer('board_version'),
   cardIds: uuid('card_ids').array().notNull().default(sql`'{}'::uuid[]`),
   type: text('type', { enum: questionTypes }).notNull(),
   difficulty: text('difficulty', { enum: questionDifficulties }).notNull(),
   stem: text('stem').notNull(),
   /** [{ key: 'A'..'D', text }] in stored order; null for discursive. */
-  alternatives: jsonb('alternatives').$type<{ key: (typeof ALTERNATIVE_KEYS)[number]; text: string }[]>(),
-  correctKey: text('correct_key', { enum: ALTERNATIVE_KEYS }),
+  alternatives: jsonb('alternatives').$type<{ key: (typeof catalogAlternativeKeys)[number]; text: string }[]>(),
+  correctKey: text('correct_key', { enum: catalogAlternativeKeys }),
   expectedAnswer: text('expected_answer').notNull(),
   keyPoints: text('key_points').array().notNull().default(sql`'{}'::text[]`),
   explanation: text('explanation'),
-  distractorNotes: jsonb('distractor_notes').$type<Partial<Record<(typeof ALTERNATIVE_KEYS)[number], string>>>(),
+  distractorNotes: jsonb('distractor_notes').$type<Partial<Record<(typeof catalogAlternativeKeys)[number], string>>>(),
   evidences: jsonb('evidences').$type<QuestionEvidence[]>().notNull().default([]),
   enamedAreaId: uuid('enamed_area_id').references(() => enamedTaxonomy.id, { onDelete: 'set null' }),
   enamedDomainId: uuid('enamed_domain_id').references(() => enamedTaxonomy.id, { onDelete: 'set null' }),
@@ -68,19 +69,52 @@ export const questionBank = pgTable('question_bank', {
   stats: jsonb('stats').$type<QuestionStats>().notNull().default({ seen: 0, correct: 0, partial: 0, incorrect: 0 }),
   version: integer('version').notNull().default(1),
   supersedesId: uuid('supersedes_id').references((): AnyPgColumn => questionBank.id, { onDelete: 'set null' }),
+  origin: text('origin', { enum: questionOrigins }).notNull().default('ai_generated'),
+  visibility: text('visibility', { enum: questionVisibilities }).notNull().default('private'),
+  catalogStatus: text('catalog_status', { enum: questionCatalogStatuses }).notNull().default('draft'),
+  rightsStatus: text('rights_status', { enum: questionRightsStatuses }).notNull().default('pending'),
+  availability: text('availability', { enum: questionAvailabilityStatuses }).notNull().default('active'),
+  canonicalId: uuid('canonical_id').references((): AnyPgColumn => questionBank.id, { onDelete: 'set null' }),
+  sourceId: uuid('source_id').references((): AnyPgColumn => questionSourcesCatalog.id),
+  contentHash: text('content_hash'),
+  fingerprint: text('fingerprint'),
+  integrityConfirmed: boolean('integrity_confirmed').notNull().default(false),
+  keyFinal: boolean('key_final').notNull().default(false),
+  reviewedHash: text('reviewed_hash'),
+  reviewerName: text('reviewer_name'),
+  reviewerCrm: text('reviewer_crm'),
+  referenceDate: text('reference_date'),
+  assets: jsonb('assets').notNull().default([]),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
   ...timestamps,
 }, (t) => [
   index('question_bank_user_board_created_idx').on(t.userId, t.boardId, t.createdAt.desc()),
   index('question_bank_user_topic_idx').on(t.userId, t.enamedTopicId),
+  index('question_bank_catalog_created_idx').on(t.visibility, t.catalogStatus, t.createdAt.desc(), t.id),
+  index('question_bank_canonical_idx').on(t.canonicalId),
+  index('question_bank_canonical_latest_idx').on(sql`coalesce(${t.canonicalId}, ${t.id})`, t.version, t.createdAt, t.id),
+  index('question_bank_stem_trgm_idx').using('gin', sql`${t.stem} gin_trgm_ops`),
+  index('question_bank_source_idx').on(t.sourceId),
+  //0047 also creates expression statistics(reviewed_hash=content_hash); customSQL, not representable in Drizzle snapshots.
+  index('question_bank_created_id_idx').on(t.createdAt.desc().nullsFirst(),t.id.desc().nullsFirst()),
+  index('question_bank_fingerprint_idx').on(t.fingerprint),
+  check('question_bank_origin_chk', oneOf(t.origin, questionOrigins)),
+  check('question_bank_visibility_chk', oneOf(t.visibility, questionVisibilities)),
+  check('question_bank_catalog_status_chk', oneOf(t.catalogStatus, questionCatalogStatuses)),
+  check('question_bank_rights_chk', oneOf(t.rightsStatus, questionRightsStatuses)),
+  check('question_bank_availability_chk', oneOf(t.availability, questionAvailabilityStatuses)),
+  check('question_bank_public_privacy_chk', sql`${t.visibility} <> 'public' or (${t.boardId} is null and cardinality(${t.cardIds}) = 0 and ${t.evidences} = '[]'::jsonb)`),
+  check('question_bank_owner_chk', sql`${t.userId} is not null or (${t.visibility} = 'public' and ${t.origin} in ('official_exam','remoa_authored'))`),
+  check('question_bank_publish_chk', sql`${t.catalogStatus} <> 'published' or (${t.visibility} = 'public' and ${t.rightsStatus} = 'authorized' and ${t.status} = 'approved' and ${t.integrityConfirmed} and ${t.keyFinal} and ${t.enamedConfirmed} and ${t.enamedAreaId} is not null and ${t.enamedTopicId} is not null and ${t.contentHash} is not null and ${t.reviewedHash} is not null and ${t.reviewedHash} = ${t.contentHash} and nullif(btrim(${t.reviewerName}),'') is not null and nullif(btrim(${t.reviewerCrm}),'') is not null and ${t.referenceDate} is not null)`),
   index('question_bank_board_idx').on(t.boardId),
   index('question_bank_supersedes_idx').on(t.supersedesId).where(sql`${t.supersedesId} is not null`),
   check('question_bank_type_chk', oneOf(t.type, questionTypes)),
   check('question_bank_difficulty_chk', oneOf(t.difficulty, questionDifficulties)),
   check('question_bank_source_chk', oneOf(t.source, questionSources)),
   check('question_bank_status_chk', oneOf(t.status, questionStatuses)),
-  check('question_bank_correct_key_chk', sql`${t.correctKey} is null or ${oneOf(t.correctKey, ALTERNATIVE_KEYS)}`),
-  check('question_bank_objective_chk', sql`(${t.type} = 'objective') = (${t.correctKey} is not null and ${t.alternatives} is not null)`),
-  check('question_bank_alternatives_chk', sql`${t.alternatives} is null or (jsonb_typeof(${t.alternatives}) = 'array' and jsonb_array_length(${t.alternatives}) = 4)`),
+  check('question_bank_correct_key_chk', sql`${t.correctKey} is null or ${oneOf(t.correctKey, catalogAlternativeKeys)}`),
+  check('question_bank_objective_chk', sql`(${t.type} = 'objective' and ${t.alternatives} is not null and (${t.correctKey} is not null or ${t.availability} = 'annulled')) or (${t.type} = 'discursive' and ${t.alternatives} is null and ${t.correctKey} is null)`),
+  check('question_bank_alternatives_chk', sql`${t.alternatives} is null or (jsonb_typeof(${t.alternatives}) = 'array' and jsonb_array_length(${t.alternatives}) between 2 and 10)`),
   check('question_bank_evidences_chk', sql`jsonb_typeof(${t.evidences}) = 'array'`),
   check('question_bank_confidence_chk', sql`${t.enamedConfidence} is null or ${t.enamedConfidence} between 0 and 1`),
 ]);

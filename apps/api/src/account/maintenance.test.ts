@@ -13,6 +13,7 @@ vi.mock('../support/retention', () => ({ sweepSupport: m.support }));
 vi.mock('../onboarding/emails', () => ({ sendOnboardingEmails: vi.fn(async () => ({ mapReady: 0, day3: 0 })) }));
 vi.mock('../admin/overview/metrics', () => ({ refreshRecentMetrics: m.metrics }));
 vi.mock('../billing/trial-notice', () => ({ sweepTrialNotices: m.trial }));
+vi.mock('../questions/runtime/recovery',()=>({reconcileQuestionRuntime:vi.fn(async()=>({generation:{delivered:0},imports:{dispatched:0}}))}));
 vi.mock('../billing/stripe', () => ({ createStripe: vi.fn(), installStripe: vi.fn() }));
 vi.mock('../ai/service', () => ({ failStaleJobs: vi.fn(async () => 0) }));
 

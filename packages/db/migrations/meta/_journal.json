@@ -309,6 +309,62 @@
       "when": 1791489600000,
       "tag": "0043_g25_challenge_result",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791494385769,
+      "tag": "0044_f33_question_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1791497905696,
+      "tag": "0045_f33_question_privacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1791500441491,
+      "tag": "0046_f33_question_performance",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791502413492,
+      "tag": "0047_f33_question_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1791504494046,
+      "tag": "0048_f33_snapshot_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1791512786405,
+      "tag": "0049_f33_import_contexts",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791515366800,
+      "tag": "0050_f33_source_lock_order",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1791517526326,
+      "tag": "0051_f33_answer_key_pages",
+      "breakpoints": true
     }
   ]
 }

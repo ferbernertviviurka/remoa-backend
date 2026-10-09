@@ -58,5 +58,20 @@
   },
   "test-trial.ts": {
     "reason": "só testes de integração (tira o teste grátis do usuário recém-criado); não roda em produção"
+  },
+  "admin/questions/routes.ts": {
+    "reason": "Cada operação delega a withAdmin, que invalida admin.action somente depois do COMMIT. Catálogo e fila F33 consultam dados vivos; nenhum cache institucional de questões é mantido nestas rotas."
+  },
+  "admin/questions/service.ts": {
+    "reason": "Funções recebem a transação de withAdmin nas rotas admin/questions; o chamador invalida admin.action após COMMIT. Questões públicas não têm dono pessoal e leituras F33 são vivas, sem cache do banco privado F32."
+  },
+  "questions/imports/store.ts": {
+    "reason": "Somente leases, progresso, chunks OCR, staging e auditoria do importador privado; todas as leituras desses jobs são diretas ao banco, sem entrada cacheada. Publicação acontece no serviço admin com invalidação após COMMIT."
+  },
+  "questions/generation/reconcile.ts": {
+    "reason": "Only private uncached receipt/outbox bookkeeping is written here; bank promotions and map linking delegate to receiptStore.promote/GenerationReceipts.attachMap, which invalidate question.changed after their commits."
+  },
+  "admin/questions/recovery.ts": {
+    "reason": "Funções de recuperação recebem somente a transação do chamador nas rotas admin/questions; withAdmin invalida admin.action após COMMIT. Contextos, candidatas e catálogo F33 têm leituras diretas, sem cache; a recuperação não escreve no banco pessoal F32."
   }
 }

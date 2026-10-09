@@ -3,6 +3,7 @@
 // Every kept item cites a card of the board (FR-49) and every number or dose of it is written in the cited cards. The result is saved
 // per board version, the last SUMMARY_HISTORY rows stay, and it reads as `stale` once the map changes (FR-50). One `ai_summaries` unit is
 // taken before the first call and goes back on any failure; the model answer is never cached.
+import { createGenerationReceipts } from '../questions/generation/receipts';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
@@ -261,8 +262,8 @@ export const dbStore: SummaryStore = {
   },
 };
 
-export type SummaryDeps = { store: SummaryStore; now: () => Date; newId: () => string };
-const defaultDeps: SummaryDeps = { store: dbStore, now: () => new Date(), newId: randomUUID };
+export type SummaryDeps = { store: SummaryStore; now: () => Date; newId: () => string; receipts?: typeof createGenerationReceipts };
+const defaultDeps: SummaryDeps = { store: dbStore, now: () => new Date(), newId: randomUUID, receipts:createGenerationReceipts };
 
 // --- Public shape ----------------------------------------------------------------------------------------------------
 
@@ -342,9 +343,11 @@ export async function generateSummary(input: GenerateSummaryInput, deps: Summary
   const discards: SummaryDiscards = { citation: 0, numbers: 0, format: 0 };
   const models: string[] = [];
   const ask = async (call: Call): Promise<SummarySection[]> => {
-    const r = await generateJson(summaryReplySchema, {
+    const ledger=deps.receipts?.({ownerId:input.userId,producer:'summary_checklist',requestKey:`${input.requestId??randomUUID()}:${calls.indexOf(call)}`,promptId:prompt.meta.id,promptVersion:prompt.promptVersion,boardId:ctx.boardId,boardVersion:ctx.boardVersion,context:{size:input.size,focus:input.focus,refs:[...call.local],module:call.group.module}});
+    const generate=()=>generateJson(summaryReplySchema, {
       fn: 'summary', system: call.system, user: 'Responda agora apenas com o JSON pedido.', temperature: prompt.meta.temperatura ?? undefined, requestId: input.requestId,
     });
+    const r=ledger?await ledger.wrap(generate):await generate();
     if (!models.includes(r.model)) models.push(r.model);
     log.info('ai_call', { event: 'ai_call', fn: 'summary', model: r.model.slice(0, 80), latencyMs: Math.round(r.latencyMs), status: 'ok' });
     const screen: Screen = { local: call.local, board, discards };

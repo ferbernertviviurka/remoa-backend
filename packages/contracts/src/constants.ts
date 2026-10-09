@@ -5,6 +5,16 @@
 import type { Entitlements } from './billing';
 import type { Plan } from './enums';
 
+/** CCR127: F33 UI constants remain available without loading catalog validators. */
+export const QUESTION_PDF_PARSER_VERSION = 'f33-layout-v7' as const;
+/** CCR125: build-time official Portuguese model; workers never download language data. */
+export const QUESTION_PDF_OCR_MODEL_ID = 'tesseract_best/por' as const;
+export const QUESTION_PDF_OCR_MODEL_COMMIT = 'e12c65a915945e4c28e237a9b52bc4a8f39a0cec' as const;
+export const QUESTION_PDF_OCR_MODEL_SHA256 = '711de9dbb8052067bd42f16b9119967f30bada80d57e2ef24f65d09f531adb04' as const;
+export const QUESTION_PDF_OCR_DPI = 180 as const;
+export const QUESTION_PDF_OCR_VERSION = 'tesseract-best-por-711de9db-180-psm3-tsv-line-v2' as const;
+export const catalogAlternativeKeys = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'] as const;
+
 /** D-1213: free Pro days every account gets once (per normalized e-mail), from sign-up. The SQL trigger repeats the number (0039). */
 export const TRIAL_DAYS = 15;
 /** D-1213: days before the trial ends when the "teste acabando" notice goes out (and again on the last day). */

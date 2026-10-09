@@ -1,0 +1,87 @@
+{
+  "synthetic": true,
+  "startedAt": "2026-10-08T23:20:29.198Z",
+  "finishedAt": "2026-10-08T23:25:29.386Z",
+  "elapsedMs": 300185,
+  "vus": 20,
+  "warmupMs": 30000,
+  "durationMs": 300000,
+  "transport": "loopback HTTP, local Postgres, no artificial WAN latency",
+  "cache": "existing application defaults; unique answer mutations, active simulation; no question assets/OCR/provider calls",
+  "counts": {
+    "canonical": 50000,
+    "versions": 5000,
+    "attempts": 100000,
+    "db_size": "402 MB"
+  },
+  "metrics": {
+    "search": {
+      "count": 7964,
+      "p50Ms": 47.84875000000466,
+      "p95Ms": 135.79608400000143,
+      "maxMs": 2500.5361669999984,
+      "p95Bytes": 58317,
+      "maxBytes": 58317,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "filter": {
+      "count": 7964,
+      "p50Ms": 186.43895899999188,
+      "p95Ms": 315.559500000003,
+      "maxMs": 4799.828916999992,
+      "p95Bytes": 58051,
+      "maxBytes": 58051,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "wrong": {
+      "count": 7958,
+      "p50Ms": 189.4550829999789,
+      "p95Ms": 311.6507500000007,
+      "maxMs": 4819.096208999996,
+      "p95Bytes": 58030,
+      "maxBytes": 58030,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "recent": {
+      "count": 7947,
+      "p50Ms": 67.93479100003606,
+      "p95Ms": 144.34445800000685,
+      "maxMs": 2445.8881669999973,
+      "p95Bytes": 5316,
+      "maxBytes": 5316,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "resume": {
+      "count": 7944,
+      "p50Ms": 76.92041599994991,
+      "p95Ms": 150.7445829999633,
+      "maxMs": 3177.4018750000105,
+      "p95Bytes": 493288,
+      "maxBytes": 493288,
+      "maxQueries": 10,
+      "targetP95Ms": 400,
+      "pass": true
+    },
+    "answer": {
+      "count": 7944,
+      "p50Ms": 99.49975000001723,
+      "p95Ms": 213.0317919999943,
+      "maxMs": 3167.8697079999984,
+      "p95Bytes": 138,
+      "maxBytes": 138,
+      "maxQueries": 26,
+      "targetP95Ms": 400,
+      "pass": true
+    }
+  },
+  "failures": [],
+  "failureCount": 0
+}

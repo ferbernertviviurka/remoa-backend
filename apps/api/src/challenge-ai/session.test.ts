@@ -101,6 +101,24 @@ function ok<T>(r: { ok: true; data: T } | { ok: false; error: { code: string; me
   return r.data;
 }
 
+describe('CCR123 selected saved stem',()=>{
+  it('keeps final negation intact for bankQuestion and retains the legacy clip for board scope',async()=>{
+    const stem='x'.repeat(19960)+' NÃO modificar o marcador final.';
+    const q=bankRow({type:'discursive',stem,alternatives:null,correctKey:null});
+    const selected=fakeStore([],[],[q]);
+    const result=ok(await startSession(selected.store,userId,genCfg({n:1,questionType:'discursive',scope:{kind:'bankQuestion',questionId:q.id}}),{bankIds:[q.id],now:T0}));
+    expect(result.current?.stem).toBe(stem);expect(aiChallengeItemPublicSchema.parse(selected.mem.items[0]!.payloadPublic).stem).toBe(stem);
+    expect(JSON.stringify(result)).not.toMatch(FORBIDDEN_KEYS);
+    const legacy=fakeStore([],[],[q]);
+    expect(ok(await startSession(legacy.store,userId,genCfg(),{bankIds:[q.id],now:T0})).current?.stem).toBe(stem.slice(0,4000));
+  });
+  it('rejects selected stems beyond 20k before creating a session',async()=>{
+    const q=bankRow({type:'discursive',stem:'x'.repeat(20001),alternatives:null,correctKey:null});const {store,mem}=fakeStore([],[],[q]);
+    await expect(startSession(store,userId,genCfg({n:1,questionType:'discursive',scope:{kind:'bankQuestion',questionId:q.id}}),{bankIds:[q.id]})).rejects.toThrow();
+    expect(mem.sessions).toHaveLength(0);
+  });
+});
+
 describe('startSession — formato 2 (mapa)', () => {
   it('creates active items from the cards, expires after the TTL, and the public payload has no label, order or expected text', async () => {
     const m = demoMap();

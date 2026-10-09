@@ -6,6 +6,22 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 
+# F33 PDF review/OCR worker: Portuguese language data, bounded subprocesses; maps Mistral OCR is preserved.
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-por curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# CCR125: immutable upstream commit + verified bytes. No download during requests/jobs.
+# Apache-2.0 license accompanies the model; the distro's TSV config remains available.
+ENV TESSDATA_PREFIX=/opt/remoa-question-tessdata
+RUN mkdir -p "$TESSDATA_PREFIX" \
+    && cp -a /usr/share/tesseract-ocr/5/tessdata/configs "$TESSDATA_PREFIX/configs" \
+    && curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 180 \
+       https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/por.traineddata \
+       --output "$TESSDATA_PREFIX/por.traineddata" \
+    && printf '%s  %s\n' '711de9dbb8052067bd42f16b9119967f30bada80d57e2ef24f65d09f531adb04' "$TESSDATA_PREFIX/por.traineddata" | sha256sum --check --strict - \
+    && curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 60 \
+       https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/LICENSE \
+       --output "$TESSDATA_PREFIX/LICENSE"
+
 WORKDIR /app
 
 # package.json first: its packageManager field pins pnpm 9 for corepack.

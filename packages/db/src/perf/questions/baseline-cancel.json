@@ -1,0 +1,11 @@
+{
+  "synthetic": true,
+  "at": "2026-10-08T22:57:10.141Z",
+  "queries": [
+    {
+      "seconds": 102,
+      "wrong": false,
+      "count": false
+    }
+  ]
+}

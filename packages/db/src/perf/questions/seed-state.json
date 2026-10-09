@@ -1,0 +1,137 @@
+{
+  "synthetic": true,
+  "createdAt": "2026-10-08T22:54:07.409Z",
+  "users": [
+    {
+      "id": "d71618aa-9b2e-4072-bdef-36c39d088389",
+      "authSessionId": "2395ebe8-d4df-44c4-b1bd-7d34ab381391",
+      "activeSessionId": "4aa198b7-9c1d-487c-b1c5-99110978fd5f",
+      "itemId": "1d400cd9-e9c7-447a-a7ea-4d305464f03c"
+    },
+    {
+      "id": "dbed1e87-faf9-40fa-89e6-d3a02039262d",
+      "authSessionId": "ffb76122-c48d-416f-8e0d-99e108a6b8cf",
+      "activeSessionId": "ffab2b17-e914-47a3-a126-c7f952e2df1b",
+      "itemId": "4df16fbd-0162-4d3a-86f4-589cfd6ef48b"
+    },
+    {
+      "id": "041ea534-ab52-4689-a193-6193b3999bda",
+      "authSessionId": "b1ae1924-911b-4657-951b-d23a9263cd26",
+      "activeSessionId": "e320fb77-9161-4466-8b38-cf96621e52c6",
+      "itemId": "c2b01ec3-7071-4b14-98da-7896dca21c1a"
+    },
+    {
+      "id": "14a7c42e-1a9a-4c9a-a22d-f980585c332c",
+      "authSessionId": "921f3ccc-508d-419d-846c-5f0514b7dd3a",
+      "activeSessionId": "8f383314-c37a-4653-add0-12eb44b83a3b",
+      "itemId": "e43b9bbd-bac3-4839-91d1-4916a03dfb17"
+    },
+    {
+      "id": "9c668905-70da-4913-a841-3bb4204174b1",
+      "authSessionId": "3a81f0bd-c2fd-4328-973b-52f4a934eb8e",
+      "activeSessionId": "c20bdbe8-6114-418f-94da-c994c0740aa7",
+      "itemId": "4103c0bd-a8a1-4735-8f5a-d6b946e8635e"
+    },
+    {
+      "id": "05671449-2d10-49d6-bd56-f7b947068f8a",
+      "authSessionId": "a9391185-ebf4-4a0b-8c7d-0a390ed1cc56",
+      "activeSessionId": "d25fd654-84da-4b9c-b1ab-35919e20c492",
+      "itemId": "b60b519e-4a24-459d-aa10-8c8dbbc18a48"
+    },
+    {
+      "id": "bd898ce6-816a-4b02-9780-ed5d8de58cf7",
+      "authSessionId": "9243528c-4c5e-42bb-978a-8d364c264747",
+      "activeSessionId": "102d5d8f-efcf-4537-a1bf-31d8a20cf49b",
+      "itemId": "e178fd61-821f-4ff5-ac13-4b72296d7a0c"
+    },
+    {
+      "id": "541cd383-76bf-40b9-9cb3-6c1cf015a449",
+      "authSessionId": "fbb11214-853c-4562-8188-c565efd3e764",
+      "activeSessionId": "1a5174d9-2e92-461d-967c-cb83cf460d18",
+      "itemId": "ab4b366b-e899-4ed6-9dbc-c99863890ab6"
+    },
+    {
+      "id": "4d22c62f-d6d0-4bc8-b896-371df3d5d344",
+      "authSessionId": "c39c82c2-3f97-4ce5-95c1-c6c249a54eb0",
+      "activeSessionId": "096f829f-5b2e-4ed4-a25b-897bbfee1293",
+      "itemId": "e0559e87-5f64-4d00-8b75-056f21e46ef2"
+    },
+    {
+      "id": "a034fa5a-1de9-4127-b110-33f3772ed227",
+      "authSessionId": "d2158c5b-379d-4cfa-b115-68c8b5072676",
+      "activeSessionId": "9db3a1a0-fedb-4fb7-810a-633118764b11",
+      "itemId": "68a2e43c-dd4f-4727-aa4a-cb5b53e43635"
+    },
+    {
+      "id": "3faccc19-4dba-46d9-bcf7-880735597637",
+      "authSessionId": "b56ca516-b54e-482b-97dd-ad6bc2067b3d",
+      "activeSessionId": "d04e0800-2c71-4d21-8fb5-1740d8b7c2ce",
+      "itemId": "6207b755-0f07-4d15-967c-8aa96519c49e"
+    },
+    {
+      "id": "9511d559-47ae-4c55-b6cf-fb13e770b6d8",
+      "authSessionId": "71ea9317-3b26-4249-a493-c84feb51b533",
+      "activeSessionId": "8b22f92f-fbb8-4530-90b0-24f1d013f4fe",
+      "itemId": "61416a21-3741-4b6b-87d2-1e55142767b3"
+    },
+    {
+      "id": "f1dccc9e-0f8f-45c8-9c82-c1dd0da3cc9f",
+      "authSessionId": "fb56fb9a-8258-4809-a558-1fa026320450",
+      "activeSessionId": "7603a19d-cd4d-4d7a-9164-ba67721474f0",
+      "itemId": "e3dce699-2951-4df4-a1e9-438f85aad333"
+    },
+    {
+      "id": "fb0d0c07-db72-451a-a6db-9a5f28326ca5",
+      "authSessionId": "567dc836-aef6-455f-ad89-30ccdef69fdc",
+      "activeSessionId": "d832b3fb-6cf9-4166-81b7-9b892a1fd366",
+      "itemId": "37b188f6-a7fe-4f04-a564-e3c94be7b54a"
+    },
+    {
+      "id": "33a246c4-2704-4824-aa7f-77dfa5094890",
+      "authSessionId": "2aa10740-56e5-4079-bb68-55a2d3e128ed",
+      "activeSessionId": "ea17636e-ca8d-4d94-9bde-8b616fbf8ec4",
+      "itemId": "09f9eed0-0326-441c-9985-cf3db2e05a07"
+    },
+    {
+      "id": "f2dc3e71-8ffb-420a-8307-ef4b45b045e0",
+      "authSessionId": "5e070d29-7a83-4d70-982e-8b3f0b38176e",
+      "activeSessionId": "eeb10a07-6882-441a-885b-576706ffc0aa",
+      "itemId": "ed048621-ec24-4b23-ac61-5d14ebbfd5c0"
+    },
+    {
+      "id": "06ffddc3-e765-43b0-8c5f-c4223c68ba38",
+      "authSessionId": "2f37dd9a-16ac-4acc-96b1-96d177f68851",
+      "activeSessionId": "25c78729-8220-4d06-be2f-c1cccd056bfe",
+      "itemId": "d75527aa-b21d-4ffe-9751-6cde5007376a"
+    },
+    {
+      "id": "9e79fc23-5a46-4626-82d4-67556b74f267",
+      "authSessionId": "8cdbeffc-6d4c-4874-933e-a34e47f4483b",
+      "activeSessionId": "923bb691-2a7b-470d-ae60-6cb646912296",
+      "itemId": "c51c3dab-e3cb-4089-b6a7-3e15725b19bb"
+    },
+    {
+      "id": "c116b06c-791f-488e-96c4-c59f686fc5a4",
+      "authSessionId": "9de7bca3-e0cd-4091-bdf3-954e18e4c338",
+      "activeSessionId": "3b3216d7-e85a-4562-9ca8-7c2d7e6f940a",
+      "itemId": "69399679-c802-475a-9986-d72918e6a462"
+    },
+    {
+      "id": "0830a2d3-1395-45b8-835f-8af827645540",
+      "authSessionId": "54683999-46e2-4793-b806-7b376977cb91",
+      "activeSessionId": "cbded910-3850-447b-ac49-60a29e081d70",
+      "itemId": "bd00ae64-e01d-4299-b7a3-5db780e0f0fd"
+    }
+  ],
+  "source": "aa29aa48-66e6-4e8a-80dd-8ab660b20fca",
+  "area": "b1621b6b-dc34-4c68-956b-65dc2ae82ade",
+  "topic": "808b5d18-ad7f-4f17-b042-3ae3a3d6ea1a",
+  "paper": "12a67d02-68ff-4c6f-8153-89f13faddb04",
+  "counts": {
+    "canonical": 50000,
+    "versions": 5000,
+    "attempts": 100000,
+    "db_size": "402 MB"
+  },
+  "seedMs": 20900
+}

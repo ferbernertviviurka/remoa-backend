@@ -2,9 +2,20 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { httpErrorBodySchema, nameSchema, notificationTypeSchema, notificationTypes, signUpInputSchema } from './index';
 import { isNotificationType, isValidEmail, isValidName, readErrorBody } from './constants';
+import * as leaf from './constants';
+import * as root from './index';
+import * as catalog from './question-catalog';
 
 // CCR-058: `@remoa/contracts/constants` stays zod-free, and its guards agree with the zod schemas.
 describe('@remoa/contracts/constants', () => {
+  it('CCR127 preserves F33 root/catalog/leaf identities and exact literal types',()=>{
+    const names=['QUESTION_PDF_PARSER_VERSION','QUESTION_PDF_OCR_MODEL_ID','QUESTION_PDF_OCR_MODEL_COMMIT','QUESTION_PDF_OCR_MODEL_SHA256','QUESTION_PDF_OCR_DPI','QUESTION_PDF_OCR_VERSION','catalogAlternativeKeys'] as const;
+    for(const name of names){expect(root[name]).toBe(leaf[name]);expect(catalog[name]).toBe(leaf[name]);}
+    const dpi:180=leaf.QUESTION_PDF_OCR_DPI;
+    const parser:'f33-layout-v7'=leaf.QUESTION_PDF_PARSER_VERSION;
+    const keys:readonly ['A','B','C','D','E','F','G','H','I','J']=leaf.catalogAlternativeKeys;
+    expect({dpi,parser,keys}).toEqual({dpi:180,parser:'f33-layout-v7',keys:['A','B','C','D','E','F','G','H','I','J']});
+  });
   it('imports nothing at runtime (only `import type`)', () => {
     const src = readFileSync(new URL('./constants.ts', import.meta.url), 'utf8');
     expect(src.match(/^import (?!type ).*$/gm)).toBeNull();

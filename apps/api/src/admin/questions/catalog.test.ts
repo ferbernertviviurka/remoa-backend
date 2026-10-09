@@ -1,0 +1,22 @@
+import { Hono } from 'hono';
+import { beforeEach,describe,expect,it,vi } from 'vitest';
+import type { AdminEnv } from '../core';
+import { questionAdminCatalogResultSchema } from '@remoa/contracts';
+const state=vi.hoisted(()=>({execute:vi.fn(),audit:vi.fn(),invalidate:vi.fn()}));
+vi.mock('../../db',()=>({dbm:async()=>({db:{transaction:async(fn:(tx:unknown)=>unknown)=>fn({execute:state.execute})}}),Abort:class extends Error{constructor(public error:unknown){super('abort');}}}));
+vi.mock('../core/audit',()=>({auditMeta:()=>({}),writeAudit:state.audit}));
+vi.mock('../../cache',()=>({invalidate:state.invalidate}));
+import { questionAdminCatalogRoutes } from './catalog';
+const id='33000000-0000-4000-8000-000000000001';
+const entry={id:1,createdAt:new Date(),actorType:'admin',actor:null,action:'question.catalog_view',targetType:'route',targetId:'catalog',targetLabel:null,reason:'Consultar catálogo administrativo de questões',result:'success',denial:null,before:null,after:null,ipHash:null,userAgent:null,requestId:null};
+let authAt:number|null;
+const app=()=>new Hono<AdminEnv>().use('*',async(c,next)=>{c.set('userId',id);c.set('admin',{id,name:'Admin sintético',email:'test@example.invalid',avatarUrl:null} as never);c.set('authAt',authAt);c.set('log',{error:vi.fn()} as never);await next();}).route('/v1/admin/questions',questionAdminCatalogRoutes);
+beforeEach(()=>{vi.clearAllMocks();process.env.QUESTIONS_CATALOG_ENABLED='1';process.env.SHARE_SECRET='synthetic-discovery-secret';authAt=Date.now();state.audit.mockResolvedValue(entry);state.invalidate.mockResolvedValue(undefined);});
+describe('CCR139 admin audit and admission',()=>{
+ it('returns strict audited page and one audit after role recheck',async()=>{state.execute.mockResolvedValueOnce([{role:'admin'}]).mockResolvedValueOnce([]);const r=await app().request('/v1/admin/questions/catalog');expect(r.status).toBe(200);expect(questionAdminCatalogResultSchema.safeParse((await r.json()).data).success).toBe(true);expect(state.audit).toHaveBeenCalledTimes(1);expect(state.audit.mock.calls[0]![0]).toMatchObject({action:'question.catalog_view',result:'success',after:{count:0,hasMore:false}});expect(state.execute).toHaveBeenCalledTimes(2);});
+ it('denies stale reauthentication before data access',async()=>{authAt=null;expect((await app().request('/v1/admin/questions/catalog')).status).toBe(403);expect(state.execute).not.toHaveBeenCalled();expect(state.audit).toHaveBeenCalledTimes(1);expect(state.audit.mock.calls[0]![0].denial).toBe('reauth_required');});
+ it('hides disabled endpoint without DB access',async()=>{process.env.QUESTIONS_CATALOG_ENABLED='0';expect((await app().request('/v1/admin/questions/catalog')).status).toBe(404);expect(state.execute).not.toHaveBeenCalled();expect(state.audit).not.toHaveBeenCalled();});
+ it('rechecks current role rather than middleware actor alone',async()=>{state.execute.mockResolvedValueOnce([{role:'student'}]);expect((await app().request('/v1/admin/questions/catalog')).status).toBe(404);expect(state.execute).toHaveBeenCalledTimes(1);expect(state.audit.mock.calls[0]![0].result).toBe('denied');});
+ it('rejects duplicated and unknown URL keys before question access',async()=>{for(const suffix of ['?limit=25&limit=50','?ownerId='+id]){state.execute.mockResolvedValueOnce([{role:'admin'}]);expect((await app().request('/v1/admin/questions/catalog'+suffix)).status).toBe(422);}expect(state.execute).toHaveBeenCalledTimes(2);expect(state.audit).toHaveBeenCalledTimes(2);});
+ it('audits denied institutional historical root lookup',async()=>{state.execute.mockResolvedValueOnce([{role:'admin'}]).mockResolvedValueOnce([]);expect((await app().request('/v1/admin/questions/'+id+'/history')).status).toBe(404);expect(state.audit.mock.calls[0]![0]).toMatchObject({action:'question.history_view',result:'denied'});});
+});

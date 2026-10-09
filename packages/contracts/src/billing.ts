@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { accountQuestionsExportSchema } from './question-export';
 import { plans, subscriptionStatuses } from './enums';
 import { idSchema, timestampSchema } from './common';
 import { supportAuthorTypes } from './support';
@@ -88,6 +89,8 @@ export const accountExportSchema = z.object({
   exportedAt: timestampSchema,
   userId: idSchema,
   profile: z.record(z.string(), z.unknown()).nullable(),
+  /** Missing in historical v1 exports; current server populates all F33 personal sections. */
+  questions: accountQuestionsExportSchema.default({ownedQuestions:[],generationReceipts:[],sessions:[],answers:[],userStates:[],reports:[]}),
   boards: rows,
   cards: rows,
   edges: rows,
@@ -98,7 +101,7 @@ export const accountExportSchema = z.object({
       .catchall(z.unknown())
       .refine((t) => !('assignedTo' in t), 'assignedTo is staff data'),
   ),
-});
+}).refine(x=>Object.values(x.questions).every(rows=>rows.every(row=>row.userId===x.userId)), 'question_export_owner_mismatch');
 export type AccountExport = z.infer<typeof accountExportSchema>;
 
 export const redirectUrlSchema = z.object({ url: z.string().url() });

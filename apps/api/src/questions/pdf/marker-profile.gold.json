@@ -1,0 +1,298 @@
+{
+  "scope": "Authorial engineering structure fixed before regional parser code; no medical content",
+  "pages": [
+    {
+      "page": 1,
+      "width": 600,
+      "height": 800,
+      "items": [
+        {
+          "text": "01",
+          "x": 75,
+          "y": 380,
+          "width": 70,
+          "height": 64
+        },
+        {
+          "text": "Tipo de prova autoral",
+          "x": 42,
+          "y": 300,
+          "width": 105,
+          "height": 11
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "width": 600,
+      "height": 800,
+      "items": [
+        {
+          "text": "1",
+          "x": 40,
+          "y": 80,
+          "width": 6,
+          "height": 11
+        },
+        {
+          "text": "Texto autoral: não alterar 2 kg nem 0,5.",
+          "x": 40,
+          "y": 100,
+          "width": 200,
+          "height": 11
+        },
+        {
+          "text": "(A) Opção autoral A",
+          "x": 40,
+          "y": 180,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(B) Opção autoral B",
+          "x": 40,
+          "y": 205,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(C) Opção autoral C",
+          "x": 40,
+          "y": 230,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(D) Opção autoral D",
+          "x": 40,
+          "y": 255,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(E) Opção autoral E",
+          "x": 40,
+          "y": 280,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "2",
+          "x": 40,
+          "y": 420,
+          "width": 6,
+          "height": 11
+        },
+        {
+          "text": "Texto autoral: não alterar 2 kg nem 0,5.",
+          "x": 40,
+          "y": 440,
+          "width": 200,
+          "height": 11
+        },
+        {
+          "text": "(F) Referência autoral antes das alternativas.",
+          "x": 40,
+          "y": 460,
+          "width": 220,
+          "height": 11
+        },
+        {
+          "text": "(A) Opção autoral A",
+          "x": 40,
+          "y": 520,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(B) Opção autoral B",
+          "x": 40,
+          "y": 545,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(C) Opção autoral C",
+          "x": 40,
+          "y": 570,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(D) Opção autoral D",
+          "x": 40,
+          "y": 595,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(E) Opção autoral E",
+          "x": 40,
+          "y": 620,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "3",
+          "x": 330,
+          "y": 80,
+          "width": 6,
+          "height": 11
+        },
+        {
+          "text": "Texto autoral: não alterar 2 kg nem 0,5.",
+          "x": 330,
+          "y": 100,
+          "width": 200,
+          "height": 11
+        },
+        {
+          "text": "63",
+          "x": 405,
+          "y": 125,
+          "width": 12,
+          "height": 11
+        },
+        {
+          "text": "591",
+          "x": 470,
+          "y": 125,
+          "width": 18,
+          "height": 11
+        },
+        {
+          "text": "12",
+          "x": 405,
+          "y": 150,
+          "width": 12,
+          "height": 11
+        },
+        {
+          "text": "(A) Opção autoral A",
+          "x": 330,
+          "y": 180,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(B) Opção autoral B",
+          "x": 330,
+          "y": 205,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(C) Opção autoral C",
+          "x": 330,
+          "y": 230,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(D) Opção autoral D",
+          "x": 330,
+          "y": 255,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(E) Opção autoral E",
+          "x": 330,
+          "y": 280,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "4",
+          "x": 330,
+          "y": 420,
+          "width": 6,
+          "height": 11
+        },
+        {
+          "text": "Texto autoral: não alterar 2 kg nem 0,5.",
+          "x": 330,
+          "y": 440,
+          "width": 200,
+          "height": 11
+        },
+        {
+          "text": "1. Primeiro passo do corpo",
+          "x": 330,
+          "y": 460,
+          "width": 130,
+          "height": 11
+        },
+        {
+          "text": "2. Segundo passo do corpo",
+          "x": 330,
+          "y": 475,
+          "width": 125,
+          "height": 11
+        },
+        {
+          "text": "3. Terceiro passo do corpo",
+          "x": 330,
+          "y": 490,
+          "width": 130,
+          "height": 11
+        },
+        {
+          "text": "(A) Opção autoral A",
+          "x": 330,
+          "y": 520,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(B) Opção autoral B",
+          "x": 330,
+          "y": 545,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(C) Opção autoral C",
+          "x": 330,
+          "y": 570,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(D) Opção autoral D",
+          "x": 330,
+          "y": 595,
+          "width": 95,
+          "height": 11
+        },
+        {
+          "text": "(E) Opção autoral E",
+          "x": 330,
+          "y": 620,
+          "width": 95,
+          "height": 11
+        }
+      ]
+    }
+  ],
+  "expectedNumbers": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "expectedKeys": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E"
+  ],
+  "requiredPreservedText": [
+    "não alterar 2 kg nem 0,5.",
+    "(F) Referência autoral antes das alternativas.",
+    "1. Primeiro passo do corpo",
+    "2. Segundo passo do corpo",
+    "3. Terceiro passo do corpo"
+  ]
+}

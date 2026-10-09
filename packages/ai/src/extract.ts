@@ -12,6 +12,7 @@ const dagre = require('@dagrejs/dagre') as {
   layout: (graph: InstanceType<typeof graphlib.Graph>) => void;
 };
 import { z } from 'zod';
+import { ReceiptPersistenceError } from './receipts';
 import { AiError, generateJson } from './client';
 import { aiMode } from './config';
 import { EXTRACT_PROMPT_VERSION, extractUser, LIMITS, redact } from './openrouter';
@@ -355,6 +356,7 @@ export async function extractWithMeta(
     }
     return { extracted: capCards(merged, maxCards), meta };
   } catch (e) {
+    if (e instanceof ReceiptPersistenceError) throw e;
     if (e instanceof Error && (e.message === 'generate_timeout' || e.message === 'no_content')) throw e;
     return offline(e instanceof AiError ? e : new AiError('provider_error', { detail: e instanceof Error ? e.message : 'unknown' }));
   }

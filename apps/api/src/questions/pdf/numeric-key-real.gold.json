@@ -1,0 +1,408 @@
+{
+  "sourceSha256": "2e5c3047042fb23052a38d52fca21599a1502962784c0183c4e45cbe51e256db",
+  "page": 3,
+  "group": "1",
+  "description": "Frozen raw numeric cells in original official page3, independently paired by actual row order before parser edit; engineering transcription, no medical validation.",
+  "expected": [
+    {
+      "number": 1,
+      "raw": "D"
+    },
+    {
+      "number": 2,
+      "raw": "C"
+    },
+    {
+      "number": 3,
+      "raw": "A"
+    },
+    {
+      "number": 4,
+      "raw": "E"
+    },
+    {
+      "number": 5,
+      "raw": "C"
+    },
+    {
+      "number": 6,
+      "raw": "B"
+    },
+    {
+      "number": 7,
+      "raw": "D"
+    },
+    {
+      "number": 8,
+      "raw": "E"
+    },
+    {
+      "number": 9,
+      "raw": "C"
+    },
+    {
+      "number": 10,
+      "raw": "A"
+    },
+    {
+      "number": 11,
+      "raw": "C"
+    },
+    {
+      "number": 12,
+      "raw": "D"
+    },
+    {
+      "number": 13,
+      "raw": "E"
+    },
+    {
+      "number": 14,
+      "raw": "C"
+    },
+    {
+      "number": 15,
+      "raw": "E"
+    },
+    {
+      "number": 16,
+      "raw": "B"
+    },
+    {
+      "number": 17,
+      "raw": "E"
+    },
+    {
+      "number": 18,
+      "raw": "A"
+    },
+    {
+      "number": 19,
+      "raw": "D"
+    },
+    {
+      "number": 20,
+      "raw": "C"
+    },
+    {
+      "number": 21,
+      "raw": "B"
+    },
+    {
+      "number": 22,
+      "raw": "E"
+    },
+    {
+      "number": 23,
+      "raw": "A"
+    },
+    {
+      "number": 24,
+      "raw": "C"
+    },
+    {
+      "number": 25,
+      "raw": "D"
+    },
+    {
+      "number": 26,
+      "raw": "E"
+    },
+    {
+      "number": 27,
+      "raw": "B"
+    },
+    {
+      "number": 28,
+      "raw": "X"
+    },
+    {
+      "number": 29,
+      "raw": "C"
+    },
+    {
+      "number": 30,
+      "raw": "E"
+    },
+    {
+      "number": 31,
+      "raw": "A"
+    },
+    {
+      "number": 32,
+      "raw": "B"
+    },
+    {
+      "number": 33,
+      "raw": "D"
+    },
+    {
+      "number": 34,
+      "raw": "C"
+    },
+    {
+      "number": 35,
+      "raw": "A"
+    },
+    {
+      "number": 36,
+      "raw": "E"
+    },
+    {
+      "number": 37,
+      "raw": "B"
+    },
+    {
+      "number": 38,
+      "raw": "C"
+    },
+    {
+      "number": 39,
+      "raw": "A"
+    },
+    {
+      "number": 40,
+      "raw": "D"
+    },
+    {
+      "number": 41,
+      "raw": "D"
+    },
+    {
+      "number": 42,
+      "raw": "E"
+    },
+    {
+      "number": 43,
+      "raw": "E"
+    },
+    {
+      "number": 44,
+      "raw": "C"
+    },
+    {
+      "number": 45,
+      "raw": "X"
+    },
+    {
+      "number": 46,
+      "raw": "C"
+    },
+    {
+      "number": 47,
+      "raw": "B"
+    },
+    {
+      "number": 48,
+      "raw": "B"
+    },
+    {
+      "number": 49,
+      "raw": "C"
+    },
+    {
+      "number": 50,
+      "raw": "A"
+    },
+    {
+      "number": 51,
+      "raw": "E"
+    },
+    {
+      "number": 52,
+      "raw": "C"
+    },
+    {
+      "number": 53,
+      "raw": "X"
+    },
+    {
+      "number": 54,
+      "raw": "D"
+    },
+    {
+      "number": 55,
+      "raw": "B"
+    },
+    {
+      "number": 56,
+      "raw": "A"
+    },
+    {
+      "number": 57,
+      "raw": "D"
+    },
+    {
+      "number": 58,
+      "raw": "D"
+    },
+    {
+      "number": 59,
+      "raw": "A"
+    },
+    {
+      "number": 60,
+      "raw": "B"
+    },
+    {
+      "number": 61,
+      "raw": "E"
+    },
+    {
+      "number": 62,
+      "raw": "X"
+    },
+    {
+      "number": 63,
+      "raw": "E"
+    },
+    {
+      "number": 64,
+      "raw": "D"
+    },
+    {
+      "number": 65,
+      "raw": "X"
+    },
+    {
+      "number": 66,
+      "raw": "D"
+    },
+    {
+      "number": 67,
+      "raw": "C"
+    },
+    {
+      "number": 68,
+      "raw": "C"
+    },
+    {
+      "number": 69,
+      "raw": "D"
+    },
+    {
+      "number": 70,
+      "raw": "X"
+    },
+    {
+      "number": 71,
+      "raw": "A"
+    },
+    {
+      "number": 72,
+      "raw": "E"
+    },
+    {
+      "number": 73,
+      "raw": "E"
+    },
+    {
+      "number": 74,
+      "raw": "E"
+    },
+    {
+      "number": 75,
+      "raw": "D"
+    },
+    {
+      "number": 76,
+      "raw": "C"
+    },
+    {
+      "number": 77,
+      "raw": "B"
+    },
+    {
+      "number": 78,
+      "raw": "E"
+    },
+    {
+      "number": 79,
+      "raw": "C"
+    },
+    {
+      "number": 80,
+      "raw": "C"
+    },
+    {
+      "number": 81,
+      "raw": "B"
+    },
+    {
+      "number": 82,
+      "raw": "E"
+    },
+    {
+      "number": 83,
+      "raw": "C"
+    },
+    {
+      "number": 84,
+      "raw": "D"
+    },
+    {
+      "number": 85,
+      "raw": "B"
+    },
+    {
+      "number": 86,
+      "raw": "D"
+    },
+    {
+      "number": 87,
+      "raw": "C"
+    },
+    {
+      "number": 88,
+      "raw": "B"
+    },
+    {
+      "number": 89,
+      "raw": "C"
+    },
+    {
+      "number": 90,
+      "raw": "B"
+    },
+    {
+      "number": 91,
+      "raw": "C"
+    },
+    {
+      "number": 92,
+      "raw": "B"
+    },
+    {
+      "number": 93,
+      "raw": "E"
+    },
+    {
+      "number": 94,
+      "raw": "E"
+    },
+    {
+      "number": 95,
+      "raw": "B"
+    },
+    {
+      "number": 96,
+      "raw": "A"
+    },
+    {
+      "number": 97,
+      "raw": "B"
+    },
+    {
+      "number": 98,
+      "raw": "A"
+    },
+    {
+      "number": 99,
+      "raw": "B"
+    },
+    {
+      "number": 100,
+      "raw": "D"
+    }
+  ]
+}

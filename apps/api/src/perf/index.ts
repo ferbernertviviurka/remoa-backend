@@ -26,6 +26,15 @@ export const QUERY_BUDGETS: Record<string, number> = {
   'GET /v1/calendar/events': 4, // Calendário (mês); D-1094: reminders + covers always pipelined with the rows (1 round trip, +1 query)
   'GET /v1/notifications': 3, // Notificações
   'GET /v1/admin/overview': 6, // Admin (visão geral)
+  // F33: fixed query counts, independent of the number of questions/items. Each asServer operation includes role restoration.
+  'GET /v1/questions': 4, // one authorized ID CTE reused for total + keyset page
+  'GET /v1/questions/:id': 4,
+  'GET /v1/exams': 4,
+  'GET /v1/question-institutions': 4,
+  'GET /v1/question-sessions': 10, // normal4; bulk expiration adds two statements, not one per session
+  'POST /v1/question-sessions': 29, // real write-session auth + filtered selection23; full-paper validation adds two statements
+  'GET /v1/question-sessions/:id': 16, // normal10; expiration reads items + freezes report
+  'PUT /v1/question-sessions/:id/items/:itemId/answer': 32, // normal26; expiration adds two statements
 };
 
 // On globalThis: vitest/tsx reload this module while drizzle-orm (patched once) stays cached; both must see the same store.

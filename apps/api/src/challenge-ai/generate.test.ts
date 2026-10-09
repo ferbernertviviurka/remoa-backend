@@ -1,3 +1,4 @@
+import { GenerationReceipts } from '../questions/generation/receipts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiError, generateJson } from '@remoa/ai';
 import { questionBankServerSchema, type ChallengeScope, type QuestionBankServer } from '@remoa/contracts';
@@ -412,4 +413,21 @@ describe('map helpers', () => {
     expect(text).toContain('imagem: rótulos: Ventrículo esquerdo');
     expect(refs.get('c3')?.id).toBe(C3);
   });
+});
+
+describe('F33 producer conservation',()=>{
+  it.each(['objective','discursive'] as const)('injects awaited receipt hooks and promotion for %s',async type=>{
+    const {store}=memStore();ask.mockResolvedValueOnce(type==='objective'?objReply(obj()):discReply(disc()));
+    const created:GenerationReceipts[]=[];const receipts:NonNullable<GenerateDeps['receipts']>=meta=>{const ledger=new GenerationReceipts(meta);vi.spyOn(ledger,'wrap').mockImplementation(fn=>fn());vi.spyOn(ledger,'markScreened').mockResolvedValue();vi.spyOn(ledger,'saveRows').mockResolvedValue();created.push(ledger);return ledger;};
+    const result=await generateQuestions(input({questionType:type}),{...deps(store),receipts});expect(result.ok).toBe(true);expect(created[0]!.meta.producer).toBe(type==='objective'?'challenge_objective':'challenge_discursive');expect(created[0]!.wrap).toHaveBeenCalledTimes(1);expect(created[0]!.saveRows).toHaveBeenCalledTimes(1);expect(store.save).not.toHaveBeenCalled();
+  });
+  it('screening ledger failure refunds the reservation and cannot return success',async()=>{
+    const {store}=memStore();ask.mockResolvedValueOnce(discReply(disc()));const receipts:NonNullable<GenerateDeps['receipts']>=meta=>{const ledger=new GenerationReceipts(meta);vi.spyOn(ledger,'wrap').mockImplementation(fn=>fn());vi.spyOn(ledger,'markScreened').mockRejectedValue(Error('synthetic receipt outage'));return ledger;};
+    await expect(generateQuestions(input(),{...deps(store),receipts})).rejects.toThrow();expect(refund).toHaveBeenCalledTimes(1);expect(store.save).not.toHaveBeenCalled();
+  });
+});
+
+it('saved bank-question scope refuses generation before quota, context or provider',async()=>{
+ const {store}=memStore();const r=await generateQuestions(input({scope:{kind:'bankQuestion',questionId:C1},charge:'once'}),deps(store));
+ expect(r).toMatchObject({ok:false,error:{code:'validation',message:'saved_question_requires_start_endpoint'}});expect(reserve).not.toHaveBeenCalled();expect(ask).not.toHaveBeenCalled();expect(scopeCardIds({kind:'bankQuestion',questionId:C1},CARDS,[])).toEqual([]);
 });

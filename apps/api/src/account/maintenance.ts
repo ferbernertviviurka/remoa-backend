@@ -11,6 +11,7 @@ import { cleanOrphanAssets, purgeDeletedCards } from '../cleanup/assets';
 import { sendOnboardingEmails } from '../onboarding/emails';
 import { refreshRecentMetrics } from '../admin/overview/metrics';
 import { failStaleJobs } from '../ai/service';
+import { reconcileQuestionRuntime } from '../questions/runtime/recovery';
 import { sweepTrialNotices } from '../billing/trial-notice';
 
 const log = createLogger({ requestId: 'job-maintenance' });
@@ -45,6 +46,7 @@ export function runHourly(now = new Date()) {
     metrics: () => refreshRecentMetrics(now), // F19 FR-13 (D-458)
     onboarding: () => sendOnboardingEmails(now), // F12 FR-8 (D-525)
     staleJobs: () => failStaleJobs(), // G22 qa (P-617): AI jobs of a process that died give their unit back
+    questions: () => reconcileQuestionRuntime(), // F33 receipts and expired import leases, no provider calls
     trial: () => sweepTrialNotices(now), // F30 (D-1213): "teste do Pro termina em 3 dias / hoje"
   });
 }

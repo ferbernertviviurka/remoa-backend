@@ -1,0 +1,14 @@
+{
+  "synthetic": true,
+  "at": "2026-10-08T23:36:31.272Z",
+  "distribution": [
+    {
+      "matches": null,
+      "n": 5000
+    },
+    {
+      "matches": true,
+      "n": 50000
+    }
+  ]
+}

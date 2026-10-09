@@ -21,6 +21,9 @@ describe.skipIf(!process.env.DATABASE_URL)('FR-19 query budget per route', () =>
   let boardId = '';
   let sessionId = '';
   let itemId = '';
+  let catalogQuestionId = '';
+  let catalogSessionId = '';
+  let catalogItemId = '';
   const counts: Record<string, number> = {};
   const sessions = new Map<string, string>();
   // like production (D-990): GET = signature only, the session query rides in the request's first statement; writes run liveSession themselves
@@ -42,10 +45,10 @@ describe.skipIf(!process.env.DATABASE_URL)('FR-19 query budget per route', () =>
     if (role) await dbm.db.execute(sql`update profiles set role = ${role} where user_id = ${id}`);
     return id;
   };
-  const call = (as: string, method: string, path: string, body?: unknown) =>
-    app.request(path, { method, headers: { authorization: `Bearer ${fakeToken(as)}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
-  const measure = async (key: string, as: string, method: string, path: string, body?: unknown) => {
-    const res = await call(as, method, path, body);
+  const call = (as: string, method: string, path: string, body?: unknown, headers:Record<string,string>={}) =>
+    app.request(path, { method, headers: { authorization: `Bearer ${fakeToken(as)}`, 'content-type': 'application/json',...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const measure = async (key: string, as: string, method: string, path: string, body?: unknown,headers:Record<string,string>={}) => {
+    const res = await call(as, method, path, body,headers);
     expect(res.status, `${key} -> ${await res.clone().text()}`).toBe(200);
     const n = Number(res.headers.get('x-remoa-queries'));
     counts[key] = n;
@@ -70,6 +73,9 @@ describe.skipIf(!process.env.DATABASE_URL)('FR-19 query budget per route', () =>
     itemId = s.items[0]!.id;
     const ans = await call(student, 'POST', '/v1/challenge/answer', { inputKind: 'self', sessionId, itemId, durationMs: 4000 });
     expect(ans.status).toBe(200);
+    catalogQuestionId=uuid();
+    await dbm.db.execute(sql`INSERT INTO question_bank(id,user_id,board_id,type,difficulty,stem,alternatives,correct_key,expected_answer,source,origin)
+      VALUES(${catalogQuestionId},${student},${boardId},'objective','medium','Synthetic budget question',${JSON.stringify([{key:'A',text:'Synthetic A'},{key:'B',text:'Synthetic B'}])}::text::jsonb,'A','Synthetic A','student','user_authored')`);
   });
   afterAll(async () => {
     if (process.env.PERF_BUDGET_PRINT) console.log(JSON.stringify(counts));
@@ -92,9 +98,21 @@ describe.skipIf(!process.env.DATABASE_URL)('FR-19 query budget per route', () =>
   case_('GET /v1/calendar/events', () => student, 'GET', () => `/v1/calendar/events?${month()}`);
   case_('GET /v1/notifications', () => student, 'GET', () => '/v1/notifications');
   case_('GET /v1/admin/overview', () => admin, 'GET', () => '/v1/admin/overview');
+  case_('GET /v1/questions',()=>student,'GET',()=>'/v1/questions?scope=mine');
+  case_('GET /v1/questions/:id',()=>student,'GET',()=>'/v1/questions/'+catalogQuestionId);
+  case_('GET /v1/exams',()=>student,'GET',()=>'/v1/exams');
+  case_('GET /v1/question-institutions',()=>student,'GET',()=>'/v1/question-institutions');
+  case_('GET /v1/question-sessions',()=>student,'GET',()=>'/v1/question-sessions');
+  it('POST /v1/question-sessions has a fixed selection/snapshot budget',async()=>{
+    const {n,json}=await measure('POST /v1/question-sessions',student,'POST','/v1/question-sessions',{mode:'study',questionIds:[catalogQuestionId],count:1},{'idempotency-key':uuid()});
+    expect(n).toBeLessThanOrEqual(QUERY_BUDGETS['POST /v1/question-sessions']!);
+    catalogSessionId=json.data.id;catalogItemId=json.data.items[0].id;
+  });
+  case_('GET /v1/question-sessions/:id',()=>student,'GET',()=>'/v1/question-sessions/'+catalogSessionId);
+  case_('PUT /v1/question-sessions/:id/items/:itemId/answer',()=>student,'PUT',()=>'/v1/question-sessions/'+catalogSessionId+'/items/'+catalogItemId+'/answer',()=>({selectedKey:'A',mutationId:uuid(),revision:0,elapsedMs:100}));
 
   it('every budget in QUERY_BUDGETS has a case here', () => {
-    const covered = new Set(['GET /v1/home', 'GET /v1/boards', 'GET /v1/review/hub', 'GET /v1/review/queue', 'GET /v1/boards/:id', 'POST /v1/challenge/rate', 'GET /v1/calendar/events', 'GET /v1/notifications', 'GET /v1/admin/overview']);
+    const covered = new Set(['GET /v1/home', 'GET /v1/boards', 'GET /v1/review/hub', 'GET /v1/review/queue', 'GET /v1/boards/:id', 'POST /v1/challenge/rate', 'GET /v1/calendar/events', 'GET /v1/notifications', 'GET /v1/admin/overview','GET /v1/questions','GET /v1/questions/:id','GET /v1/exams','GET /v1/question-institutions','GET /v1/question-sessions','POST /v1/question-sessions','GET /v1/question-sessions/:id','PUT /v1/question-sessions/:id/items/:itemId/answer']);
     expect(Object.keys(QUERY_BUDGETS).sort()).toEqual([...covered].sort());
   });
 });

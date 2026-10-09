@@ -1,35 +1,114 @@
-import { randomUUID } from 'node:crypto';
-import { Hono } from 'hono';
-import { sql, type SQL } from 'drizzle-orm';
-import { z } from 'zod';
+import { questionFeatures } from "../questions/runtime/config";
+import { createHash, randomUUID } from "node:crypto";
+import { Hono } from "hono";
+import { sql, type SQL } from "drizzle-orm";
+import { z } from "zod";
 import {
-  aiAnswerInputSchema, aiAnswerItemInputSchema, aiAnswerResultSchema, aiChallengeItemPublicSchema, aiChallengeItemServerSchema,
-  aiChallengeSessionPublicSchema, aiItemTypes, cardRubricServerSchema, cardRubricStatuses, CHALLENGE_MAX_ATTEMPTS, challengeConfigSchema, challengeFormats, challengeModes, challengeSessionStatuses, disputeVerdictInputSchema, enamedTopicOptionSchema, err,
-  generateSummaryInputSchema, gradedBy as gradedByValues, grades, idSchema, mapSummaryPublicSchema, ok, parseWith, questionBankItemPublicSchema,
-  referenceRefSchema, shuffleMapSchema,
-  questionDifficulties, questionSources, questionStatuses, questionTypes, verdicts,
-  type AiAnswerInput, type AiAnswerItemInput, type AiAnswerResult, type AiChallengeItemServer, type AlternativeKey, type CardRubricServer,
-  type AppError, type ChallengeConfig, type ErrorCode, type GradedBy, type Grade, type QuestionType, type Result, type Verdict,
-} from '@remoa/contracts';
-import { challengeLimits, numbersGrounded } from '@remoa/ai';
-import type { Tx } from '@remoa/db';
-import type { Env } from '../app';
-import { fail } from '../app';
-import { invalidate } from '../cache';
-import { asServer, pgArray, run } from '../db';
-import { generateQuestions, type GenerateInput, type GenerateOutput } from '../challenge-ai/generate';
-import { cardContentHash, rubricFromAnswer } from '../challenge-ai/rubric';
+  savedQuestionStartInputSchema,
+  savedQuestionStartResultSchema,
+  aiAnswerInputSchema,
+  aiAnswerItemInputSchema,
+  aiAnswerResultSchema,
+  aiChallengeItemPublicSchema,
+  aiChallengeItemServerSchema,
+  aiChallengeSessionPublicSchema,
+  aiItemTypes,
+  cardRubricServerSchema,
+  cardRubricStatuses,
+  CHALLENGE_MAX_ATTEMPTS,
+  challengeConfigSchema,
+  challengeFormats,
+  challengeModes,
+  challengeSessionStatuses,
+  disputeVerdictInputSchema,
+  enamedTopicOptionSchema,
+  err,
+  generateSummaryInputSchema,
+  gradedBy as gradedByValues,
+  grades,
+  idSchema,
+  mapSummaryPublicSchema,
+  ok,
+  parseWith,
+  questionBankItemPublicSchema,
+  referenceRefSchema,
+  shuffleMapSchema,
+  questionDifficulties,
+  questionSources,
+  questionStatuses,
+  questionTypes,
+  verdicts,
+  type AiAnswerInput,
+  type AiAnswerItemInput,
+  type AiAnswerResult,
+  type AiChallengeItemServer,
+  type AlternativeKey,
+  type CardRubricServer,
+  type AppError,
+  type ChallengeConfig,
+  type ErrorCode,
+  type GradedBy,
+  type Grade,
+  type QuestionType,
+  type Result,
+  type Verdict,
+} from "@remoa/contracts";
+import { challengeLimits, numbersGrounded } from "@remoa/ai";
+import type { Tx } from "@remoa/db";
+import type { Env } from "../app";
+import { fail } from "../app";
+import { invalidate } from "../cache";
+import { asServer, pgArray, run } from "../db";
 import {
-  answerHash as gradeAnswerHash, gradeAnswer, gradeBatch, publicResult,
-  type CardDue, type GradeDeps, type GradeErrorCode, type GradeInput, type GradeOutcome, type GradedAttempt, type PriorAttempt, type Schedule,
-} from '../challenge-ai/grade';
+  generateQuestions,
+  type GenerateInput,
+  type GenerateOutput,
+} from "../challenge-ai/generate";
+import { cardContentHash, rubricFromAnswer } from "../challenge-ai/rubric";
 import {
-  acceptAnswer, advance, answerHash as sessionAnswerHash, appendBankItem, endEarly, getSession, recordAttempt, sessionExpiresAt, sessionStore, startSession,
-  type ItemRow, type NewItem, type SessionRow, type SessionStore,
-} from '../challenge-ai/session';
-import { generateSummary, listSummaries, type GenerateSummaryInput } from '../challenge-ai/summary';
-import { ADVICE_BELOW, scorePercent, studyAdviceSchema, writeAdvice, type AdviceCandidates, type StudyAdvice } from '../challenge-ai/advice';
-import { recordAttempt as recordReview } from '../review/record-attempt';
+  answerHash as gradeAnswerHash,
+  gradeAnswer,
+  gradeBatch,
+  publicResult,
+  type CardDue,
+  type GradeDeps,
+  type GradeErrorCode,
+  type GradeInput,
+  type GradeOutcome,
+  type GradedAttempt,
+  type PriorAttempt,
+  type Schedule,
+} from "../challenge-ai/grade";
+import {
+  acceptAnswer,
+  advance,
+  answerHash as sessionAnswerHash,
+  appendBankItem,
+  endEarly,
+  getSession,
+  recordAttempt,
+  sessionExpiresAt,
+  sessionStore,
+  startSession,
+  type ItemRow,
+  type NewItem,
+  type SessionRow,
+  type SessionStore,
+} from "../challenge-ai/session";
+import {
+  generateSummary,
+  listSummaries,
+  type GenerateSummaryInput,
+} from "../challenge-ai/summary";
+import {
+  ADVICE_BELOW,
+  scorePercent,
+  studyAdviceSchema,
+  writeAdvice,
+  type AdviceCandidates,
+  type StudyAdvice,
+} from "../challenge-ai/advice";
+import { recordAttempt as recordReview } from "../review/record-attempt";
 
 // G25 (F32) T6: HTTP for "Desafio com IA" and "Resumo com IA" (FR-36–FR-52, D-1605, D-1611).
 // The services already exist; this file wires them. Three rules hold for every handler:
@@ -52,56 +131,101 @@ export const challengeReportSchema = z
     /** D-1567: share answered right (a partial counts half) over the graded questions. */
     percent: z.number().int().min(0).max(100),
     /** D-1567: `totalMs` is the session's wall clock (start to finish); `avgMs` the mean time on a question that has one. */
-    timing: z.object({ totalMs: z.number().int().nonnegative().nullable(), avgMs: z.number().int().nonnegative().nullable() }).strict(),
+    timing: z
+      .object({
+        totalMs: z.number().int().nonnegative().nullable(),
+        avgMs: z.number().int().nonnegative().nullable(),
+      })
+      .strict(),
     advice: studyAdviceSchema.nullable(),
-    score: z.object({
-      correct: z.number().int().nonnegative(), partial: z.number().int().nonnegative(), incorrect: z.number().int().nonnegative(),
-      pending: z.number().int().nonnegative(), unanswered: z.number().int().nonnegative(),
-    }).strict(),
+    score: z
+      .object({
+        correct: z.number().int().nonnegative(),
+        partial: z.number().int().nonnegative(),
+        incorrect: z.number().int().nonnegative(),
+        pending: z.number().int().nonnegative(),
+        unanswered: z.number().int().nonnegative(),
+      })
+      .strict(),
     /** FR-33: the same score split by the card's module and by the question's ENAMED topic. */
-    groups: z.array(z.object({
-      kind: z.enum(['module', 'topic']),
-      label: z.string().min(1).max(80),
-      correct: z.number().int().nonnegative(),
-      partial: z.number().int().nonnegative(),
-      incorrect: z.number().int().nonnegative(),
-    }).strict()).max(40),
-    items: z.array(z.object({
-      itemId: idSchema,
-      position: z.number().int().nonnegative(),
-      type: z.enum(aiItemTypes),
-      stem: z.string(),
-      attemptId: idSchema.nullable(),
-      attemptNo: z.number().int().min(1).max(CHALLENGE_MAX_ATTEMPTS).nullable(),
-      verdict: z.enum(verdicts).nullable(),
-      gradedBy: z.enum(gradedByValues).nullable(),
-      rating: z.enum(grades).nullable(),
-      feedback: z.string().max(2000).nullable(),
-      manipulation: z.boolean(),
-      disputed: z.boolean(),
-      elapsedMs: z.number().int().nonnegative().nullable(),
-    }).strict()).max(20),
+    groups: z
+      .array(
+        z
+          .object({
+            kind: z.enum(["module", "topic"]),
+            label: z.string().min(1).max(80),
+            correct: z.number().int().nonnegative(),
+            partial: z.number().int().nonnegative(),
+            incorrect: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .max(40),
+    items: z
+      .array(
+        z
+          .object({
+            itemId: idSchema,
+            position: z.number().int().nonnegative(),
+            type: z.enum(aiItemTypes),
+            stem: z.string(),
+            attemptId: idSchema.nullable(),
+            attemptNo: z
+              .number()
+              .int()
+              .min(1)
+              .max(CHALLENGE_MAX_ATTEMPTS)
+              .nullable(),
+            verdict: z.enum(verdicts).nullable(),
+            gradedBy: z.enum(gradedByValues).nullable(),
+            rating: z.enum(grades).nullable(),
+            feedback: z.string().max(2000).nullable(),
+            manipulation: z.boolean(),
+            disputed: z.boolean(),
+            elapsedMs: z.number().int().nonnegative().nullable(),
+          })
+          .strict(),
+      )
+      .max(20),
   })
   .strict();
 export type ChallengeReport = z.infer<typeof challengeReportSchema>;
 
-export type ReportGroup = ChallengeReport['groups'][number];
+export type ReportGroup = ChallengeReport["groups"][number];
 
 /** FR-33: one row per module and per ENAMED topic that a graded question belongs to. Pending and unanswered stay out. */
 export function reportGroups(
   items: readonly { itemId: string; verdict: Verdict | null }[],
-  labels: readonly { itemId: string; module: string | null; topic: string | null }[],
+  labels: readonly {
+    itemId: string;
+    module: string | null;
+    topic: string | null;
+  }[],
 ): ReportGroup[] {
   const byId = new Map(labels.map((l) => [l.itemId, l]));
   const acc = new Map<string, ReportGroup>();
   for (const item of items) {
-    if (item.verdict !== 'correct' && item.verdict !== 'partial' && item.verdict !== 'incorrect') continue;
+    if (
+      item.verdict !== "correct" &&
+      item.verdict !== "partial" &&
+      item.verdict !== "incorrect"
+    )
+      continue;
     const label = byId.get(item.itemId);
-    for (const [kind, name] of [['module', label?.module], ['topic', label?.topic]] as const) {
+    for (const [kind, name] of [
+      ["module", label?.module],
+      ["topic", label?.topic],
+    ] as const) {
       const text = name?.trim();
       if (!text) continue;
       const key = `${kind}\0${text}`;
-      const g = acc.get(key) ?? { kind, label: text.slice(0, 80), correct: 0, partial: 0, incorrect: 0 };
+      const g = acc.get(key) ?? {
+        kind,
+        label: text.slice(0, 80),
+        correct: 0,
+        partial: 0,
+        incorrect: 0,
+      };
       g[item.verdict] += 1;
       acc.set(key, g);
     }
@@ -109,43 +233,62 @@ export function reportGroups(
   return [...acc.values()].slice(0, 40);
 }
 
-const reviewResultSchema = z.object({ cards: z.number().int().nonnegative() }).strict();
+const reviewResultSchema = z
+  .object({ cards: z.number().int().nonnegative() })
+  .strict();
 
 /** FR-19/FR-8: how many questions came from the bank, how many were written now, how many are missing. Numbers only. */
 export const generationMetaSchema = z
   .object({
-    requested: z.number().int().nonnegative(), reused: z.number().int().nonnegative(), generated: z.number().int().nonnegative(),
-    shortfall: z.number().int().nonnegative(), stoppedBy: z.enum(['quota', 'ai_error']).nullable(),
+    requested: z.number().int().nonnegative(),
+    reused: z.number().int().nonnegative(),
+    generated: z.number().int().nonnegative(),
+    shortfall: z.number().int().nonnegative(),
+    stoppedBy: z.enum(["quota", "ai_error"]).nullable(),
   })
   .strict();
 export type GenerationMeta = z.infer<typeof generationMetaSchema>;
 
-export const disputeResultSchema = z.object({ attemptId: idSchema, disputed: z.literal(true) }).strict();
-export const archiveResultSchema = z.object({ id: idSchema, status: z.literal('archived') }).strict();
+export const disputeResultSchema = z
+  .object({ attemptId: idSchema, disputed: z.literal(true) })
+  .strict();
+export const archiveResultSchema = z
+  .object({ id: idSchema, status: z.literal("archived") })
+  .strict();
 /** FR-18: a new version. The answer stays on the server; only the stem and the difficulty change. */
-export const editQuestionSchema = z.object({
-  stem: z.string().trim().min(1).max(2000),
-  difficulty: z.enum(questionDifficulties).optional(),
-}).strict();
+export const editQuestionSchema = z
+  .object({
+    stem: z.string().trim().min(1).max(2000),
+    difficulty: z.enum(questionDifficulties).optional(),
+  })
+  .strict();
 /** FR-17: the student confirms a topic that already exists in the closed ENAMED list. */
 export const confirmTopicSchema = z.object({ topicId: idSchema }).strict();
-export const reportResultSchema = z.object({ itemId: idSchema, reported: z.literal(true) }).strict();
+export const reportResultSchema = z
+  .object({ itemId: idSchema, reported: z.literal(true) })
+  .strict();
 /** FR-52: the summary goes to the reviewer queue. The body stays empty. */
-export const summaryReportSchema = z.object({ summaryId: idSchema, reported: z.literal(true) }).strict();
+export const summaryReportSchema = z
+  .object({ summaryId: idSchema, reported: z.literal(true) })
+  .strict();
 /** FR-26: the owner's rubric for the current card text. No expected answer, no hash. */
-export const ownerRubricSchema = z.object({
-  essentialPoints: z.array(z.string().min(1).max(400)).min(1).max(12),
-  acceptedVariants: z.array(z.string().min(1).max(400)).max(20),
-  criticalErrors: z.array(z.string().min(1).max(400)).max(12),
-  status: z.enum(cardRubricStatuses),
-}).strict();
+export const ownerRubricSchema = z
+  .object({
+    essentialPoints: z.array(z.string().min(1).max(400)).min(1).max(12),
+    acceptedVariants: z.array(z.string().min(1).max(400)).max(20),
+    criticalErrors: z.array(z.string().min(1).max(400)).max(12),
+    status: z.enum(cardRubricStatuses),
+  })
+  .strict();
 export type OwnerRubric = z.infer<typeof ownerRubricSchema>;
 /** The student sends the three lists. Status is set by the server. */
-export const saveRubricSchema = z.object({
-  essentialPoints: z.array(z.string().trim().min(1).max(400)).min(1).max(12),
-  acceptedVariants: z.array(z.string().trim().min(1).max(400)).max(20),
-  criticalErrors: z.array(z.string().trim().min(1).max(400)).max(12),
-}).strict();
+export const saveRubricSchema = z
+  .object({
+    essentialPoints: z.array(z.string().trim().min(1).max(400)).min(1).max(12),
+    acceptedVariants: z.array(z.string().trim().min(1).max(400)).max(20),
+    criticalErrors: z.array(z.string().trim().min(1).max(400)).max(12),
+  })
+  .strict();
 
 /** GET /bank query. Strict: an unknown parameter is a 422. */
 export const bankQuerySchema = z
@@ -170,7 +313,9 @@ export const bankQuerySchema = z
 export type BankQuery = z.infer<typeof bankQuerySchema>;
 
 /** GET /topics. Optional area: only topics of that ENAMED area. An unknown parameter is a 422. */
-export const topicsQuerySchema = z.object({ areaId: idSchema.optional() }).strict();
+export const topicsQuerySchema = z
+  .object({ areaId: idSchema.optional() })
+  .strict();
 
 /** Finish and dispute take no body: the only valid one is empty (or `{}`). Anything else is a 422. */
 const emptyBody = z.object({}).strict();
@@ -179,10 +324,27 @@ const emptyBody = z.object({}).strict();
 
 /** Every method returns plain data; the route parses it with the public schema before sending. `unknown` on purpose. */
 export type ChallengeAiService = {
-  start(userId: string, config: ChallengeConfig, requestId: string): Promise<Result<{ session: unknown; generation: GenerationMeta | null }>>;
+  startSaved(
+    userId: string,
+    questionId: string,
+  ): Promise<Result<{ session: unknown }>>;
+  start(
+    userId: string,
+    config: ChallengeConfig,
+    requestId: string,
+  ): Promise<Result<{ session: unknown; generation: GenerationMeta | null }>>;
   session(userId: string, sessionId: string): Promise<Result<unknown>>;
-  answer(userId: string, sessionId: string, body: AiAnswerItemInput, requestId: string): Promise<Result<unknown>>;
-  finish(userId: string, sessionId: string, requestId: string): Promise<Result<unknown>>;
+  answer(
+    userId: string,
+    sessionId: string,
+    body: AiAnswerItemInput,
+    requestId: string,
+  ): Promise<Result<unknown>>;
+  finish(
+    userId: string,
+    sessionId: string,
+    requestId: string,
+  ): Promise<Result<unknown>>;
   /** FR-33: a new session with only the incorrect and partial items. The reference stays on the server. */
   retry(userId: string, sessionId: string): Promise<Result<unknown>>;
   /** FR-33: missed cards whose review date is still ahead become due now. */
@@ -191,39 +353,83 @@ export type ChallengeAiService = {
   bank(userId: string, query: BankQuery): Promise<Result<unknown>>;
   archive(userId: string, bankId: string): Promise<Result<unknown>>;
   edit(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
-  confirmTopic(userId: string, bankId: string, body: unknown): Promise<Result<unknown>>;
+  confirmTopic(
+    userId: string,
+    bankId: string,
+    body: unknown,
+  ): Promise<Result<unknown>>;
   topics(userId: string, areaId: string | null): Promise<Result<unknown>>;
-  taxonomy(userId: string, kind: 'area' | 'domain' | 'topic'): Promise<Result<unknown>>;
+  taxonomy(
+    userId: string,
+    kind: "area" | "domain" | "topic",
+  ): Promise<Result<unknown>>;
   report(userId: string, itemId: string): Promise<Result<unknown>>;
   /** FR-52: a saved summary goes to the F10 queue, attached to a card it cites. */
   reportSummary(userId: string, summaryId: string): Promise<Result<unknown>>;
   /** FR-26: the rubric grading will use for this card's current text. */
   rubric(userId: string, cardId: string): Promise<Result<unknown>>;
   /** FR-26: the owner replaces the automatic points. An approved rubric stays. */
-  saveRubric(userId: string, cardId: string, body: unknown): Promise<Result<unknown>>;
+  saveRubric(
+    userId: string,
+    cardId: string,
+    body: unknown,
+  ): Promise<Result<unknown>>;
   summarize(input: GenerateSummaryInput): Promise<Result<unknown>>;
   summaries(userId: string, boardId: string): Promise<Result<unknown>>;
 };
 
 /** One attempt row as stored (reading it needs no reference column). */
 export type StoredAttempt = {
-  id: string; itemId: string; attemptNo: number; answer: AiAnswerInput; gradedBy: GradedBy; verdict: Verdict | null; feedback: string | null;
-  hint: string | null; manipulation: boolean; covered: string[]; missing: string[]; criticalError: boolean; confidence: number | null;
-  model: string | null; promptVersion: string | null; rating: Grade | null; disputed: boolean; elapsedMs?: number | null;
+  id: string;
+  itemId: string;
+  attemptNo: number;
+  answer: AiAnswerInput;
+  gradedBy: GradedBy;
+  verdict: Verdict | null;
+  feedback: string | null;
+  hint: string | null;
+  manipulation: boolean;
+  covered: string[];
+  missing: string[];
+  criticalError: boolean;
+  confidence: number | null;
+  model: string | null;
+  promptVersion: string | null;
+  rating: Grade | null;
+  disputed: boolean;
+  elapsedMs?: number | null;
 };
 
 /** What the grader needs from the reference, resolved on the server from `reference_ref`. Lives only inside one request. */
 export type Reference = {
-  correctKey: AlternativeKey | null; expectedAnswer?: string; keyPoints?: string[]; rubric?: CardRubricServer;
-  assunto: string; evidence: string; neighbors: string;
+  correctKey: AlternativeKey | null;
+  expectedAnswer?: string;
+  keyPoints?: string[];
+  rubric?: CardRubricServer;
+  assunto: string;
+  evidence: string;
+  neighbors: string;
 };
 
-export type ScoreRow = { correct: number; partial: number; incorrect: number; pending: number };
+export type ScoreRow = {
+  correct: number;
+  partial: number;
+  incorrect: number;
+  pending: number;
+};
 
 /** What a final verdict does to the card and to the bank row. `schedule` is null while the student can still retry. */
 export type AfterGrade = {
-  cardId: string | null; subId: string; bankId: string | null; itemType: (typeof aiItemTypes)[number];
-  schedule: Schedule | null; rating: Grade | null; verdict: Verdict | null; attemptId: string; elapsedMs?: number; now: Date;
+  cardId: string | null;
+  subId: string;
+  bankId: string | null;
+  itemType: (typeof aiItemTypes)[number];
+  schedule: Schedule | null;
+  rating: Grade | null;
+  verdict: Verdict | null;
+  attemptId: string;
+  elapsedMs?: number;
+  now: Date;
 };
 
 /** The SQL that the existing services do not have: reading the reference, history, the graded row, score, dispute, bank list. */
@@ -232,43 +438,101 @@ export type DataPort = {
   sessionAttempts(userId: string, sessionId: string): Promise<StoredAttempt[]>;
   items(userId: string, sessionId: string): Promise<ItemRow[]>;
   /** FR-33: module title from the card and ENAMED topic name from the bank row. Missing sides are null. */
-  labels(userId: string, sessionId: string): Promise<{ itemId: string; module: string | null; topic: string | null }[]>;
+  labels(
+    userId: string,
+    sessionId: string,
+  ): Promise<{ itemId: string; module: string | null; topic: string | null }[]>;
   /** FR-33: sets `due = now()` on the card itself when a missed item's review is still in the future. Returns how many moved. */
   pullReview(userId: string, sessionId: string): Promise<number>;
-  reference(userId: string, session: SessionRow, item: AiChallengeItemServer): Promise<Reference | null>;
-  recentAiGradings(userId: string, cardId: string): Promise<{ hour: number; day: number }>;
+  reference(
+    userId: string,
+    session: SessionRow,
+    item: AiChallengeItemServer,
+  ): Promise<Reference | null>;
+  recentAiGradings(
+    userId: string,
+    cardId: string,
+  ): Promise<{ hour: number; day: number }>;
   /** Appends the graded row (same attempt_no as the pending one). null = that attempt was graded already (a concurrent request won). */
-  saveGraded(userId: string, itemId: string, g: GradedAttempt): Promise<string | null>;
+  saveGraded(
+    userId: string,
+    itemId: string,
+    g: GradedAttempt,
+  ): Promise<string | null>;
   saveScore(userId: string, sessionId: string, score: ScoreRow): Promise<void>;
   /** D-1567: the advice saved at the first finish (null = none yet). */
   advice(userId: string, sessionId: string): Promise<StudyAdvice | null>;
-  saveAdvice(userId: string, sessionId: string, advice: StudyAdvice): Promise<void>;
+  saveAdvice(
+    userId: string,
+    sessionId: string,
+    advice: StudyAdvice,
+  ): Promise<void>;
   /** D-1567: the cards behind the missed questions and the maps the student can open (own, not archived, plus the ready library). */
-  adviceCandidates(userId: string, boardId: string | null, missed: { stem: string; cardId: string | null; bankId: string | null }[]): Promise<AdviceCandidates>;
+  adviceCandidates(
+    userId: string,
+    boardId: string | null,
+    missed: { stem: string; cardId: string | null; bankId: string | null }[],
+  ): Promise<AdviceCandidates>;
   /** D-1605: flips `disputed` false -> true and nothing else. */
-  dispute(userId: string, attemptId: string): Promise<Result<{ attemptId: string; disputed: true }>>;
+  dispute(
+    userId: string,
+    attemptId: string,
+  ): Promise<Result<{ attemptId: string; disputed: true }>>;
   bank(userId: string, q: BankQuery): Promise<unknown[]>;
   /** FR-32: `new` when the card was never reviewed, `due` when the review date has passed, `not_due` otherwise. */
-  cardDue(userId: string, cardId: string, subId: string, now: Date): Promise<CardDue>;
+  cardDue(
+    userId: string,
+    cardId: string,
+    subId: string,
+    now: Date,
+  ): Promise<CardDue>;
   /** Applies the schedule the grader already decided, and counts the final verdict on a bank question. Never throws into the answer. */
   afterGrade(userId: string, spec: AfterGrade): Promise<void>;
-  archive(userId: string, bankId: string): Promise<{ id: string; status: 'archived' } | null>;
+  archive(
+    userId: string,
+    bankId: string,
+  ): Promise<{ id: string; status: "archived" } | null>;
   /** Inserts a new row that supersedes this one. `'numbers'` when the new stem adds a dose the stored question does not have. */
-  edit(userId: string, bankId: string, stem: string, difficulty?: string): Promise<unknown | 'numbers' | null>;
+  edit(
+    userId: string,
+    bankId: string,
+    stem: string,
+    difficulty?: string,
+  ): Promise<unknown | "numbers" | null>;
   /** Sets the topic only when it is a taxonomy topic of the question's area. `'closed'` = not in that list. */
-  confirmTopic(userId: string, bankId: string, topicId: string): Promise<unknown | 'closed' | null>;
+  confirmTopic(
+    userId: string,
+    bankId: string,
+    topicId: string,
+  ): Promise<unknown | "closed" | null>;
   /** Closed-list topic names. `areaId` limits them to that area row; null lists every topic. */
-  topics(userId: string, areaId: string | null): Promise<{ id: string; name: string }[]>;
+  topics(
+    userId: string,
+    areaId: string | null,
+  ): Promise<{ id: string; name: string }[]>;
   /** Closed-list rows of one kind (area, domain or topic), names only. */
-  taxonomy(userId: string, kind: 'area' | 'domain' | 'topic'): Promise<{ id: string; name: string }[]>;
+  taxonomy(
+    userId: string,
+    kind: "area" | "domain" | "topic",
+  ): Promise<{ id: string; name: string }[]>;
   /** FR-13: the item's card goes to the F10 queue. null when the item is not this user's. */
-  report(userId: string, itemId: string): Promise<{ itemId: string; reported: true } | null>;
+  report(
+    userId: string,
+    itemId: string,
+  ): Promise<{ itemId: string; reported: true } | null>;
   /** FR-52: null when the summary is not this user's or cites no card. */
-  reportSummary(userId: string, summaryId: string): Promise<{ summaryId: string; reported: true } | null>;
+  reportSummary(
+    userId: string,
+    summaryId: string,
+  ): Promise<{ summaryId: string; reported: true } | null>;
   /** FR-26: stored rubric for the current card text, or the automatic one. null = not this user's card. `'empty'` = nothing to derive. */
-  rubric(userId: string, cardId: string): Promise<OwnerRubric | 'empty' | null>;
+  rubric(userId: string, cardId: string): Promise<OwnerRubric | "empty" | null>;
   /** FR-26: writes status `edited`. `'approved'` is locked. `'numbers'` = a dose the card does not have. */
-  saveRubric(userId: string, cardId: string, points: z.infer<typeof saveRubricSchema>): Promise<OwnerRubric | 'approved' | 'numbers' | 'empty' | null>;
+  saveRubric(
+    userId: string,
+    cardId: string,
+    points: z.infer<typeof saveRubricSchema>,
+  ): Promise<OwnerRubric | "approved" | "numbers" | "empty" | null>;
 };
 
 export type Io = {
@@ -276,7 +540,10 @@ export type Io = {
   tx<T>(userId: string, fn: (store: SessionStore) => Promise<T>): Promise<T>;
   data: DataPort;
   grade: (input: GradeInput, deps?: GradeDeps) => Promise<GradeOutcome>;
-  gradeBatch: (inputs: readonly GradeInput[], deps?: GradeDeps) => Promise<GradeOutcome[]>;
+  gradeBatch: (
+    inputs: readonly GradeInput[],
+    deps?: GradeDeps,
+  ) => Promise<GradeOutcome[]>;
   generate: (input: GenerateInput) => Promise<Result<GenerateOutput>>;
   summarize: typeof generateSummary;
   summaries: typeof listSummaries;
@@ -285,57 +552,120 @@ export type Io = {
 };
 
 const GRADE_ERROR: Record<GradeErrorCode, ErrorCode> = {
-  invalid_answer: 'validation', answer_kind_mismatch: 'validation', batch_too_large: 'validation', no_attempts_left: 'conflict', pending_grade: 'conflict',
-  missing_reference: 'conflict', rate_limited: 'rate_limited', quota_exceeded: 'quota_exceeded', ai_failed: 'ai_unavailable',
+  invalid_answer: "validation",
+  answer_kind_mismatch: "validation",
+  batch_too_large: "validation",
+  no_attempts_left: "conflict",
+  pending_grade: "conflict",
+  missing_reference: "conflict",
+  rate_limited: "rate_limited",
+  quota_exceeded: "quota_exceeded",
+  ai_failed: "ai_unavailable",
 };
-const PUBLICO = 'estudantes de medicina do 5º e 6º ano e recém-formados que estudam para o ENAMED e a residência';
+const PUBLICO =
+  "estudantes de medicina do 5º e 6º ano e recém-formados que estudam para o ENAMED e a residência";
 
-const modeOf = (s: SessionRow) => (s.params.preset === 'mock' ? 'mock' : 'train');
-const maxAttempts = (s: SessionRow) => (s.params.preset === 'mock' ? 1 : CHALLENGE_MAX_ATTEMPTS);
+const modeOf = (s: SessionRow) =>
+  s.params.preset === "mock" ? "mock" : "train";
+const maxAttempts = (s: SessionRow) =>
+  s.params.preset === "mock" ? 1 : CHALLENGE_MAX_ATTEMPTS;
 
 const toPrior = (a: StoredAttempt): PriorAttempt => ({
-  attemptNo: a.attemptNo, answerHash: gradeAnswerHash(a.answer), gradedBy: a.gradedBy, verdict: a.verdict, feedback: a.feedback, hint: a.hint,
-  manipulation: a.manipulation, covered: a.covered, missing: a.missing, criticalError: a.criticalError, confidence: a.confidence, model: a.model,
+  attemptNo: a.attemptNo,
+  answerHash: gradeAnswerHash(a.answer),
+  gradedBy: a.gradedBy,
+  verdict: a.verdict,
+  feedback: a.feedback,
+  hint: a.hint,
+  manipulation: a.manipulation,
+  covered: a.covered,
+  missing: a.missing,
+  criticalError: a.criticalError,
+  confidence: a.confidence,
+  model: a.model,
   promptVersion: a.promptVersion,
 });
 
-const json = (v: unknown) => (typeof v === 'string' ? (JSON.parse(v) as unknown) : v);
+const json = (v: unknown) =>
+  typeof v === "string" ? (JSON.parse(v) as unknown) : v;
 
 /** The item as the grader reads it. Strict parse: the reference fields are the only additions. Never serialized. */
 const toServerItem = (r: ItemRow): AiChallengeItemServer =>
   aiChallengeItemServerSchema.parse({
-    id: r.id, sessionId: r.sessionId, position: r.position, kind: r.kind, cardId: r.cardId, subId: r.subId || null, bankId: r.bankId, type: r.type,
-    public: json(r.payloadPublic), referenceRef: json(r.referenceRef), shuffleMap: json(r.shuffleMap) ?? null,
+    id: r.id,
+    sessionId: r.sessionId,
+    position: r.position,
+    kind: r.kind,
+    cardId: r.cardId,
+    subId: r.subId || null,
+    bankId: r.bankId,
+    type: r.type,
+    public: json(r.payloadPublic),
+    referenceRef: json(r.referenceRef),
+    shuffleMap: json(r.shuffleMap) ?? null,
   });
 
-const withReference = (item: AiChallengeItemServer, ref: Reference): AiChallengeItemServer =>
+const withReference = (
+  item: AiChallengeItemServer,
+  ref: Reference,
+): AiChallengeItemServer =>
   aiChallengeItemServerSchema.parse({
-    ...item, correctKey: ref.correctKey, expectedAnswer: ref.expectedAnswer,
-    keyPoints: ref.rubric?.essentialPoints ?? ref.keyPoints, ...(ref.rubric ? { rubric: ref.rubric } : {}),
+    ...item,
+    correctKey: ref.correctKey,
+    expectedAnswer: ref.expectedAnswer,
+    keyPoints: ref.rubric?.essentialPoints ?? ref.keyPoints,
+    ...(ref.rubric ? { rubric: ref.rubric } : {}),
   });
 
 /** A stored graded row as the answer result (a repeated answer returns it: no new row, no model call). */
 function storedResult(a: StoredAttempt, s: SessionRow): AiAnswerResult {
-  const canRetry = a.gradedBy !== 'pending' && a.verdict !== 'correct' && !a.manipulation && a.attemptNo < maxAttempts(s) && s.params.grading === 'immediate';
+  const canRetry =
+    a.gradedBy !== "pending" &&
+    a.verdict !== "correct" &&
+    !a.manipulation &&
+    a.attemptNo < maxAttempts(s) &&
+    s.params.grading === "immediate";
   return {
-    attemptId: a.id, attemptNo: a.attemptNo, verdict: a.verdict, gradedBy: a.gradedBy, rating: a.rating, feedback: a.feedback, hint: canRetry ? a.hint : null,
-    canRetry, manipulation: a.manipulation,
+    attemptId: a.id,
+    attemptNo: a.attemptNo,
+    verdict: a.verdict,
+    gradedBy: a.gradedBy,
+    rating: a.rating,
+    feedback: a.feedback,
+    hint: canRetry ? a.hint : null,
+    canRetry,
+    manipulation: a.manipulation,
   };
 }
 
-const pendingResult = (attemptId: string, attemptNo: number): AiAnswerResult => ({
-  attemptId, attemptNo, verdict: null, gradedBy: 'pending', rating: null, feedback: null, hint: null, canRetry: false, manipulation: false,
+const pendingResult = (
+  attemptId: string,
+  attemptNo: number,
+): AiAnswerResult => ({
+  attemptId,
+  attemptNo,
+  verdict: null,
+  gradedBy: "pending",
+  rating: null,
+  feedback: null,
+  hint: null,
+  canRetry: false,
+  manipulation: false,
 });
 
-const gradedOf = (all: readonly StoredAttempt[], attemptNo: number) => all.find((a) => a.attemptNo === attemptNo && a.gradedBy !== 'pending');
+const gradedOf = (all: readonly StoredAttempt[], attemptNo: number) =>
+  all.find((a) => a.attemptNo === attemptNo && a.gradedBy !== "pending");
 
 /** FR-33: the last graded verdict is a miss when it is incorrect or partial. */
-function missedVerdict(attempts: readonly StoredAttempt[], itemId: string): boolean {
+function missedVerdict(
+  attempts: readonly StoredAttempt[],
+  itemId: string,
+): boolean {
   const mine = attempts.filter((a) => a.itemId === itemId);
   const top = Math.max(0, ...mine.map((a) => a.attemptNo));
   const last = mine.filter((a) => a.attemptNo === top);
-  const final = last.find((a) => a.gradedBy !== 'pending') ?? last[0];
-  return final?.verdict === 'incorrect' || final?.verdict === 'partial';
+  const final = last.find((a) => a.gradedBy !== "pending") ?? last[0];
+  return final?.verdict === "incorrect" || final?.verdict === "partial";
 }
 
 /** New ids and positions. The reference is copied for the grader and never leaves `toPublic`. null = nothing to copy, or a row that does not parse. */
@@ -344,14 +674,32 @@ function cloneMissed(rows: readonly ItemRow[]): NewItem[] | null {
   const out: NewItem[] = [];
   for (const [position, row] of rows.entries()) {
     const id = randomUUID();
-    const base = row.payloadPublic && typeof row.payloadPublic === 'object' ? row.payloadPublic : {};
-    const pub = aiChallengeItemPublicSchema.safeParse({ ...base, id, position });
+    const base =
+      row.payloadPublic && typeof row.payloadPublic === "object"
+        ? row.payloadPublic
+        : {};
+    const pub = aiChallengeItemPublicSchema.safeParse({
+      ...base,
+      id,
+      position,
+    });
     const ref = referenceRefSchema.safeParse(row.referenceRef);
-    const shuffle = row.shuffleMap == null ? { success: true as const, data: null } : shuffleMapSchema.safeParse(row.shuffleMap);
+    const shuffle =
+      row.shuffleMap == null
+        ? { success: true as const, data: null }
+        : shuffleMapSchema.safeParse(row.shuffleMap);
     if (!pub.success || !ref.success || !shuffle.success) return null;
     out.push({
-      id, position, kind: row.kind, cardId: row.cardId, subId: row.subId, bankId: row.bankId, type: pub.data.type,
-      payloadPublic: pub.data, referenceRef: ref.data, shuffleMap: shuffle.data,
+      id,
+      position,
+      kind: row.kind,
+      cardId: row.cardId,
+      subId: row.subId,
+      bankId: row.bankId,
+      type: pub.data.type,
+      payloadPublic: pub.data,
+      referenceRef: ref.data,
+      shuffleMap: shuffle.data,
     });
   }
   return out;
@@ -361,47 +709,94 @@ function cloneMissed(rows: readonly ItemRow[]): NewItem[] | null {
 
 /** FR-2 mixed, one question per step: objective on even steps, discursive on odd ones (n = 5: 3 + 2, as the batch split did). */
 const typeAt = (cfg: ChallengeConfig, at: number): QuestionType =>
-  !cfg.questionType || cfg.questionType === 'mixed' ? (at % 2 ? 'discursive' : 'objective') : cfg.questionType;
+  !cfg.questionType || cfg.questionType === "mixed"
+    ? at % 2
+      ? "discursive"
+      : "objective"
+    : cfg.questionType;
 
 /** FR-40: counts already stored, so the grader can refuse a 6th AI grading of this card in the hour or in the day. */
-async function cardGradingCounts(io: Io, userId: string, cardId: string): Promise<{ gradingsLastHour: number; gradingsLastDay: number }> {
+async function cardGradingCounts(
+  io: Io,
+  userId: string,
+  cardId: string,
+): Promise<{ gradingsLastHour: number; gradingsLastDay: number }> {
   const n = await io.data.recentAiGradings(userId, cardId);
   return { gradingsLastHour: n.hour, gradingsLastDay: n.day };
 }
 
+/** A persisted session slot identifies one generation, including its chosen focus, across restarts. */
+export function fillGenerationIdentity(s: SessionRow, position: number, focus: number): string {
+  const stable = (v: unknown): unknown => Array.isArray(v) ? v.map(stable) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, value]) => [k, stable(value)])) : v;
+  const context = createHash("sha256").update(JSON.stringify(stable({ params: s.params, type: typeAt(s.params, position), focus }))).digest("hex");
+  return `challenge-fill:${s.id}:${position}:${context}`;
+}
+
 export function createChallengeAiService(io: Io): ChallengeAiService {
-  const filling = new Map<string, Promise<void>>();
+  const filling = new Map<string, Promise<boolean>>();
   /** Sessions whose first model call already took the one `ai_question_batches` unit (D-1637). In memory, same as `filling`. */
   const paid = new Set<string>();
   const build = (s: SessionRow, at: number, focus: number) => {
     const key = `${s.id}:${at}`;
-    const running = filling.get(key) ?? (async () => {
-      const cfg = s.params;
-      const gen = await io.generate({
-        userId: s.userId, boardId: cfg.boardId, scope: cfg.scope, n: 1, questionType: typeAt(cfg, at), difficulty: cfg.difficulty,
-        requestId: 'challenge-fill', charge: paid.has(s.id) ? 'none' : 'once', focus: { seed: s.id, index: focus },
-      }).catch(() => null);
-      if (gen?.ok && gen.data.calls > 0) paid.add(s.id);
-      const q = gen?.ok ? gen.data.questions[0] : undefined;
-      if (q) await io.tx(s.userId, (st) => appendBankItem(st, s.userId, s.id, at, q.id));
-    })().finally(() => filling.delete(key));
+    const running =
+      filling.get(key) ??
+      (async () => {
+        const cfg = s.params;
+        const gen = await io
+          .generate({
+            userId: s.userId,
+            boardId: cfg.boardId,
+            scope: cfg.scope,
+            n: 1,
+            questionType: typeAt(cfg, at),
+            difficulty: cfg.difficulty,
+            requestId: fillGenerationIdentity(s, at, focus),
+            seed: fillGenerationIdentity(s, at, focus),
+            charge: paid.has(s.id) ? "none" : "once",
+            focus: { seed: s.id, index: focus },
+          })
+          .catch(() => null);
+        // Failed/uncertain execution must not turn into an automatic second focus or early finish.
+        if (!gen?.ok) return false;
+        if (gen.data.calls > 0) paid.add(s.id);
+        const q = gen?.ok ? gen.data.questions[0] : undefined;
+        if (q)
+          await io.tx(s.userId, (st) =>
+            appendBankItem(st, s.userId, s.id, at, q.id),
+          );
+        return Boolean(q) || gen.data.stoppedBy === null;
+      })().finally(() => filling.delete(key));
     filling.set(key, running);
     return running;
   };
-  const missingAt = (s: SessionRow, at: number) => io.tx(s.userId, async (st) => at < s.total && !(await st.itemAt(s.userId, s.id, at)));
+  const missingAt = (s: SessionRow, at: number) =>
+    io.tx(
+      s.userId,
+      async (st) => at < s.total && !(await st.itemAt(s.userId, s.id, at)),
+    );
   /**
    * D-1566: format 1 builds one question per step, in order (no gaps): `ahead` while the student answers, the current step if it is
    * still missing, else the next. The current step gets a second try on another card; nothing for it ends the session there (FR-8).
    */
-  const fill = async (userId: string, sessionId: string, ahead: boolean, burst = false) => {
+  const fill = async (
+    userId: string,
+    sessionId: string,
+    ahead: boolean,
+    burst = false,
+  ) => {
     const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
-    if (!s || s.status !== 'active' || s.format !== 'generated') return;
+    if (
+      !s ||
+      s.status !== "active" ||
+      s.format !== "generated" ||
+      s.params.scope.kind === "bankQuestion"
+    )
+      return;
     const at = s.position;
     // D-1637: reading the session can build the open step. That call shares the per-minute cap; a full cap waits, it does not end the session.
     const opened = async (step: number, focus: number) => {
       if (burst && !takeAiSlot(userId).ok) return false;
-      await build(s, step, focus);
-      return true;
+      return build(s, step, focus);
     };
     if (await missingAt(s, at)) {
       if (!(await opened(at, at))) return;
@@ -415,33 +810,93 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
     if (!(await opened(at, at + s.total))) return;
     await io.tx(userId, (st) => endEarly(st, userId, sessionId, io.now()));
   };
-  const fillAhead = (userId: string, sessionId: string) => void fill(userId, sessionId, true).catch(() => undefined);
+  const fillAhead = (userId: string, sessionId: string) =>
+    void fill(userId, sessionId, true).catch(() => undefined);
   const advanceQuietly = (userId: string, sessionId: string) =>
-    io.tx(userId, (st) => advance(st, userId, sessionId, io.now())).then(() => fillAhead(userId, sessionId), () => undefined);
+    io
+      .tx(userId, (st) => advance(st, userId, sessionId, io.now()))
+      .then(
+        () => fillAhead(userId, sessionId),
+        () => undefined,
+      );
 
   return {
     // FR-2 format 2 (map): the session service only. Format 1 (D-1643): one generation for the whole count. `generateQuestions` reuses
     // the bank first and writes the rest in batches of at most 10, one quota unit per batch (FR-6, FR-19, FR-60). A short batch still
     // fills the next step through `fill`.
+    async startSaved(userId, questionId) {
+      return io.tx(userId, async (st) => {
+        const q = await st.savedBankQuestion?.(userId, questionId);
+        if (!q) return err("not_found", "question_not_found");
+        if (!q.referenceReady)
+          return err("conflict", "saved_question_reference_missing");
+        if (q.stemLength > 20000)
+          return err("validation", "saved_question_stem_too_long");
+        const active = await st.savedBankSession?.(userId, q.id, io.now());
+        if (active) {
+          const r = await getSession(st, userId, active, io.now());
+          return r.ok ? ok({ session: r.data }) : r;
+        }
+        const cfg: ChallengeConfig = {
+          boardId: q.boardId,
+          scope: { kind: "bankQuestion", questionId: q.id },
+          format: "generated",
+          n: 1,
+          difficulty: q.difficulty,
+          questionType: "discursive",
+          grading: "immediate",
+          timerSec: null,
+          preset: "practice",
+        };
+        const r = await startSession(st, userId, cfg, {
+          bankIds: [q.id],
+          now: io.now(),
+        });
+        return r.ok ? ok({ session: r.data }) : r;
+      });
+    },
     async start(userId, cfg, requestId) {
-      if (cfg.format === 'map') {
-        const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { now: io.now() }));
+      if (cfg.scope.kind === "bankQuestion")
+        return err("validation", "use_saved_question_start");
+      if (cfg.format === "map") {
+        const r = await io.tx(userId, (st) =>
+          startSession(st, userId, cfg, { now: io.now() }),
+        );
         return r.ok ? ok({ session: r.data, generation: null }) : r;
       }
       // FR-20 (one ENAMED topic across maps) needs a bank query by topic that is not built yet: refuse instead of ignoring the field
-      if (cfg.enamedTopicId) return err('validation', 'enamed_topic_not_supported_yet');
+      if (cfg.enamedTopicId)
+        return err("validation", "enamed_topic_not_supported_yet");
       const id = randomUUID();
       const gen = await io.generate({
-        userId, boardId: cfg.boardId, scope: cfg.scope, n: cfg.n, questionType: cfg.questionType ?? 'mixed', difficulty: cfg.difficulty, requestId,
+        userId,
+        boardId: cfg.boardId,
+        scope: cfg.scope,
+        n: cfg.n,
+        questionType: cfg.questionType ?? "mixed",
+        difficulty: cfg.difficulty,
+        requestId,
       });
       if (!gen.ok) return gen;
       const g = gen.data;
-      if (!g.questions.length) return err('not_found', 'no_questions');
+      if (!g.questions.length) return err("not_found", "no_questions");
       if (g.calls > 0) paid.add(id);
-      const r = await io.tx(userId, (st) => startSession(st, userId, cfg, { id, bankIds: g.questions.map((q) => q.id), now: io.now() }));
+      const r = await io.tx(userId, (st) =>
+        startSession(st, userId, cfg, {
+          id,
+          bankIds: g.questions.map((q) => q.id),
+          now: io.now(),
+        }),
+      );
       if (!r.ok) return r;
       fillAhead(userId, id);
-      const generation = generationMetaSchema.parse({ requested: g.requested, reused: g.reused, generated: g.generated, shortfall: g.shortfall, stoppedBy: g.stoppedBy });
+      const generation = generationMetaSchema.parse({
+        requested: g.requested,
+        reused: g.reused,
+        generated: g.generated,
+        shortfall: g.shortfall,
+        stoppedBy: g.stoppedBy,
+      });
       return ok({ session: r.data, generation });
     },
 
@@ -457,8 +912,20 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       const opened = await io.tx(userId, async (st) => {
         const rec = await recordAttempt(st, userId, sessionId, body, now);
         if (!rec.ok) return rec;
-        const open = await acceptAnswer(st, userId, sessionId, body.itemId, now);
-        return open.ok ? ok({ rec: rec.data, session: open.data.session, item: open.data.item }) : open;
+        const open = await acceptAnswer(
+          st,
+          userId,
+          sessionId,
+          body.itemId,
+          now,
+        );
+        return open.ok
+          ? ok({
+              rec: rec.data,
+              session: open.data.session,
+              item: open.data.item,
+            })
+          : open;
       });
       if (!opened.ok) return opened;
       const { rec, session, item } = opened.data;
@@ -467,41 +934,72 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
       const stored = gradedOf(attempts, rec.attemptNo);
       if (stored) return ok(storedResult(stored, session)); // the same answer again: the verdict already stored
 
-      if (session.params.grading === 'end') {
+      if (session.params.grading === "end") {
         // FR-34: nothing is graded now; the pending row is graded together with the rest when the session finishes
         await advanceQuietly(userId, sessionId);
         return ok(pendingResult(rec.attemptId, rec.attemptNo));
       }
 
       const ref = await io.data.reference(userId, session, item);
-      if (!ref) return err('conflict', 'reference_unavailable');
-      const card = item.cardId ? await io.data.cardDue(userId, item.cardId, item.subId || '', now) : null;
-      const outcome = await io.grade({
-        userId, mode: modeOf(session), item: withReference(item, ref), answer: body.answer, card, history: attempts.map(toPrior),
-        context: { assunto: ref.assunto, publico: PUBLICO, neighbors: ref.neighbors, evidence: ref.evidence },
-        elapsedMs: body.elapsedMs, pending: { attemptNo: rec.attemptNo },
-        ...(item.cardId ? await cardGradingCounts(io, userId, item.cardId) : {}),
-      }, { requestId });
-      if (!outcome.ok && outcome.error.code === 'quota_exceeded') {
+      if (!ref) return err("conflict", "reference_unavailable");
+      const card = item.cardId
+        ? await io.data.cardDue(userId, item.cardId, item.subId || "", now)
+        : null;
+      const outcome = await io.grade(
+        {
+          userId,
+          mode: modeOf(session),
+          item: withReference(item, ref),
+          answer: body.answer,
+          card,
+          history: attempts.map(toPrior),
+          context: {
+            assunto: ref.assunto,
+            publico: PUBLICO,
+            neighbors: ref.neighbors,
+            evidence: ref.evidence,
+          },
+          elapsedMs: body.elapsedMs,
+          pending: { attemptNo: rec.attemptNo },
+          ...(item.cardId
+            ? await cardGradingCounts(io, userId, item.cardId)
+            : {}),
+        },
+        { requestId },
+      );
+      if (!outcome.ok && outcome.error.code === "quota_exceeded") {
         // FR-35: no AI unit left. The answer stays as the pending row; it is graded at finish, the student moves on
         await advanceQuietly(userId, sessionId);
         return ok(pendingResult(rec.attemptId, rec.attemptNo));
       }
-      if (!outcome.ok) return err(GRADE_ERROR[outcome.error.code], outcome.error.code);
+      if (!outcome.ok)
+        return err(GRADE_ERROR[outcome.error.code], outcome.error.code);
 
       const g = outcome.data;
       let attemptId = rec.attemptId;
-      if (g.gradedBy !== 'pending') {
+      if (g.gradedBy !== "pending") {
         const saved = await io.data.saveGraded(userId, item.id, g);
         if (saved) {
           attemptId = saved;
-          if (g.verdict && !g.canRetry) await io.data.afterGrade(userId, {
-            cardId: item.cardId, subId: item.subId || '', bankId: item.bankId, itemType: item.type, schedule: g.schedule, rating: g.rating,
-            verdict: g.verdict, attemptId: saved, elapsedMs: body.elapsedMs, now,
-          });
+          if (g.verdict && !g.canRetry)
+            await io.data.afterGrade(userId, {
+              cardId: item.cardId,
+              subId: item.subId || "",
+              bankId: item.bankId,
+              itemType: item.type,
+              schedule: g.schedule,
+              rating: g.rating,
+              verdict: g.verdict,
+              attemptId: saved,
+              elapsedMs: body.elapsedMs,
+              now,
+            });
         } else {
           // another request graded this attempt first: its row is the answer
-          const won = gradedOf(await io.data.attempts(userId, item.id), rec.attemptNo);
+          const won = gradedOf(
+            await io.data.attempts(userId, item.id),
+            rec.attemptNo,
+          );
           if (won) return ok(storedResult(won, session));
         }
       }
@@ -513,18 +1011,25 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
     // then the session is closed and its score saved. Items never answered count as `unanswered`.
     async finish(userId, sessionId, requestId) {
       const now = io.now();
-      const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
-      if (!s) return err('not_found', 'session_not_found');
+      const s = await io.tx(userId, (st) =>
+        st.session(userId, sessionId, false),
+      );
+      if (!s) return err("not_found", "session_not_found");
       const rows = await io.data.items(userId, sessionId);
       let attempts = await io.data.sessionAttempts(userId, sessionId);
 
       const waiting = rows.flatMap((row) => {
         const mine = attempts.filter((a) => a.itemId === row.id);
-        const pend = mine.filter((a) => a.gradedBy === 'pending' && !gradedOf(mine, a.attemptNo)).at(-1);
+        const pend = mine
+          .filter(
+            (a) => a.gradedBy === "pending" && !gradedOf(mine, a.attemptNo),
+          )
+          .at(-1);
         return pend ? [{ row, pend, mine }] : [];
       });
       if (waiting.length) {
-        const jobs: { row: ItemRow; input: GradeInput; elapsedMs?: number }[] = [];
+        const jobs: { row: ItemRow; input: GradeInput; elapsedMs?: number }[] =
+          [];
         for (const w of waiting) {
           const ref = await io.data.reference(userId, s, toServerItem(w.row));
           if (!ref) continue;
@@ -532,100 +1037,215 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
             row: w.row,
             elapsedMs: w.pend.elapsedMs ?? undefined,
             input: {
-              userId, mode: modeOf(s), item: withReference(toServerItem(w.row), ref), answer: w.pend.answer,
-              card: w.row.cardId ? await io.data.cardDue(userId, w.row.cardId, w.row.subId || '', now) : null, history: w.mine.map(toPrior),
-              context: { assunto: ref.assunto, publico: PUBLICO, neighbors: ref.neighbors, evidence: ref.evidence }, pending: { attemptNo: w.pend.attemptNo },
-              ...(w.row.cardId ? await cardGradingCounts(io, userId, w.row.cardId) : {}),
+              userId,
+              mode: modeOf(s),
+              item: withReference(toServerItem(w.row), ref),
+              answer: w.pend.answer,
+              card: w.row.cardId
+                ? await io.data.cardDue(
+                    userId,
+                    w.row.cardId,
+                    w.row.subId || "",
+                    now,
+                  )
+                : null,
+              history: w.mine.map(toPrior),
+              context: {
+                assunto: ref.assunto,
+                publico: PUBLICO,
+                neighbors: ref.neighbors,
+                evidence: ref.evidence,
+              },
+              pending: { attemptNo: w.pend.attemptNo },
+              ...(w.row.cardId
+                ? await cardGradingCounts(io, userId, w.row.cardId)
+                : {}),
             },
           });
         }
         const size = Math.max(1, challengeLimits().batchGradeMax);
         for (let i = 0; i < jobs.length; i += size) {
           const chunk = jobs.slice(i, i + size);
-          const outs = await io.gradeBatch(chunk.map((j) => j.input), { requestId });
+          const outs = await io.gradeBatch(
+            chunk.map((j) => j.input),
+            { requestId },
+          );
           for (const [k, o] of outs.entries()) {
-            if (!o.ok || o.data.gradedBy === 'pending') continue;
+            if (!o.ok || o.data.gradedBy === "pending") continue;
             const { row, elapsedMs } = chunk[k]!;
             const saved = await io.data.saveGraded(userId, row.id, o.data);
-            if (saved && o.data.verdict && !o.data.canRetry) await io.data.afterGrade(userId, {
-              cardId: row.cardId, subId: row.subId || '', bankId: row.bankId, itemType: row.type, schedule: o.data.schedule, rating: o.data.rating,
-              verdict: o.data.verdict, attemptId: saved, elapsedMs, now,
-            });
+            if (saved && o.data.verdict && !o.data.canRetry)
+              await io.data.afterGrade(userId, {
+                cardId: row.cardId,
+                subId: row.subId || "",
+                bankId: row.bankId,
+                itemType: row.type,
+                schedule: o.data.schedule,
+                rating: o.data.rating,
+                verdict: o.data.verdict,
+                attemptId: saved,
+                elapsedMs,
+                now,
+              });
           }
         }
         attempts = await io.data.sessionAttempts(userId, sessionId);
       }
 
-      const score = { correct: 0, partial: 0, incorrect: 0, pending: 0, unanswered: 0 };
-      const items = rows.map((row): ChallengeReport['items'][number] => {
+      const score = {
+        correct: 0,
+        partial: 0,
+        incorrect: 0,
+        pending: 0,
+        unanswered: 0,
+      };
+      const items = rows.map((row): ChallengeReport["items"][number] => {
         const pub = aiChallengeItemPublicSchema.parse(json(row.payloadPublic));
         const mine = attempts.filter((a) => a.itemId === row.id);
         const top = Math.max(0, ...mine.map((a) => a.attemptNo));
         const last = mine.filter((a) => a.attemptNo === top);
-        const final = last.find((a) => a.gradedBy !== 'pending') ?? last[0];
+        const final = last.find((a) => a.gradedBy !== "pending") ?? last[0];
         if (!final) score.unanswered++;
         else if (!final.verdict) score.pending++;
         else score[final.verdict]++;
         // the time sits on the student's own rows (pending); retries add up
-        const timed = mine.filter((a) => a.gradedBy === 'pending' && typeof a.elapsedMs === 'number');
+        const timed = mine.filter(
+          (a) => a.gradedBy === "pending" && typeof a.elapsedMs === "number",
+        );
         return {
-          itemId: row.id, position: row.position, type: pub.type, stem: pub.stem, attemptId: final?.id ?? null, attemptNo: final?.attemptNo ?? null,
-          verdict: final?.verdict ?? null, gradedBy: final?.gradedBy ?? null, rating: final?.rating ?? null, feedback: final?.feedback ?? null,
-          manipulation: final?.manipulation ?? false, disputed: final?.disputed ?? false,
-          elapsedMs: timed.length ? timed.reduce((n, a) => n + (a.elapsedMs ?? 0), 0) : null,
+          itemId: row.id,
+          position: row.position,
+          type: pub.type,
+          stem: pub.stem,
+          attemptId: final?.id ?? null,
+          attemptNo: final?.attemptNo ?? null,
+          verdict: final?.verdict ?? null,
+          gradedBy: final?.gradedBy ?? null,
+          rating: final?.rating ?? null,
+          feedback: final?.feedback ?? null,
+          manipulation: final?.manipulation ?? false,
+          disputed: final?.disputed ?? false,
+          elapsedMs: timed.length
+            ? timed.reduce((n, a) => n + (a.elapsedMs ?? 0), 0)
+            : null,
         };
       });
 
       const finishedAt = s.finishedAt ?? now;
-      if (s.status !== 'expired') {
-        await io.tx(userId, (st) => (s.status === 'active' ? st.moveTo(userId, sessionId, rows.length, now) : Promise.resolve()));
-        await io.data.saveScore(userId, sessionId, { correct: score.correct, partial: score.partial, incorrect: score.incorrect, pending: score.pending });
+      if (s.status !== "expired") {
+        await io.tx(userId, (st) =>
+          s.status === "active"
+            ? st.moveTo(userId, sessionId, rows.length, now)
+            : Promise.resolve(),
+        );
+        await io.data.saveScore(userId, sessionId, {
+          correct: score.correct,
+          partial: score.partial,
+          incorrect: score.incorrect,
+          pending: score.pending,
+        });
       }
       const percent = scorePercent(score, rows.length - score.pending);
-      const times = items.flatMap((i) => (i.elapsedMs === null ? [] : [i.elapsedMs]));
+      const times = items.flatMap((i) =>
+        i.elapsedMs === null ? [] : [i.elapsedMs],
+      );
       const timing = {
         totalMs: Math.max(0, finishedAt.getTime() - s.startedAt.getTime()),
-        avgMs: times.length ? Math.round(times.reduce((a, b) => a + b, 0) / times.length) : null,
+        avgMs: times.length
+          ? Math.round(times.reduce((a, b) => a + b, 0) / times.length)
+          : null,
       };
       // D-1567: under ADVICE_BELOW the model points to cards and maps once; later finishes read what was saved
       let advice = await io.data.advice(userId, sessionId);
-      const missed = items.filter((i) => i.verdict === 'incorrect' || i.verdict === 'partial' || i.attemptId === null);
-      if (!advice && percent < ADVICE_BELOW && missed.length && s.status !== 'expired') {
+      const missed = items.filter(
+        (i) =>
+          i.verdict === "incorrect" ||
+          i.verdict === "partial" ||
+          i.attemptId === null,
+      );
+      if (
+        !advice &&
+        percent < ADVICE_BELOW &&
+        missed.length &&
+        s.status !== "expired"
+      ) {
         const byId = new Map(rows.map((r) => [r.id, r]));
-        const candidates = await io.data.adviceCandidates(userId, s.boardId, missed.map((i) => ({ stem: i.stem, cardId: byId.get(i.itemId)?.cardId ?? null, bankId: byId.get(i.itemId)?.bankId ?? null })));
+        const candidates = await io.data.adviceCandidates(
+          userId,
+          s.boardId,
+          missed.map((i) => ({
+            stem: i.stem,
+            cardId: byId.get(i.itemId)?.cardId ?? null,
+            bankId: byId.get(i.itemId)?.bankId ?? null,
+          })),
+        );
         advice = await io.advise(candidates, percent, requestId);
         await io.data.saveAdvice(userId, sessionId, advice);
       }
-      const groups = reportGroups(items, await io.data.labels(userId, sessionId));
+      const groups = reportGroups(
+        items,
+        await io.data.labels(userId, sessionId),
+      );
       return ok({
         // D-1566: a generated session finished early counts the questions it built, not the n it was asked for
-        sessionId: s.id, boardId: s.boardId, format: s.format, status: s.status === 'active' ? 'finished' : s.status, total: rows.length, percent, timing,
-        advice, score, groups, items,
+        sessionId: s.id,
+        boardId: s.boardId,
+        format: s.format,
+        status: s.status === "active" ? "finished" : s.status,
+        total: rows.length,
+        percent,
+        timing,
+        advice,
+        score,
+        groups,
+        items,
       } satisfies ChallengeReport);
     },
 
     async retry(userId, sessionId) {
       const now = io.now();
-      const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
-      if (!s?.boardId) return err('not_found', 'session_not_found');
-      if (s.status !== 'finished') return err('conflict', 'session_not_finished');
+      const s = await io.tx(userId, (st) =>
+        st.session(userId, sessionId, false),
+      );
+      if (!s?.boardId) return err("not_found", "session_not_found");
+      if (s.status !== "finished")
+        return err("conflict", "session_not_finished");
       const rows = await io.data.items(userId, sessionId);
       const attempts = await io.data.sessionAttempts(userId, sessionId);
       const missed = rows.filter((row) => missedVerdict(attempts, row.id));
       const built = cloneMissed(missed.slice(0, 20));
-      if (!built) return err('validation', 'nothing_to_retry');
+      if (!built) return err("validation", "nothing_to_retry");
       const id = randomUUID();
-      const cfg = { ...s.params, n: built.length, preset: s.params.preset === 'mock' ? 'practice' as const : s.params.preset };
+      const cfg = {
+        ...s.params,
+        n: built.length,
+        preset:
+          s.params.preset === "mock" ? ("practice" as const) : s.params.preset,
+      };
       const expiresAt = sessionExpiresAt(now, cfg.timerSec);
-      await io.tx(userId, (st) => st.createSession({
-        id, userId, boardId: s.boardId!, scope: cfg.scope, format: s.format, params: cfg, startedAt: now, expiresAt,
-      }, built));
+      await io.tx(userId, (st) =>
+        st.createSession(
+          {
+            id,
+            userId,
+            boardId: s.boardId!,
+            scope: cfg.scope,
+            format: s.format,
+            params: cfg,
+            startedAt: now,
+            expiresAt,
+          },
+          built,
+        ),
+      );
       return io.tx(userId, (st) => getSession(st, userId, id, now));
     },
 
     async pullReview(userId, sessionId) {
-      const s = await io.tx(userId, (st) => st.session(userId, sessionId, false));
-      if (!s) return err('not_found', 'session_not_found');
+      const s = await io.tx(userId, (st) =>
+        st.session(userId, sessionId, false),
+      );
+      if (!s) return err("not_found", "session_not_found");
       return ok({ cards: await io.data.pullReview(userId, sessionId) });
     },
 
@@ -633,45 +1253,54 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
     bank: async (userId, query) => ok(await io.data.bank(userId, query)),
     archive: async (userId, bankId) => {
       const row = await io.data.archive(userId, bankId);
-      return row ? ok(row) : err('not_found', 'question_not_found');
+      return row ? ok(row) : err("not_found", "question_not_found");
     },
     edit: async (userId, bankId, body) => {
       const parsed = parseWith(editQuestionSchema, body);
       if (!parsed.ok) return parsed;
-      const row = await io.data.edit(userId, bankId, parsed.data.stem, parsed.data.difficulty);
-      if (row === 'numbers') return err('validation', 'ungrounded_number');
-      return row ? ok(row) : err('not_found', 'question_not_found');
+      const row = await io.data.edit(
+        userId,
+        bankId,
+        parsed.data.stem,
+        parsed.data.difficulty,
+      );
+      if (row === "numbers") return err("validation", "ungrounded_number");
+      return row ? ok(row) : err("not_found", "question_not_found");
     },
     confirmTopic: async (userId, bankId, body) => {
       const parsed = parseWith(confirmTopicSchema, body);
       if (!parsed.ok) return parsed;
-      const row = await io.data.confirmTopic(userId, bankId, parsed.data.topicId);
-      if (row === 'closed') return err('validation', 'topic_not_in_list');
-      return row ? ok(row) : err('not_found', 'question_not_found');
+      const row = await io.data.confirmTopic(
+        userId,
+        bankId,
+        parsed.data.topicId,
+      );
+      if (row === "closed") return err("validation", "topic_not_in_list");
+      return row ? ok(row) : err("not_found", "question_not_found");
     },
     topics: async (userId, areaId) => ok(await io.data.topics(userId, areaId)),
     taxonomy: async (userId, kind) => ok(await io.data.taxonomy(userId, kind)),
     report: async (userId, itemId) => {
       const row = await io.data.report(userId, itemId);
-      return row ? ok(row) : err('not_found', 'item_not_found');
+      return row ? ok(row) : err("not_found", "item_not_found");
     },
     reportSummary: async (userId, summaryId) => {
       const row = await io.data.reportSummary(userId, summaryId);
-      return row ? ok(row) : err('not_found', 'summary_not_found');
+      return row ? ok(row) : err("not_found", "summary_not_found");
     },
     rubric: async (userId, cardId) => {
       const row = await io.data.rubric(userId, cardId);
-      if (row === 'empty') return err('validation', 'rubric_empty');
-      return row ? ok(row) : err('not_found', 'card_not_found');
+      if (row === "empty") return err("validation", "rubric_empty");
+      return row ? ok(row) : err("not_found", "card_not_found");
     },
     saveRubric: async (userId, cardId, body) => {
       const parsed = parseWith(saveRubricSchema, body);
       if (!parsed.ok) return parsed;
       const row = await io.data.saveRubric(userId, cardId, parsed.data);
-      if (row === 'numbers') return err('validation', 'ungrounded_number');
-      if (row === 'approved') return err('conflict', 'rubric_approved');
-      if (row === 'empty') return err('validation', 'rubric_empty');
-      return row ? ok(row) : err('not_found', 'card_not_found');
+      if (row === "numbers") return err("validation", "ungrounded_number");
+      if (row === "approved") return err("conflict", "rubric_approved");
+      if (row === "empty") return err("validation", "rubric_empty");
+      return row ? ok(row) : err("not_found", "card_not_found");
     },
     summarize: (input) => io.summarize(input),
     summaries: (userId, boardId) => io.summaries(userId, boardId),
@@ -681,153 +1310,311 @@ export function createChallengeAiService(io: Io): ChallengeAiService {
 // --- SQL (server connection where `authenticated` has no grant) -------------------------------------------------------------
 
 type Raw = Record<string, unknown>;
-const exec = async <R extends Raw>(tx: Tx, q: SQL) => (await tx.execute<R>(q)) as unknown as R[];
+const exec = async <R extends Raw>(tx: Tx, q: SQL) =>
+  (await tx.execute<R>(q)) as unknown as R[];
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
-const rec = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
-const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+const rec = (v: unknown): Record<string, unknown> =>
+  v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+const text = (v: unknown) =>
+  typeof v === "string" && v.trim() ? v.trim() : null;
 const clip = (s: string, n = 1500) => s.slice(0, n);
 
 const ATTEMPT_COLUMNS = sql`id, item_id, attempt_no, answer, verdict, covered, missing, critical_error, manipulation, feedback, hint, confidence, graded_by, model,
   prompt_version, rating, disputed, elapsed_ms`;
 const toStored = (r: Raw): StoredAttempt => ({
-  id: String(r.id), itemId: String(r.item_id), attemptNo: Number(r.attempt_no), answer: aiAnswerInputSchema.parse(json(r.answer)), gradedBy: r.graded_by as GradedBy,
-  verdict: (r.verdict as Verdict | null) ?? null, feedback: (r.feedback as string | null) ?? null, hint: (r.hint as string | null) ?? null,
-  manipulation: Boolean(r.manipulation), covered: strs(r.covered), missing: strs(r.missing), criticalError: Boolean(r.critical_error),
-  confidence: r.confidence === null || r.confidence === undefined ? null : Number(r.confidence), model: (r.model as string | null) ?? null,
-  promptVersion: (r.prompt_version as string | null) ?? null, rating: (r.rating as Grade | null) ?? null, disputed: Boolean(r.disputed),
-  elapsedMs: r.elapsed_ms === null || r.elapsed_ms === undefined ? null : Number(r.elapsed_ms),
+  id: String(r.id),
+  itemId: String(r.item_id),
+  attemptNo: Number(r.attempt_no),
+  answer: aiAnswerInputSchema.parse(json(r.answer)),
+  gradedBy: r.graded_by as GradedBy,
+  verdict: (r.verdict as Verdict | null) ?? null,
+  feedback: (r.feedback as string | null) ?? null,
+  hint: (r.hint as string | null) ?? null,
+  manipulation: Boolean(r.manipulation),
+  covered: strs(r.covered),
+  missing: strs(r.missing),
+  criticalError: Boolean(r.critical_error),
+  confidence:
+    r.confidence === null || r.confidence === undefined
+      ? null
+      : Number(r.confidence),
+  model: (r.model as string | null) ?? null,
+  promptVersion: (r.prompt_version as string | null) ?? null,
+  rating: (r.rating as Grade | null) ?? null,
+  disputed: Boolean(r.disputed),
+  elapsedMs:
+    r.elapsed_ms === null || r.elapsed_ms === undefined
+      ? null
+      : Number(r.elapsed_ms),
 });
 
 /** Public bank row. The name is the taxonomy label, never the answer. */
 const publicBank = (r: Raw) => ({
-  id: r.id, boardId: r.board_id, type: r.type, difficulty: r.difficulty, stem: r.stem, source: r.source, status: r.status,
-  enamedAreaId: r.enamed_area_id, enamedDomainId: r.enamed_domain_id, enamedTopicId: r.enamed_topic_id,
-  enamedTopicName: typeof r.enamed_topic_name === 'string' && r.enamed_topic_name ? r.enamed_topic_name : null,
+  id: r.id,
+  boardId: r.board_id,
+  type: r.type,
+  difficulty: r.difficulty,
+  stem: r.stem,
+  source: r.source,
+  status: r.status,
+  enamedAreaId: r.enamed_area_id,
+  enamedDomainId: r.enamed_domain_id,
+  enamedTopicId: r.enamed_topic_id,
+  enamedTopicName:
+    typeof r.enamed_topic_name === "string" && r.enamed_topic_name
+      ? r.enamed_topic_name
+      : null,
   enamedConfirmed: Boolean(r.enamed_confirmed),
-  stats: json(r.stats), createdAt: r.created_at,
+  stats: json(r.stats),
+  createdAt: r.created_at,
 });
 
 const toOwnerRubric = (r: CardRubricServer): OwnerRubric => ({
-  essentialPoints: r.essentialPoints, acceptedVariants: r.acceptedVariants, criticalErrors: r.criticalErrors, status: r.status,
+  essentialPoints: r.essentialPoints,
+  acceptedVariants: r.acceptedVariants,
+  criticalErrors: r.criticalErrors,
+  status: r.status,
 });
 
 /** The caller's own card, plus the hash the rubric is tied to. */
 async function ownerCard(tx: Tx, userId: string, cardId: string) {
-  const [card] = await exec(tx, sql`select c.front, c.back, c.title, c.didactics
+  const [card] = await exec(
+    tx,
+    sql`select c.front, c.back, c.title, c.didactics
     from cards c join boards b on b.id = c.board_id
-    where c.id = ${cardId} and c.deleted_at is null and b.user_id = ${userId}`);
+    where c.id = ${cardId} and c.deleted_at is null and b.user_id = ${userId}`,
+  );
   if (!card) return null;
   const didactics = rec(json(card.didactics));
   const front = text(card.front);
   const back = text(card.back);
   const title = text(card.title);
   const porQue = text(didactics.porQue);
-  const texts = [title, front, back, porQue].filter((s): s is string => s !== null);
+  const texts = [title, front, back, porQue].filter(
+    (s): s is string => s !== null,
+  );
   return { front, back, hash: cardContentHash(front, back, porQue), texts };
 }
 
 export const dbData: DataPort = {
   // asServer: covered, missing and hint have no `authenticated` grant (D-1633)
-  attempts: (userId, itemId) => run(userId, async (tx) =>
-    (await asServer<Raw>(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where item_id = ${itemId} and user_id = ${userId} order by attempt_no, created_at`)).map(toStored)),
+  attempts: (userId, itemId) =>
+    run(userId, async (tx) =>
+      (
+        await asServer<Raw>(
+          tx,
+          sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where item_id = ${itemId} and user_id = ${userId} order by attempt_no, created_at`,
+        )
+      ).map(toStored),
+    ),
 
-  sessionAttempts: (userId, sessionId) => run(userId, async (tx) =>
-    (await asServer<Raw>(tx, sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where user_id = ${userId}
-      and item_id in (select id from challenge_items where session_id = ${sessionId} and user_id = ${userId}) order by attempt_no, created_at`)).map(toStored)),
+  sessionAttempts: (userId, sessionId) =>
+    run(userId, async (tx) =>
+      (
+        await asServer<Raw>(
+          tx,
+          sql`select ${ATTEMPT_COLUMNS} from challenge_attempts where user_id = ${userId}
+      and item_id in (select id from challenge_items where session_id = ${sessionId} and user_id = ${userId}) order by attempt_no, created_at`,
+        )
+      ).map(toStored),
+    ),
 
-  labels: (userId, sessionId) => run(userId, async (tx) => {
-    const rows = await exec(tx, sql`select i.id, nullif(btrim(c.didactics->>'modulo'), '') as module, nullif(btrim(t.name), '') as topic
+  labels: (userId, sessionId) =>
+    run(userId, async (tx) => {
+      const rows = await exec(
+        tx,
+        sql`select i.id, nullif(btrim(c.didactics->>'modulo'), '') as module, nullif(btrim(t.name), '') as topic
       from challenge_items i
       left join cards c on c.id = i.card_id
       left join question_bank q on q.id = i.bank_id and q.user_id = i.user_id
       left join enamed_taxonomy t on t.id = q.enamed_topic_id
-      where i.session_id = ${sessionId} and i.user_id = ${userId}`);
-    return rows.map((r) => ({ itemId: String(r.id), module: text(r.module), topic: text(r.topic) }));
-  }),
+      where i.session_id = ${sessionId} and i.user_id = ${userId}`,
+      );
+      return rows.map((r) => ({
+        itemId: String(r.id),
+        module: text(r.module),
+        topic: text(r.topic),
+      }));
+    }),
   pullReview: async (userId, sessionId) => {
-    const rows = await run(userId, (tx) => exec(tx, sql`update fsrs_state f set due = now(), updated_at = now()
+    const rows = await run(userId, (tx) =>
+      exec(
+        tx,
+        sql`update fsrs_state f set due = now(), updated_at = now()
       where f.user_id = ${userId} and f.sub_id = '' and f.due > now()
         and f.card_id in (
           select distinct i.card_id from challenge_items i
           join challenge_attempts a on a.item_id = i.id and a.user_id = i.user_id
           where i.session_id = ${sessionId} and i.user_id = ${userId} and i.card_id is not null
             and a.verdict in ('incorrect', 'partial') and a.graded_by <> 'pending')
-      returning f.card_id`));
-    if (rows.length) await invalidate('review.answered', { userId });
+      returning f.card_id`,
+      ),
+    );
+    if (rows.length) await invalidate("review.answered", { userId });
     return rows.length;
   },
-  items: (userId, sessionId) => run(userId, async (tx) =>
-    (await asServer<Raw>(tx, sql`select id, session_id, position, kind, card_id, sub_id, bank_id, type, payload_public, reference_ref, shuffle_map
-      from challenge_items where session_id = ${sessionId} and user_id = ${userId} order by position`)).map((r): ItemRow => ({
-      id: String(r.id), sessionId: String(r.session_id), position: Number(r.position), kind: r.kind as ItemRow['kind'], cardId: (r.card_id as string | null) ?? null,
-      subId: String(r.sub_id ?? ''), bankId: (r.bank_id as string | null) ?? null, type: r.type as ItemRow['type'], payloadPublic: r.payload_public,
-      referenceRef: r.reference_ref, shuffleMap: r.shuffle_map ?? null,
-    }))),
+  items: (userId, sessionId) =>
+    run(userId, async (tx) =>
+      (
+        await asServer<Raw>(
+          tx,
+          sql`select id, session_id, position, kind, card_id, sub_id, bank_id, type, payload_public, reference_ref, shuffle_map
+      from challenge_items where session_id = ${sessionId} and user_id = ${userId} order by position`,
+        )
+      ).map((r): ItemRow => ({
+        id: String(r.id),
+        sessionId: String(r.session_id),
+        position: Number(r.position),
+        kind: r.kind as ItemRow["kind"],
+        cardId: (r.card_id as string | null) ?? null,
+        subId: String(r.sub_id ?? ""),
+        bankId: (r.bank_id as string | null) ?? null,
+        type: r.type as ItemRow["type"],
+        payloadPublic: r.payload_public,
+        referenceRef: r.reference_ref,
+        shuffleMap: r.shuffle_map ?? null,
+      })),
+    ),
 
   // The reference is read here, on the server, for one grading, and returned to the caller of this function only.
-  reference: (userId, session, item) => run(userId, async (tx) => {
-    const [board] = session.boardId ? await exec(tx, sql`select title from boards where id = ${session.boardId}`) : [];
-    const assunto = text(board?.title) ?? 'Desafio';
-    const ref = item.referenceRef;
-    if (ref.kind === 'bank') {
-      const [q] = await asServer<Raw>(tx, sql`select correct_key, expected_answer, key_points, evidences from question_bank where id = ${ref.bankId} and user_id = ${userId}`);
-      if (!q) return null;
-      const evidence = (Array.isArray(json(q.evidences)) ? (json(q.evidences) as unknown[]) : []).map((e) => text(rec(e).excerpt)).filter((s): s is string => s !== null).join('\n');
+  reference: (userId, session, item) =>
+    run(userId, async (tx) => {
+      const [board] = session.boardId
+        ? await exec(
+            tx,
+            sql`select title from boards where id = ${session.boardId}`,
+          )
+        : [];
+      const assunto = text(board?.title) ?? "Desafio";
+      const ref = item.referenceRef;
+      if (ref.kind === "bank") {
+        const [q] = await asServer<Raw>(
+          tx,
+          sql`select correct_key, expected_answer, key_points, evidences from question_bank where id = ${ref.bankId} and user_id = ${userId}`,
+        );
+        if (!q) return null;
+        const evidence = (
+          Array.isArray(json(q.evidences))
+            ? (json(q.evidences) as unknown[])
+            : []
+        )
+          .map((e) => text(rec(e).excerpt))
+          .filter((s): s is string => s !== null)
+          .join("\n");
+        return {
+          correctKey: (q.correct_key as AlternativeKey | null) ?? null,
+          expectedAnswer: String(q.expected_answer),
+          keyPoints: strs(q.key_points),
+          assunto,
+          evidence: clip(evidence),
+          neighbors: "",
+        };
+      }
+      const [card] = await exec(
+        tx,
+        sql`select title, front, back, payload, didactics from cards where id = ${ref.cardId}`,
+      );
+      if (!card) return null;
+      const payload = rec(json(card.payload));
+      let expected: string | null = null;
+      if (item.type === "hidden_card") expected = text(card.back);
+      else if (item.type === "edge") {
+        const edgeId = (ref.subId ?? "").replace(/^edge:/, "");
+        if (idSchema.safeParse(edgeId).success)
+          expected = text(
+            (
+              await exec(tx, sql`select label from edges where id = ${edgeId}`)
+            )[0]?.label,
+          );
+      } else if (item.type === "case") {
+        expected = text(
+          rec(
+            (Array.isArray(payload.caseSteps) ? payload.caseSteps : []).find(
+              (s) => rec(s).stage === ref.subId,
+            ),
+          ).text,
+        );
+      } else if (item.type === "occlusion") {
+        expected = text(
+          rec(
+            (Array.isArray(payload.masks) ? payload.masks : []).find(
+              (m) => rec(m).id === ref.subId,
+            ),
+          ).label,
+        );
+      }
+      if (!expected && item.type !== "next_step") return null;
+      const didactics = rec(json(card.didactics));
+      const hash = cardContentHash(
+        text(card.front),
+        text(card.back),
+        text(didactics.porQue),
+      );
+      const [stored] = await asServer<Raw>(
+        tx,
+        sql`select essential_points, accepted_variants, critical_errors, status from card_rubrics
+      where card_id = ${ref.cardId} and card_hash = ${hash} order by created_at desc limit 1`,
+      );
+      const parsedRubric = stored
+        ? cardRubricServerSchema.safeParse({
+            essentialPoints: strs(stored.essential_points),
+            acceptedVariants: strs(stored.accepted_variants),
+            criticalErrors: strs(stored.critical_errors),
+            status: stored.status,
+          })
+        : null;
+      const rubric = parsedRubric?.success
+        ? parsedRubric.data
+        : expected
+          ? (rubricFromAnswer(expected) ?? undefined)
+          : undefined;
+      const near = await exec(
+        tx,
+        sql`select c2.title from edges e join cards c2 on c2.id = case when e.from_card_id = ${ref.cardId} then e.to_card_id else e.from_card_id end
+      where (e.from_card_id = ${ref.cardId} or e.to_card_id = ${ref.cardId}) and c2.deleted_at is null limit 5`,
+      );
       return {
-        correctKey: (q.correct_key as AlternativeKey | null) ?? null, expectedAnswer: String(q.expected_answer), keyPoints: strs(q.key_points), assunto,
-        evidence: clip(evidence), neighbors: '',
+        correctKey: null,
+        expectedAnswer: expected ?? undefined,
+        keyPoints: rubric?.essentialPoints,
+        rubric,
+        assunto,
+        neighbors: near.map((n) => String(n.title)).join("; "),
+        evidence: clip(
+          [text(card.title), text(card.front), text(card.back)]
+            .filter((s): s is string => s !== null)
+            .join("\n"),
+        ),
       };
-    }
-    const [card] = await exec(tx, sql`select title, front, back, payload, didactics from cards where id = ${ref.cardId}`);
-    if (!card) return null;
-    const payload = rec(json(card.payload));
-    let expected: string | null = null;
-    if (item.type === 'hidden_card') expected = text(card.back);
-    else if (item.type === 'edge') {
-      const edgeId = (ref.subId ?? '').replace(/^edge:/, '');
-      if (idSchema.safeParse(edgeId).success) expected = text((await exec(tx, sql`select label from edges where id = ${edgeId}`))[0]?.label);
-    } else if (item.type === 'case') {
-      expected = text(rec((Array.isArray(payload.caseSteps) ? payload.caseSteps : []).find((s) => rec(s).stage === ref.subId)).text);
-    } else if (item.type === 'occlusion') {
-      expected = text(rec((Array.isArray(payload.masks) ? payload.masks : []).find((m) => rec(m).id === ref.subId)).label);
-    }
-    if (!expected && item.type !== 'next_step') return null;
-    const didactics = rec(json(card.didactics));
-    const hash = cardContentHash(text(card.front), text(card.back), text(didactics.porQue));
-    const [stored] = await asServer<Raw>(tx, sql`select essential_points, accepted_variants, critical_errors, status from card_rubrics
-      where card_id = ${ref.cardId} and card_hash = ${hash} order by created_at desc limit 1`);
-    const parsedRubric = stored ? cardRubricServerSchema.safeParse({
-      essentialPoints: strs(stored.essential_points), acceptedVariants: strs(stored.accepted_variants),
-      criticalErrors: strs(stored.critical_errors), status: stored.status,
-    }) : null;
-    const rubric = parsedRubric?.success ? parsedRubric.data : expected ? rubricFromAnswer(expected) ?? undefined : undefined;
-    const near = await exec(tx, sql`select c2.title from edges e join cards c2 on c2.id = case when e.from_card_id = ${ref.cardId} then e.to_card_id else e.from_card_id end
-      where (e.from_card_id = ${ref.cardId} or e.to_card_id = ${ref.cardId}) and c2.deleted_at is null limit 5`);
-    return {
-      correctKey: null, expectedAnswer: expected ?? undefined, keyPoints: rubric?.essentialPoints, rubric, assunto,
-      neighbors: near.map((n) => String(n.title)).join('; '),
-      evidence: clip([text(card.title), text(card.front), text(card.back)].filter((s): s is string => s !== null).join('\n')),
-    };
-  }),
+    }),
 
-  recentAiGradings: (userId, cardId) => run(userId, async (tx) => {
-    const [r] = await exec(tx, sql`select
+  recentAiGradings: (userId, cardId) =>
+    run(userId, async (tx) => {
+      const [r] = await exec(
+        tx,
+        sql`select
         count(*) filter (where a.created_at > now() - interval '1 hour')::int as hour,
         count(*)::int as day
       from challenge_attempts a join challenge_items i on i.id = a.item_id and i.user_id = a.user_id
-      where a.user_id = ${userId} and i.card_id = ${cardId} and a.graded_by = 'ai' and a.created_at > now() - interval '1 day'`);
-    return { hour: Number(r?.hour ?? 0), day: Number(r?.day ?? 0) };
-  }),
+      where a.user_id = ${userId} and i.card_id = ${cardId} and a.graded_by = 'ai' and a.created_at > now() - interval '1 day'`,
+      );
+      return { hour: Number(r?.hour ?? 0), day: Number(r?.day ?? 0) };
+    }),
 
   // `answer_hash` here is the session's hash (same as the pending row), so "the same answer again" is found by recordAttempt
   saveGraded: async (userId, itemId, g) => {
     const id = await run(userId, async (tx) => {
-      const [r] = await asServer<Raw>(tx, sql`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, verdict, covered, missing, critical_error,
+      const [r] = await asServer<Raw>(
+        tx,
+        sql`insert into challenge_attempts (item_id, user_id, attempt_no, answer, answer_hash, verdict, covered, missing, critical_error,
           manipulation, feedback, hint, used_hint, confidence, graded_by, model, prompt_version, latency_ms, rating)
-        values (${itemId}, ${userId}, ${g.attemptNo}, ${JSON.stringify(g.answer)}::jsonb, ${sessionAnswerHash(g.answer)}, ${g.verdict}, ${pgArray(g.covered, 'text')},
-          ${pgArray(g.missing, 'text')}, ${g.criticalError}, ${g.manipulation}, ${g.feedback}, ${g.hint}, ${g.usedHint}, ${g.confidence}, ${g.gradedBy}, ${g.model},
+        values (${itemId}, ${userId}, ${g.attemptNo}, ${JSON.stringify(g.answer)}::jsonb, ${sessionAnswerHash(g.answer)}, ${g.verdict}, ${pgArray(g.covered, "text")},
+          ${pgArray(g.missing, "text")}, ${g.criticalError}, ${g.manipulation}, ${g.feedback}, ${g.hint}, ${g.usedHint}, ${g.confidence}, ${g.gradedBy}, ${g.model},
           ${g.promptVersion}, ${g.latencyMs === null ? null : Math.round(g.latencyMs)}, ${g.rating})
-        on conflict do nothing returning id`);
+        on conflict do nothing returning id`,
+      );
       return r ? String(r.id) : null;
     });
     await invalidate('challenge.finished', { userId });
@@ -836,100 +1623,190 @@ export const dbData: DataPort = {
 
   saveScore: async (userId, sessionId, score) => {
     await run(userId, async (tx) => {
-      await asServer(tx, sql`update challenge_sessions set score = ${JSON.stringify(score)}::jsonb where id = ${sessionId} and user_id = ${userId}`);
+      await asServer(
+        tx,
+        sql`update challenge_sessions set score = ${JSON.stringify(score)}::jsonb where id = ${sessionId} and user_id = ${userId}`,
+      );
     });
-    await invalidate('challenge.finished', { userId });
+    await invalidate("challenge.finished", { userId });
   },
 
-  advice: (userId, sessionId) => run(userId, async (tx) => {
-    const [r] = await exec(tx, sql`select recommendations from challenge_sessions where id = ${sessionId} and user_id = ${userId}`);
-    const parsed = studyAdviceSchema.safeParse(json(r?.recommendations ?? null));
-    return parsed.success ? parsed.data : null;
-  }),
+  advice: (userId, sessionId) =>
+    run(userId, async (tx) => {
+      const [r] = await exec(
+        tx,
+        sql`select recommendations from challenge_sessions where id = ${sessionId} and user_id = ${userId}`,
+      );
+      const parsed = studyAdviceSchema.safeParse(
+        json(r?.recommendations ?? null),
+      );
+      return parsed.success ? parsed.data : null;
+    }),
 
   saveAdvice: async (userId, sessionId, advice) => {
-    await run(userId, (tx) => asServer(tx, sql`update challenge_sessions set recommendations = ${JSON.stringify(advice)}::jsonb
-      where id = ${sessionId} and user_id = ${userId} and recommendations is null`));
+    await run(userId, (tx) =>
+      asServer(
+        tx,
+        sql`update challenge_sessions set recommendations = ${JSON.stringify(advice)}::jsonb
+      where id = ${sessionId} and user_id = ${userId} and recommendations is null`,
+      ),
+    );
   },
 
-  adviceCandidates: (userId, boardId, missed) => run(userId, async (tx) => {
-    const bankIds = missed.flatMap((m) => (m.bankId ? [m.bankId] : []));
-    const bank = bankIds.length
-      ? await asServer<Raw>(tx, sql`select id, card_ids from question_bank where user_id = ${userId} and id = any(${pgArray(bankIds, 'uuid')})`)
-      : [];
-    const cardsOf = new Map(bank.map((b) => [String(b.id), strs(b.card_ids)]));
-    const withCards = missed.map((m) => ({ stem: m.stem, cardIds: m.cardId ? [m.cardId] : (m.bankId ? cardsOf.get(m.bankId) : undefined) ?? [] }));
-    const ids = [...new Set(withCards.flatMap((m) => m.cardIds))];
-    const cards = ids.length ? await exec(tx, sql`select id, title from cards where id = any(${pgArray(ids, 'uuid')}) and deleted_at is null`) : [];
-    const [board] = boardId ? await exec(tx, sql`select title, area, source_board_id from boards where id = ${boardId}`) : [];
-    const area = board?.area ?? 'CM';
-    const own = await exec(tx, sql`select id, title from boards where user_id = ${userId} and archived_at is null and area = ${area}
+  adviceCandidates: (userId, boardId, missed) =>
+    run(userId, async (tx) => {
+      const bankIds = missed.flatMap((m) => (m.bankId ? [m.bankId] : []));
+      const bank = bankIds.length
+        ? await asServer<Raw>(
+            tx,
+            sql`select id, card_ids from question_bank where user_id = ${userId} and id = any(${pgArray(bankIds, "uuid")})`,
+          )
+        : [];
+      const cardsOf = new Map(
+        bank.map((b) => [String(b.id), strs(b.card_ids)]),
+      );
+      const withCards = missed.map((m) => ({
+        stem: m.stem,
+        cardIds: m.cardId
+          ? [m.cardId]
+          : ((m.bankId ? cardsOf.get(m.bankId) : undefined) ?? []),
+      }));
+      const ids = [...new Set(withCards.flatMap((m) => m.cardIds))];
+      const cards = ids.length
+        ? await exec(
+            tx,
+            sql`select id, title from cards where id = any(${pgArray(ids, "uuid")}) and deleted_at is null`,
+          )
+        : [];
+      const [board] = boardId
+        ? await exec(
+            tx,
+            sql`select title, area, source_board_id from boards where id = ${boardId}`,
+          )
+        : [];
+      const area = board?.area ?? "CM";
+      const own = await exec(
+        tx,
+        sql`select id, title from boards where user_id = ${userId} and archived_at is null and area = ${area}
       and id is distinct from ${boardId}
       and (${board?.source_board_id ?? null}::uuid is null or source_board_id is distinct from ${board?.source_board_id ?? null}::uuid)
-      order by updated_at desc limit 20`);
-    const ready = await exec(tx, sql`select b.id, b.title from boards b where b.status = 'seed_approved' and b.area = ${area}
+      order by updated_at desc limit 20`,
+      );
+      const ready = await exec(
+        tx,
+        sql`select b.id, b.title from boards b where b.status = 'seed_approved' and b.area = ${area}
       and b.id is distinct from ${board?.source_board_id ?? null}
       and not exists (select 1 from boards c where c.user_id = ${userId} and c.source_board_id = b.id and c.archived_at is null)
-      order by b.title limit 30`);
-    return {
-      subject: text(board?.title) ?? 'Desafio',
-      missed: withCards,
-      cards: cards.map((c) => ({ id: String(c.id), title: String(c.title ?? '') })).filter((c) => c.title),
-      maps: [...own.map((b) => ({ id: String(b.id), title: String(b.title), ready: false })), ...ready.map((b) => ({ id: String(b.id), title: String(b.title), ready: true }))],
-    };
-  }),
+      order by b.title limit 30`,
+      );
+      return {
+        subject: text(board?.title) ?? "Desafio",
+        missed: withCards,
+        cards: cards
+          .map((c) => ({ id: String(c.id), title: String(c.title ?? "") }))
+          .filter((c) => c.title),
+        maps: [
+          ...own.map((b) => ({
+            id: String(b.id),
+            title: String(b.title),
+            ready: false,
+          })),
+          ...ready.map((b) => ({
+            id: String(b.id),
+            title: String(b.title),
+            ready: true,
+          })),
+        ],
+      };
+    }),
 
   dispute: async (userId, attemptId) => {
     const result = await run(userId, async (tx) => {
-      const [a] = await exec(tx, sql`select graded_by, disputed from challenge_attempts where id = ${attemptId} and user_id = ${userId}`);
-      if (!a) return err('not_found', 'attempt_not_found');
-      if (a.graded_by === 'pending') return err('conflict', 'only_graded_answers');
+      const [a] = await exec(
+        tx,
+        sql`select graded_by, disputed from challenge_attempts where id = ${attemptId} and user_id = ${userId}`,
+      );
+      if (!a) return err("not_found", "attempt_not_found");
+      if (a.graded_by === "pending")
+        return err("conflict", "only_graded_answers");
       // the append-only trigger lets exactly this UPDATE through (disputed false -> true); no grade, verdict or text is touched
-      if (!a.disputed) await asServer(tx, sql`update challenge_attempts set disputed = true where id = ${attemptId} and user_id = ${userId} and not disputed and graded_by <> 'pending'`);
+      if (!a.disputed)
+        await asServer(
+          tx,
+          sql`update challenge_attempts set disputed = true where id = ${attemptId} and user_id = ${userId} and not disputed and graded_by <> 'pending'`,
+        );
       return ok({ attemptId, disputed: true as const });
     });
-    if (result.ok) await invalidate('challenge.finished', { userId });
+    if (result.ok) await invalidate("challenge.finished", { userId });
     return result;
   },
 
   // FR-18: only the columns `authenticated` may read (no correct_key, expected_answer, key_points, explanation, distractor_notes), latest versions only
-  bank: (userId, q) => run(userId, async (tx) => {
-    const where: SQL[] = [sql`q.user_id = ${userId}`, sql`not exists (select 1 from question_bank n where n.supersedes_id = q.id)`];
-    if (q.board) where.push(sql`q.board_id = ${q.board}`);
-    if (q.area) where.push(sql`q.enamed_area_id = ${q.area}`);
-    if (q.domain) where.push(sql`q.enamed_domain_id = ${q.domain}`);
-    if (q.topic) where.push(sql`q.enamed_topic_id = ${q.topic}`);
-    if (q.source) where.push(sql`q.source = ${q.source}`);
-    if (q.q) where.push(sql`q.stem ilike ${`%${q.q.replace(/[\\%_]/g, '')}%`}`);
-    if (q.difficulty) where.push(sql`q.difficulty = ${q.difficulty}`);
-    if (q.type) where.push(sql`q.type = ${q.type}`);
-    where.push(q.status ? sql`q.status = ${q.status}` : sql`q.status <> 'archived'`);
-    const rows = await exec(tx, sql`select q.id, q.board_id, q.type, q.difficulty, q.stem, q.source, q.status, q.enamed_area_id, q.enamed_domain_id, q.enamed_topic_id,
+  bank: (userId, q) =>
+    run(userId, async (tx) => {
+      const where: SQL[] = [
+        sql`q.user_id = ${userId} AND q.visibility='private' AND q.origin IN ('ai_generated','user_authored') AND (q.type<>'objective' OR (jsonb_array_length(q.alternatives)=4 AND q.correct_key IN ('A','B','C','D')))`,
+        sql`not exists (select 1 from question_bank n where n.supersedes_id = q.id)`,
+      ];
+      if (q.board) where.push(sql`q.board_id = ${q.board}`);
+      if (q.area) where.push(sql`q.enamed_area_id = ${q.area}`);
+      if (q.domain) where.push(sql`q.enamed_domain_id = ${q.domain}`);
+      if (q.topic) where.push(sql`q.enamed_topic_id = ${q.topic}`);
+      if (q.source) where.push(sql`q.source = ${q.source}`);
+      if (q.q)
+        where.push(sql`q.stem ilike ${`%${q.q.replace(/[\\%_]/g, "")}%`}`);
+      if (q.difficulty) where.push(sql`q.difficulty = ${q.difficulty}`);
+      if (q.type) where.push(sql`q.type = ${q.type}`);
+      where.push(
+        q.status ? sql`q.status = ${q.status}` : sql`q.status <> 'archived'`,
+      );
+      const rows = await exec(
+        tx,
+        sql`select q.id, q.board_id, q.type, q.difficulty, q.stem, q.source, q.status, q.enamed_area_id, q.enamed_domain_id, q.enamed_topic_id,
         q.enamed_confirmed, t.name as enamed_topic_name, q.stats, q.created_at
       from question_bank q
       left join enamed_taxonomy t on t.id = q.enamed_topic_id
-      where ${sql.join(where, sql` and `)} order by q.created_at desc, q.id limit ${q.limit} offset ${q.offset}`);
-    return rows.map(publicBank);
-  }),
+      where ${sql.join(where, sql` and `)} order by q.created_at desc, q.id limit ${q.limit} offset ${q.offset}`,
+      );
+      return rows.map(publicBank);
+    }),
 
   cardDue: async (userId, cardId, subId, now) => {
-    const [r] = await run(userId, (tx) => exec(tx, sql`select reps, due from fsrs_state
-      where user_id = ${userId} and card_id = ${cardId} and sub_id = ${subId}`));
-    if (!r || Number(r.reps) === 0) return 'new';
-    return new Date(String(r.due)) <= now ? 'due' : 'not_due';
+    const [r] = await run(userId, (tx) =>
+      exec(
+        tx,
+        sql`select reps, due from fsrs_state
+      where user_id = ${userId} and card_id = ${cardId} and sub_id = ${subId}`,
+      ),
+    );
+    if (!r || Number(r.reps) === 0) return "new";
+    return new Date(String(r.due)) <= now ? "due" : "not_due";
   },
 
   afterGrade: async (userId, spec) => {
     const { schedule, cardId, verdict, rating } = spec;
     if (schedule && cardId && rating && verdict) {
-      const mode = (challengeModes as readonly string[]).includes(spec.itemType) ? spec.itemType as (typeof challengeModes)[number] : 'hidden_card';
-      const inputKind = spec.itemType === 'objective' ? 'mcq' : 'text';
+      const mode = (challengeModes as readonly string[]).includes(spec.itemType)
+        ? (spec.itemType as (typeof challengeModes)[number])
+        : "hidden_card";
+      const inputKind = spec.itemType === "objective" ? "mcq" : "text";
       const durationMs = spec.elapsedMs ?? 0;
       const reviewed = schedule.apply
         ? await recordReview({
-          id: spec.attemptId, userId, cardId, subId: spec.subId || null, sessionId: null, mode,
-          inputKind, answerText: null, verdict: null, grade: rating, gradeOverridden: false, durationMs, createdAt: spec.now,
-        })
+            id: spec.attemptId,
+            userId,
+            cardId,
+            subId: spec.subId || null,
+            sessionId: null,
+            mode,
+            inputKind,
+            answerText: null,
+            verdict: null,
+            grade: rating,
+            gradeOverridden: false,
+            durationMs,
+            createdAt: spec.now,
+          })
         : null;
       if (!reviewed?.ok) {
         // D-1567: FSRS did not move (card not due, or a sub the scheduler does not know: edge, case stage, flow without step), but the
@@ -940,65 +1817,94 @@ export const dbData: DataPort = {
               ${grades.indexOf(rating) + 1}, ${durationMs}, ${spec.now.toISOString()}::timestamptz
             from cards c where c.id = ${cardId}
             on conflict (id) do nothing`);
-          if (schedule.anticipate) await tx.execute(sql`update fsrs_state set due = now()
+          if (schedule.anticipate)
+            await tx.execute(sql`update fsrs_state set due = now()
             where user_id = ${userId} and card_id = ${cardId} and sub_id = ${spec.subId} and due > now()`);
         });
-        await invalidate('review.answered', { userId });
+        await invalidate("review.answered", { userId });
       }
     }
     if (spec.bankId && verdict) {
-      await run(userId, (tx) => asServer(tx, sql`update question_bank set stats = jsonb_build_object(
+      await run(userId, (tx) =>
+        asServer(
+          tx,
+          sql`update question_bank set stats = jsonb_build_object(
           'seen', coalesce((stats->>'seen')::int, 0) + 1,
           'correct', coalesce((stats->>'correct')::int, 0) + (${verdict} = 'correct')::int,
           'partial', coalesce((stats->>'partial')::int, 0) + (${verdict} = 'partial')::int,
           'incorrect', coalesce((stats->>'incorrect')::int, 0) + (${verdict} = 'incorrect')::int
-        ) where id = ${spec.bankId} and user_id = ${userId}`));
-      await invalidate('question.changed', { userId });
+        ) where id = ${spec.bankId} and user_id = ${userId}`,
+        ),
+      );
+      await invalidate("question.changed", { userId });
     }
   },
 
   archive: async (userId, id) => {
-    const [r] = await run(userId, (tx) => asServer<Raw>(tx, sql`update question_bank set status = 'archived'
+    const [r] = await run(userId, (tx) =>
+      asServer<Raw>(
+        tx,
+        sql`update question_bank set status = 'archived'
       where id = ${id} and user_id = ${userId}
         and not exists (select 1 from question_bank n where n.supersedes_id = question_bank.id)
-      returning id, board_id`));
+      returning id, board_id`,
+      ),
+    );
     if (!r) return null;
-    await invalidate('question.changed', { userId, mapId: r.board_id ? String(r.board_id) : undefined });
-    return { id: String(r.id), status: 'archived' as const };
+    await invalidate("question.changed", {
+      userId,
+      mapId: r.board_id ? String(r.board_id) : undefined,
+    });
+    return { id: String(r.id), status: "archived" as const };
   },
 
   edit: async (userId, id, stem, difficulty) => {
     const written = await run(userId, async (tx) => {
-      const [prev] = await asServer<Raw>(tx, sql`select to_jsonb(q) as row from question_bank q
-        where q.id = ${id} and q.user_id = ${userId} and q.status <> 'archived'
-          and not exists (select 1 from question_bank n where n.supersedes_id = q.id)`);
+      const [prev] = await asServer<Raw>(
+        tx,
+        sql`select to_jsonb(q) as row from question_bank q
+        where q.id = ${id} and q.user_id = ${userId} and q.visibility='private' and q.origin IN ('ai_generated','user_authored') and q.status <> 'archived'
+          and not exists (select 1 from question_bank n where n.supersedes_id = q.id)`,
+      );
       if (!prev) return null;
-      if (!numbersGrounded([stem], [JSON.stringify(prev.row)])) return 'numbers' as const;
-      const [row] = await asServer<Raw>(tx, sql`insert into question_bank (
+      if (!numbersGrounded([stem], [JSON.stringify(prev.row)]))
+        return "numbers" as const;
+      const [row] = await asServer<Raw>(
+        tx,
+        sql`insert into question_bank (
           user_id, board_id, board_version, card_ids, type, difficulty, stem, alternatives, correct_key, expected_answer, key_points,
           explanation, distractor_notes, evidences, enamed_area_id, enamed_domain_id, enamed_competency_id, enamed_topic_id,
-          enamed_confidence, enamed_confirmed, source, prompt_id, prompt_version, model, status, version, supersedes_id)
+          enamed_confidence, enamed_confirmed, source, prompt_id, prompt_version, model, status, version, supersedes_id, origin)
         select user_id, board_id, board_version, card_ids, type, coalesce(${difficulty ?? null}, difficulty), ${stem}, alternatives, correct_key,
           expected_answer, key_points, explanation, distractor_notes, evidences, enamed_area_id, enamed_domain_id, enamed_competency_id,
-          enamed_topic_id, enamed_confidence, enamed_confirmed, source, prompt_id, prompt_version, model, 'draft', version + 1, id
+          enamed_topic_id, enamed_confidence, enamed_confirmed, source, prompt_id, prompt_version, model, 'draft', version + 1, id, origin
         from question_bank q
         where q.id = ${id} and q.user_id = ${userId}
         returning id, board_id, type, difficulty, stem, source, status, enamed_area_id, enamed_domain_id, enamed_topic_id, enamed_confirmed,
-          (select name from enamed_taxonomy where id = question_bank.enamed_topic_id) as enamed_topic_name, stats, created_at`);
+          (select name from enamed_taxonomy where id = question_bank.enamed_topic_id) as enamed_topic_name, stats, created_at`,
+      );
       return row ?? null;
     });
-    if (written === 'numbers' || !written) return written;
-    await invalidate('question.changed', { userId, mapId: written.board_id ? String(written.board_id) : undefined });
+    if (written === "numbers" || !written) return written;
+    await invalidate("question.changed", {
+      userId,
+      mapId: written.board_id ? String(written.board_id) : undefined,
+    });
     return publicBank(written);
   },
 
   confirmTopic: async (userId, id, topicId) => {
     const written = await run(userId, async (tx) => {
-      const [mine] = await exec(tx, sql`select id from question_bank q
-        where q.id = ${id} and q.user_id = ${userId} and q.status <> 'archived'
-          and not exists (select 1 from question_bank n where n.supersedes_id = q.id)`);
+      const [mine] = await exec(
+        tx,
+        sql`select id from question_bank q
+        where q.id = ${id} and q.user_id = ${userId} and q.visibility='private' and q.origin IN ('ai_generated','user_authored') and q.status <> 'archived'
+          and not exists (select 1 from question_bank n where n.supersedes_id = q.id)`,
+      );
       if (!mine) return null;
-      const [row] = await asServer<Raw>(tx, sql`update question_bank q
+      const [row] = await asServer<Raw>(
+        tx,
+        sql`update question_bank q
         set enamed_topic_id = t.id,
             enamed_area_id = coalesce(q.enamed_area_id, (select a.id from enamed_taxonomy a where a.kind = 'area' and a.code = t.area::text limit 1)),
             enamed_domain_id = case when d.kind = 'domain' then d.id else q.enamed_domain_id end,
@@ -1009,35 +1915,59 @@ export const dbData: DataPort = {
           and t.id = ${topicId} and t.kind = 'topic'
           and (q.enamed_area_id is null or t.area = (select area from enamed_taxonomy where id = q.enamed_area_id))
         returning q.id, q.board_id, q.type, q.difficulty, q.stem, q.source, q.status, q.enamed_area_id, q.enamed_domain_id, q.enamed_topic_id,
-          q.enamed_confirmed, t.name as enamed_topic_name, q.stats, q.created_at`);
-      return row ?? ('closed' as const);
+          q.enamed_confirmed, t.name as enamed_topic_name, q.stats, q.created_at`,
+      );
+      return row ?? ("closed" as const);
     });
-    if (!written || written === 'closed') return written;
-    await invalidate('question.changed', { userId, mapId: written.board_id ? String(written.board_id) : undefined });
+    if (!written || written === "closed") return written;
+    await invalidate("question.changed", {
+      userId,
+      mapId: written.board_id ? String(written.board_id) : undefined,
+    });
     return publicBank(written);
   },
 
-  taxonomy: (userId, kind) => run(userId, async (tx) => {
-    const rows = await exec(tx, sql`select id, name from enamed_taxonomy where kind = ${kind} order by name, id limit 200`);
-    return rows.map((r) => ({ id: String(r.id), name: String(r.name) }));
-  }),
+  taxonomy: (userId, kind) =>
+    run(userId, async (tx) => {
+      const rows = await exec(
+        tx,
+        sql`select id, name from enamed_taxonomy where kind = ${kind} order by name, id limit 200`,
+      );
+      return rows.map((r) => ({ id: String(r.id), name: String(r.name) }));
+    }),
 
-  topics: (userId, areaId) => run(userId, async (tx) => {
-    const area = areaId ? sql`and t.area = (select area from enamed_taxonomy where id = ${areaId} and kind = 'area')` : sql``;
-    const rows = await exec(tx, sql`select t.id, t.name from enamed_taxonomy t where t.kind = 'topic' ${area} order by t.name, t.id limit 200`);
-    return rows.map((r) => ({ id: String(r.id), name: String(r.name) }));
-  }),
+  topics: (userId, areaId) =>
+    run(userId, async (tx) => {
+      const area = areaId
+        ? sql`and t.area = (select area from enamed_taxonomy where id = ${areaId} and kind = 'area')`
+        : sql``;
+      const rows = await exec(
+        tx,
+        sql`select t.id, t.name from enamed_taxonomy t where t.kind = 'topic' ${area} order by t.name, t.id limit 200`,
+      );
+      return rows.map((r) => ({ id: String(r.id), name: String(r.name) }));
+    }),
 
   report: async (userId, itemId) => {
     const queued = await run(userId, async (tx) => {
-      const [item] = await exec(tx, sql`select card_id, bank_id from challenge_items where id = ${itemId} and user_id = ${userId}`);
+      const [item] = await exec(
+        tx,
+        sql`select card_id, bank_id from challenge_items where id = ${itemId} and user_id = ${userId}`,
+      );
       let cardId = item?.card_id ? String(item.card_id) : null;
-      const bankId = item?.bank_id ? String(item.bank_id) : item ? null : itemId;
+      const bankId = item?.bank_id
+        ? String(item.bank_id)
+        : item
+          ? null
+          : itemId;
       if (!cardId && bankId) {
-        const [q] = await asServer<Raw>(tx, sql`select card_ids from question_bank where id = ${bankId} and user_id = ${userId}`);
+        const [q] = await asServer<Raw>(
+          tx,
+          sql`select card_ids from question_bank where id = ${bankId} and user_id = ${userId}`,
+        );
         if (!item && !q) return null;
         const ids = Array.isArray(q?.card_ids) ? q.card_ids : [];
-        cardId = typeof ids[0] === 'string' ? ids[0] : null;
+        cardId = typeof ids[0] === "string" ? ids[0] : null;
       }
       if (!item && !bankId) return null;
       if (!cardId) return null;
@@ -1050,10 +1980,13 @@ export const dbData: DataPort = {
 
   reportSummary: async (userId, summaryId) => {
     const queued = await run(userId, async (tx) => {
-      const [row] = await exec(tx, sql`select cards_cited from map_summaries where id = ${summaryId} and user_id = ${userId}`);
+      const [row] = await exec(
+        tx,
+        sql`select cards_cited from map_summaries where id = ${summaryId} and user_id = ${userId}`,
+      );
       if (!row) return null;
       const cited = Array.isArray(row.cards_cited) ? row.cards_cited : [];
-      const cardId = typeof cited[0] === 'string' ? cited[0] : null;
+      const cardId = typeof cited[0] === "string" ? cited[0] : null;
       if (!cardId) return null;
       await tx.execute(sql`insert into review_queue (card_id, status, flag_source, note)
         values (${cardId}::uuid, 'pending', 'user_disagree', 'Reportado no resumo com IA.')`);
@@ -1062,48 +1995,72 @@ export const dbData: DataPort = {
     return queued;
   },
 
-  rubric: (userId, cardId) => run(userId, async (tx) => {
-    const card = await ownerCard(tx, userId, cardId);
-    if (!card) return null;
-    const [stored] = await asServer<Raw>(tx, sql`select essential_points, accepted_variants, critical_errors, status from card_rubrics
-      where card_id = ${cardId} and card_hash = ${card.hash} limit 1`);
-    const parsed = stored ? cardRubricServerSchema.safeParse({
-      essentialPoints: strs(stored.essential_points), acceptedVariants: strs(stored.accepted_variants),
-      criticalErrors: strs(stored.critical_errors), status: stored.status,
-    }) : null;
-    if (parsed?.success) return toOwnerRubric(parsed.data);
-    const derived = card.back || card.front ? rubricFromAnswer(card.back ?? card.front ?? '') : null;
-    return derived ? toOwnerRubric(derived) : 'empty' as const;
-  }),
+  rubric: (userId, cardId) =>
+    run(userId, async (tx) => {
+      const card = await ownerCard(tx, userId, cardId);
+      if (!card) return null;
+      const [stored] = await asServer<Raw>(
+        tx,
+        sql`select essential_points, accepted_variants, critical_errors, status from card_rubrics
+      where card_id = ${cardId} and card_hash = ${card.hash} limit 1`,
+      );
+      const parsed = stored
+        ? cardRubricServerSchema.safeParse({
+            essentialPoints: strs(stored.essential_points),
+            acceptedVariants: strs(stored.accepted_variants),
+            criticalErrors: strs(stored.critical_errors),
+            status: stored.status,
+          })
+        : null;
+      if (parsed?.success) return toOwnerRubric(parsed.data);
+      const derived =
+        card.back || card.front
+          ? rubricFromAnswer(card.back ?? card.front ?? "")
+          : null;
+      return derived ? toOwnerRubric(derived) : ("empty" as const);
+    }),
 
-  saveRubric: (userId, cardId, points) => run(userId, async (tx) => {
-    const card = await ownerCard(tx, userId, cardId);
-    if (!card) return null;
-    if (!card.back && !card.front) return 'empty' as const;
-    const lists = [points.essentialPoints, points.acceptedVariants, points.criticalErrors].flat();
-    if (!numbersGrounded(lists, card.texts)) return 'numbers' as const;
-    const [stored] = await asServer<Raw>(tx, sql`select status from card_rubrics where card_id = ${cardId} and card_hash = ${card.hash} limit 1`);
-    if (stored?.status === 'approved') return 'approved' as const;
-    const [row] = await asServer<Raw>(tx, sql`insert into card_rubrics (card_id, card_hash, essential_points, accepted_variants, critical_errors, status)
-      values (${cardId}, ${card.hash}, ${pgArray(points.essentialPoints, 'text')}, ${pgArray(points.acceptedVariants, 'text')}, ${pgArray(points.criticalErrors, 'text')}, 'edited')
+  saveRubric: (userId, cardId, points) =>
+    run(userId, async (tx) => {
+      const card = await ownerCard(tx, userId, cardId);
+      if (!card) return null;
+      if (!card.back && !card.front) return "empty" as const;
+      const lists = [
+        points.essentialPoints,
+        points.acceptedVariants,
+        points.criticalErrors,
+      ].flat();
+      if (!numbersGrounded(lists, card.texts)) return "numbers" as const;
+      const [stored] = await asServer<Raw>(
+        tx,
+        sql`select status from card_rubrics where card_id = ${cardId} and card_hash = ${card.hash} limit 1`,
+      );
+      if (stored?.status === "approved") return "approved" as const;
+      const [row] = await asServer<Raw>(
+        tx,
+        sql`insert into card_rubrics (card_id, card_hash, essential_points, accepted_variants, critical_errors, status)
+      values (${cardId}, ${card.hash}, ${pgArray(points.essentialPoints, "text")}, ${pgArray(points.acceptedVariants, "text")}, ${pgArray(points.criticalErrors, "text")}, 'edited')
       on conflict (card_id, card_hash) do update set
         essential_points = excluded.essential_points, accepted_variants = excluded.accepted_variants,
         critical_errors = excluded.critical_errors, status = 'edited', updated_at = now()
       where card_rubrics.status <> 'approved'
-      returning essential_points, accepted_variants, critical_errors, status`);
-    if (!row) return 'approved' as const;
-    const parsed = cardRubricServerSchema.safeParse({
-      essentialPoints: strs(row.essential_points), acceptedVariants: strs(row.accepted_variants),
-      criticalErrors: strs(row.critical_errors), status: row.status,
-    });
-    return parsed.success ? toOwnerRubric(parsed.data) : null;
-  }),
+      returning essential_points, accepted_variants, critical_errors, status`,
+      );
+      if (!row) return "approved" as const;
+      const parsed = cardRubricServerSchema.safeParse({
+        essentialPoints: strs(row.essential_points),
+        acceptedVariants: strs(row.accepted_variants),
+        criticalErrors: strs(row.critical_errors),
+        status: row.status,
+      });
+      return parsed.success ? toOwnerRubric(parsed.data) : null;
+    }),
 };
 
 export const dbIo = (): Io => ({
   tx: async (userId, fn) => {
     const result = await run(userId, (tx) => fn(sessionStore(tx)));
-    await invalidate('challenge.finished', { userId });
+    await invalidate("challenge.finished", { userId });
     return result;
   },
   data: dbData,
@@ -1123,11 +2080,13 @@ export const AI_CALLS_PER_MINUTE = 30;
 const hits = new Map<string, number[]>();
 /** ponytail: per process, in memory (same as uploads/rate-limit.ts). The plan quotas (reserveAi) are the real cap; this stops a burst. */
 export function takeAiSlot(userId: string, now = Date.now()): Result<null> {
-  if (hits.size > 10_000) for (const [k, v] of hits) if (v.every((t) => now - t >= MINUTE)) hits.delete(k);
+  if (hits.size > 10_000)
+    for (const [k, v] of hits)
+      if (v.every((t) => now - t >= MINUTE)) hits.delete(k);
   const recent = (hits.get(userId) ?? []).filter((t) => now - t < MINUTE);
   if (recent.length >= AI_CALLS_PER_MINUTE) {
     hits.set(userId, recent);
-    return err('rate_limited', 'too many AI calls, try again in a minute');
+    return err("rate_limited", "too many AI calls, try again in a minute");
   }
   hits.set(userId, [...recent, now]);
   return ok(null);
@@ -1137,7 +2096,7 @@ export function takeAiSlot(userId: string, now = Date.now()): Result<null> {
 
 const errorResponse = (e: AppError) => {
   const res = fail(e);
-  if (e.code === 'rate_limited') res.headers.set('retry-after', '60');
+  if (e.code === "rate_limited") res.headers.set("retry-after", "60");
   return res;
 };
 
@@ -1145,18 +2104,29 @@ const errorResponse = (e: AppError) => {
  * `data` goes through the public schema before it is sent. A value that does not parse (a reference field planted in it, a wrong shape)
  * is a 500 with no body from the value: the log gets the route and the issue paths, never the data.
  */
-function sendPublic<S extends z.ZodTypeAny>(c: { get: (k: 'log') => Env['Variables']['log'] }, route: string, schema: S, r: Result<unknown>, extra: Record<string, unknown> = {}) {
+function sendPublic<S extends z.ZodTypeAny>(
+  c: { get: (k: "log") => Env["Variables"]["log"] },
+  route: string,
+  schema: S,
+  r: Result<unknown>,
+  extra: Record<string, unknown> = {},
+) {
   if (!r.ok) return errorResponse(r.error);
   const parsed = schema.safeParse(r.data);
   if (!parsed.success) {
-    c.get('log').error('challenge_ai_public_schema', { route, paths: parsed.error.issues.slice(0, 5).map((i) => i.path.join('.')) });
-    return fail({ code: 'internal', message: 'internal error' });
+    c.get("log").error("challenge_ai_public_schema", {
+      route,
+      paths: parsed.error.issues.slice(0, 5).map((i) => i.path.join(".")),
+    });
+    return fail({ code: "internal", message: "internal error" });
   }
   return Response.json({ ok: true, data: parsed.data, ...extra });
 }
 
-const readJson = async (c: { req: { text: () => Promise<string> } }): Promise<unknown> => {
-  const raw = await c.req.text().catch(() => '');
+const readJson = async (c: {
+  req: { text: () => Promise<string> };
+}): Promise<unknown> => {
+  const raw = await c.req.text().catch(() => "");
   if (!raw.trim()) return undefined;
   try {
     return JSON.parse(raw) as unknown;
@@ -1166,150 +2136,291 @@ const readJson = async (c: { req: { text: () => Promise<string> } }): Promise<un
 };
 
 const paramId = (v: string) => (idSchema.safeParse(v).success ? v : null);
-const notFound = (what: string) => fail({ code: 'not_found', message: what });
+const notFound = (what: string) => fail({ code: "not_found", message: what });
 
-export const challengeAiRoutes = (service: ChallengeAiService = createChallengeAiService(dbIo())) => {
+export const challengeAiRoutes = (
+  service: ChallengeAiService = createChallengeAiService(dbIo()),
+) => {
   const spendsAi = (userId: string) => {
     const slot = takeAiSlot(userId);
     return slot.ok ? null : errorResponse(slot.error);
   };
-  return new Hono<Env>()
-    // FR-37. The session as the student sees it: only the open item, never the queue.
-    .post('/sessions', async (c) => {
-      const i = parseWith(challengeConfigSchema, (await readJson(c)) ?? null);
-      if (!i.ok) return errorResponse(i.error);
-      const limited = spendsAi(c.get('userId'));
-      if (limited) return limited;
-      const r = await service.start(c.get('userId'), i.data, c.get('requestId'));
-      if (!r.ok) return errorResponse(r.error);
-      return sendPublic(c, 'start', aiChallengeSessionPublicSchema, ok(r.data.session), r.data.generation ? { generation: generationMetaSchema.parse(r.data.generation) } : {});
-    })
-    .get('/sessions/:id', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('session not found');
-      return sendPublic(c, 'session', aiChallengeSessionPublicSchema, await service.session(c.get('userId'), id));
-    })
-    // FR-38/FR-31: only the public result (verdict, rating, feedback, hint). The rating is the server's.
-    .post('/sessions/:id/answers', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('session not found');
-      const i = parseWith(aiAnswerItemInputSchema, (await readJson(c)) ?? null);
-      if (!i.ok) return errorResponse(i.error);
-      const limited = spendsAi(c.get('userId'));
-      if (limited) return limited;
-      return sendPublic(c, 'answer', aiAnswerResultSchema, await service.answer(c.get('userId'), id, i.data, c.get('requestId')));
-    })
-    .post('/sessions/:id/finish', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('session not found');
-      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
-      if (!body.ok) return errorResponse(body.error);
-      const limited = spendsAi(c.get('userId'));
-      if (limited) return limited;
-      return sendPublic(c, 'finish', challengeReportSchema, await service.finish(c.get('userId'), id, c.get('requestId')));
-    })
-    .post('/sessions/:id/retry', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('session not found');
-      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
-      if (!body.ok) return errorResponse(body.error);
-      return sendPublic(c, 'retry', aiChallengeSessionPublicSchema, await service.retry(c.get('userId'), id));
-    })
-    .post('/sessions/:id/review', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('session not found');
-      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
-      if (!body.ok) return errorResponse(body.error);
-      return sendPublic(c, 'review', reviewResultSchema, await service.pullReview(c.get('userId'), id));
-    })
-    // D-1605: the flag only. No body, no grade edit.
-    .post('/attempts/:id/dispute', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('attempt not found');
-      const raw = (await readJson(c)) ?? {};
-      const named = disputeVerdictInputSchema.safeParse(raw);
-      if (!emptyBody.safeParse(raw).success && !named.success) {
-        const body = parseWith(disputeVerdictInputSchema, raw);
+  return (
+    new Hono<Env>()
+      .post("/bank/:id/start", async (c) => {
+        if (!questionFeatures().catalog) return notFound("route not found");
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("question not found");
+        const body = await readJson(c);
+        const input = parseWith(
+          savedQuestionStartInputSchema,
+          body === undefined ? {} : body,
+        );
+        if (!input.ok) return errorResponse(input.error);
+        return sendPublic(
+          c,
+          "saved-question-start",
+          savedQuestionStartResultSchema,
+          await service.startSaved(c.get("userId"), id),
+        );
+      })
+      // FR-37. The session as the student sees it: only the open item, never the queue.
+      .post("/sessions", async (c) => {
+        const i = parseWith(challengeConfigSchema, (await readJson(c)) ?? null);
+        if (!i.ok) return errorResponse(i.error);
+        const limited = spendsAi(c.get("userId"));
+        if (limited) return limited;
+        const r = await service.start(
+          c.get("userId"),
+          i.data,
+          c.get("requestId"),
+        );
+        if (!r.ok) return errorResponse(r.error);
+        return sendPublic(
+          c,
+          "start",
+          aiChallengeSessionPublicSchema,
+          ok(r.data.session),
+          r.data.generation
+            ? { generation: generationMetaSchema.parse(r.data.generation) }
+            : {},
+        );
+      })
+      .get("/sessions/:id", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("session not found");
+        return sendPublic(
+          c,
+          "session",
+          aiChallengeSessionPublicSchema,
+          await service.session(c.get("userId"), id),
+        );
+      })
+      // FR-38/FR-31: only the public result (verdict, rating, feedback, hint). The rating is the server's.
+      .post("/sessions/:id/answers", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("session not found");
+        const i = parseWith(
+          aiAnswerItemInputSchema,
+          (await readJson(c)) ?? null,
+        );
+        if (!i.ok) return errorResponse(i.error);
+        const limited = spendsAi(c.get("userId"));
+        if (limited) return limited;
+        return sendPublic(
+          c,
+          "answer",
+          aiAnswerResultSchema,
+          await service.answer(c.get("userId"), id, i.data, c.get("requestId")),
+        );
+      })
+      .post("/sessions/:id/finish", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("session not found");
+        const body = parseWith(emptyBody, (await readJson(c)) ?? {});
         if (!body.ok) return errorResponse(body.error);
-      }
-      if (named.success && named.data.attemptId !== id) return errorResponse({ code: 'validation', message: 'attempt_mismatch' });
-      return sendPublic(c, 'dispute', disputeResultSchema, await service.dispute(c.get('userId'), id));
-    })
-    // FR-18: the caller's own questions, without the reference.
-    .get('/taxonomy', async (c) => {
-      const q = parseWith(z.object({ kind: z.enum(['area', 'domain', 'topic']) }).strict(), c.req.query());
-      if (!q.ok) return errorResponse(q.error);
-      return sendPublic(c, 'taxonomy', z.array(enamedTopicOptionSchema).max(200), await service.taxonomy(c.get('userId'), q.data.kind));
-    })
-    .get('/topics', async (c) => {
-      const q = parseWith(topicsQuerySchema, c.req.query());
-      if (!q.ok) return errorResponse(q.error);
-      return sendPublic(c, 'topics', z.array(enamedTopicOptionSchema).max(200), await service.topics(c.get('userId'), q.data.areaId ?? null));
-    })
-    .get('/bank', async (c) => {
-      const q = parseWith(bankQuerySchema, c.req.query());
-      if (!q.ok) return errorResponse(q.error);
-      return sendPublic(c, 'bank', z.array(questionBankItemPublicSchema).max(100), await service.bank(c.get('userId'), q.data), { page: { limit: q.data.limit, offset: q.data.offset } });
-    })
-    .post('/bank/:id/archive', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('question not found');
-      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
-      if (!body.ok) return errorResponse(body.error);
-      return sendPublic(c, 'archive', archiveResultSchema, await service.archive(c.get('userId'), id));
-    })
-    .post('/bank/:id/confirm', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('question not found');
-      const body = parseWith(confirmTopicSchema, (await readJson(c)) ?? null);
-      if (!body.ok) return errorResponse(body.error);
-      return sendPublic(c, 'confirm', questionBankItemPublicSchema, await service.confirmTopic(c.get('userId'), id, body.data));
-    })
-    .post('/bank/:id', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('question not found');
-      return sendPublic(c, 'edit', questionBankItemPublicSchema, await service.edit(c.get('userId'), id, (await readJson(c)) ?? null));
-    })
-    .post('/items/:id/report', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('item not found');
-      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
-      if (!body.ok) return errorResponse(body.error);
-      return sendPublic(c, 'report', reportResultSchema, await service.report(c.get('userId'), id));
-    })
-    // FR-26: the owner reads and edits the rubric of their own card. Challenge responses still omit it.
-    .get('/cards/:id/rubric', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('card not found');
-      return sendPublic(c, 'rubric', ownerRubricSchema, await service.rubric(c.get('userId'), id));
-    })
-    .post('/cards/:id/rubric', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('card not found');
-      const body = parseWith(saveRubricSchema, (await readJson(c)) ?? null);
-      if (!body.ok) return errorResponse(body.error);
-      return sendPublic(c, 'save-rubric', ownerRubricSchema, await service.saveRubric(c.get('userId'), id, body.data));
-    })
-    // FR-46: one `ai_summaries` unit is taken inside the service.
-    .post('/summaries', async (c) => {
-      const i = parseWith(generateSummaryInputSchema, (await readJson(c)) ?? null);
-      if (!i.ok) return errorResponse(i.error);
-      const limited = spendsAi(c.get('userId'));
-      if (limited) return limited;
-      return sendPublic(c, 'summarize', mapSummaryPublicSchema, await service.summarize({ ...i.data, userId: c.get('userId'), requestId: c.get('requestId') }));
-    })
-    // FR-50: history, newest first; `stale` once the map changed.
-    .get('/boards/:id/summaries', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('board not found');
-      return sendPublic(c, 'summaries', z.array(mapSummaryPublicSchema).max(20), await service.summaries(c.get('userId'), id));
-    })
-    // FR-52: the student reports a saved summary. No model call.
-    .post('/summaries/:id/report', async (c) => {
-      const id = paramId(c.req.param('id'));
-      if (!id) return notFound('summary not found');
-      const body = parseWith(emptyBody, (await readJson(c)) ?? {});
-      if (!body.ok) return errorResponse(body.error);
-      return sendPublic(c, 'report-summary', summaryReportSchema, await service.reportSummary(c.get('userId'), id));
-    });
+        const limited = spendsAi(c.get("userId"));
+        if (limited) return limited;
+        return sendPublic(
+          c,
+          "finish",
+          challengeReportSchema,
+          await service.finish(c.get("userId"), id, c.get("requestId")),
+        );
+      })
+      .post("/sessions/:id/retry", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("session not found");
+        const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+        if (!body.ok) return errorResponse(body.error);
+        return sendPublic(
+          c,
+          "retry",
+          aiChallengeSessionPublicSchema,
+          await service.retry(c.get("userId"), id),
+        );
+      })
+      .post("/sessions/:id/review", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("session not found");
+        const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+        if (!body.ok) return errorResponse(body.error);
+        return sendPublic(
+          c,
+          "review",
+          reviewResultSchema,
+          await service.pullReview(c.get("userId"), id),
+        );
+      })
+      // D-1605: the flag only. No body, no grade edit.
+      .post("/attempts/:id/dispute", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("attempt not found");
+        const raw = (await readJson(c)) ?? {};
+        const named = disputeVerdictInputSchema.safeParse(raw);
+        if (!emptyBody.safeParse(raw).success && !named.success) {
+          const body = parseWith(disputeVerdictInputSchema, raw);
+          if (!body.ok) return errorResponse(body.error);
+        }
+        if (named.success && named.data.attemptId !== id)
+          return errorResponse({
+            code: "validation",
+            message: "attempt_mismatch",
+          });
+        return sendPublic(
+          c,
+          "dispute",
+          disputeResultSchema,
+          await service.dispute(c.get("userId"), id),
+        );
+      })
+      // FR-18: the caller's own questions, without the reference.
+      .get("/taxonomy", async (c) => {
+        const q = parseWith(
+          z.object({ kind: z.enum(["area", "domain", "topic"]) }).strict(),
+          c.req.query(),
+        );
+        if (!q.ok) return errorResponse(q.error);
+        return sendPublic(
+          c,
+          "taxonomy",
+          z.array(enamedTopicOptionSchema).max(200),
+          await service.taxonomy(c.get("userId"), q.data.kind),
+        );
+      })
+      .get("/topics", async (c) => {
+        const q = parseWith(topicsQuerySchema, c.req.query());
+        if (!q.ok) return errorResponse(q.error);
+        return sendPublic(
+          c,
+          "topics",
+          z.array(enamedTopicOptionSchema).max(200),
+          await service.topics(c.get("userId"), q.data.areaId ?? null),
+        );
+      })
+      .get("/bank", async (c) => {
+        const q = parseWith(bankQuerySchema, c.req.query());
+        if (!q.ok) return errorResponse(q.error);
+        return sendPublic(
+          c,
+          "bank",
+          z.array(questionBankItemPublicSchema).max(100),
+          await service.bank(c.get("userId"), q.data),
+          { page: { limit: q.data.limit, offset: q.data.offset } },
+        );
+      })
+      .post("/bank/:id/archive", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("question not found");
+        const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+        if (!body.ok) return errorResponse(body.error);
+        return sendPublic(
+          c,
+          "archive",
+          archiveResultSchema,
+          await service.archive(c.get("userId"), id),
+        );
+      })
+      .post("/bank/:id/confirm", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("question not found");
+        const body = parseWith(confirmTopicSchema, (await readJson(c)) ?? null);
+        if (!body.ok) return errorResponse(body.error);
+        return sendPublic(
+          c,
+          "confirm",
+          questionBankItemPublicSchema,
+          await service.confirmTopic(c.get("userId"), id, body.data),
+        );
+      })
+      .post("/bank/:id", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("question not found");
+        return sendPublic(
+          c,
+          "edit",
+          questionBankItemPublicSchema,
+          await service.edit(c.get("userId"), id, (await readJson(c)) ?? null),
+        );
+      })
+      .post("/items/:id/report", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("item not found");
+        const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+        if (!body.ok) return errorResponse(body.error);
+        return sendPublic(
+          c,
+          "report",
+          reportResultSchema,
+          await service.report(c.get("userId"), id),
+        );
+      })
+      // FR-26: the owner reads and edits the rubric of their own card. Challenge responses still omit it.
+      .get("/cards/:id/rubric", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("card not found");
+        return sendPublic(
+          c,
+          "rubric",
+          ownerRubricSchema,
+          await service.rubric(c.get("userId"), id),
+        );
+      })
+      .post("/cards/:id/rubric", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("card not found");
+        const body = parseWith(saveRubricSchema, (await readJson(c)) ?? null);
+        if (!body.ok) return errorResponse(body.error);
+        return sendPublic(
+          c,
+          "save-rubric",
+          ownerRubricSchema,
+          await service.saveRubric(c.get("userId"), id, body.data),
+        );
+      })
+      // FR-46: one `ai_summaries` unit is taken inside the service.
+      .post("/summaries", async (c) => {
+        const i = parseWith(
+          generateSummaryInputSchema,
+          (await readJson(c)) ?? null,
+        );
+        if (!i.ok) return errorResponse(i.error);
+        const limited = spendsAi(c.get("userId"));
+        if (limited) return limited;
+        return sendPublic(
+          c,
+          "summarize",
+          mapSummaryPublicSchema,
+          await service.summarize({
+            ...i.data,
+            userId: c.get("userId"),
+            requestId: c.get("requestId"),
+          }),
+        );
+      })
+      // FR-50: history, newest first; `stale` once the map changed.
+      .get("/boards/:id/summaries", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("board not found");
+        return sendPublic(
+          c,
+          "summaries",
+          z.array(mapSummaryPublicSchema).max(20),
+          await service.summaries(c.get("userId"), id),
+        );
+      })
+      // FR-52: the student reports a saved summary. No model call.
+      .post("/summaries/:id/report", async (c) => {
+        const id = paramId(c.req.param("id"));
+        if (!id) return notFound("summary not found");
+        const body = parseWith(emptyBody, (await readJson(c)) ?? {});
+        if (!body.ok) return errorResponse(body.error);
+        return sendPublic(
+          c,
+          "report-summary",
+          summaryReportSchema,
+          await service.reportSummary(c.get("userId"), id),
+        );
+      })
+  );
 };

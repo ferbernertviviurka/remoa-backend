@@ -1,3 +1,4 @@
+import { createGenerationReceipts } from '../questions/generation/receipts';
 import { notifyMapReady } from '../notifications/map-ready';
 import { pick } from '../pick';
 import { and, eq, sql } from 'drizzle-orm';
@@ -574,7 +575,7 @@ async function executeGeneration(jobId: string) {
   const ac = new AbortController();
   running.set(jobId, ac);
   const stop = heartbeat(jobId);
-  const cancellable: typeof fetch = (url, init) => fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, ac.signal]) : ac.signal });
+  const cancellable: typeof fetch = (url, init) => ac.signal.aborted ? Promise.reject(new DOMException('aborted','AbortError')) : fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, ac.signal]) : ac.signal });
   const startedAt = Date.now(); // ponytail: run time only (queue wait not counted); map_ready decides the e-mail from it
   let model = 'none';
   let latencyMs = 0;
@@ -582,7 +583,8 @@ async function executeGeneration(jobId: string) {
     const room = await cardRoom(job.userId);
     if (room === 0) throw new JobError('cards');
     const live = aiMode() === 'live';
-    const { extracted, meta } = await extractWithMeta(text, AI_DRAFT_SOURCE, cancellable, undefined, room ?? undefined, input.area === 'OUTRO');
+    const receipts=createGenerationReceipts({ownerId:job.userId,producer:'map_extract',requestKey:'map-job:'+jobId+':attempt:'+job.attempts,promptId:'extract',promptVersion:EXTRACT_PROMPT_VERSION,boardId:job.boardId??null,boardVersion:null,context:{jobId,kind:job.kind,inputArea:input.area}});
+    const { extracted, meta } = await receipts.wrap(()=>extractWithMeta(text, AI_DRAFT_SOURCE, cancellable, undefined, room ?? undefined, input.area === 'OUTRO'));
     if (ac.signal.aborted) return; // canceled: the cancel already ended the job and gave the unit back
     model = meta.model;
     latencyMs = meta.latencyMs;
@@ -608,6 +610,7 @@ async function executeGeneration(jobId: string) {
       return id;
     });
     if (!boardId) return;
+    await receipts.attachMap(boardId,1);
     try {
       await invalidate('map.changed', { userId: job.userId, mapId: boardId }); // after the commit: the generated map and its draft cards
       await maybeQualifyReferral(job.userId); // F18 (D-485): after the writes; never throws. Draft cards count (D-402 does not filter status)

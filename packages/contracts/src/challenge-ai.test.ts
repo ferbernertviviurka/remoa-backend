@@ -17,6 +17,13 @@ const occlusion = {
 const reference = ['correctKey', 'expectedAnswer', 'keyPoints', 'rubric', 'referenceRef', 'shuffleMap', 'correct_key', 'expected_answer'];
 
 describe('F30 FR-36: the public item never carries reference material', () => {
+  it('preserves a full 20k discursive stem while objective and generation limits stay unchanged', () => {
+    const full = 'x'.repeat(19969) + ' NÃO trocar a dose final: 2 mg.';
+    expect(full.length).toBeLessThanOrEqual(20000);
+    expect(aiChallengeItemPublicSchema.parse({id:id(4),position:0,type:'discursive',stem:full})).toMatchObject({stem:full});
+    expect(aiChallengeItemPublicSchema.safeParse({id:id(4),position:0,type:'discursive',stem:'x'.repeat(20001)}).success).toBe(false);
+    expect(aiChallengeItemPublicSchema.safeParse({...objective,stem:full}).success).toBe(false);
+  });
   it('accepts the public shapes', () => {
     expect(aiChallengeItemPublicSchema.safeParse(objective).success).toBe(true);
     expect(aiChallengeItemPublicSchema.safeParse(occlusion).success).toBe(true);
@@ -131,4 +138,10 @@ describe('F30 events carry no study text', () => {
     expect(eventSchemas.summary_generated.safeParse({ size: 'quick', focus: 'high_yield', cards: 40 }).success).toBe(true);
     expect(eventSchemas.bank_opened.safeParse({}).success).toBe(true);
   });
+});
+
+it('selected saved discursive scope permits one generated-format item without an invented card',()=>{
+ const config={boardId:id(1),scope:{kind:'bankQuestion',questionId:id(2)},format:'generated',n:1,difficulty:'mixed',questionType:'discursive',grading:'immediate',timerSec:null,preset:null};
+ expect(challengeConfigSchema.safeParse(config).success).toBe(true);
+ for(const over of[{n:5},{format:'map'},{questionType:'objective'},{questionType:'mixed'},{scope:{kind:'bankQuestion',questionId:id(2),cardId:id(3)}}])expect(challengeConfigSchema.safeParse({...config,...over}).success).toBe(false);
 });

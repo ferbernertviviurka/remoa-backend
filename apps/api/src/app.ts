@@ -26,6 +26,11 @@ import { boardsRoutes } from './routes/boards';
 import { cardsRoutes } from './routes/cards';
 import { challengeRoutes, type GradeStream } from './routes/challenge';
 import { challengeAiRoutes } from './routes/challenge-ai';
+import { questionFeatureGate, questionFeatureResponse, questionUserAdmission } from './questions/runtime/admission';
+import { questionImport, questionImportReconcile } from './inngest/question-import';
+import { questionsRoutes, examsRoutes, questionInstitutionsRoutes } from './routes/questions';
+import { questionSessionsRoutes } from './routes/question-sessions';
+import { questionEditorialRoutes } from './routes/question-editorial';
 import { coverageRoutes } from './routes/coverage';
 import { homeRoutes } from './routes/home';
 import { importsRoutes } from './routes/imports';
@@ -131,7 +136,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
     const { status, model } = aiHealth();
     return c.json({ ok: true, email: emailHealth(), ai: { status, model } });
   });
-  const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard, maintenanceHourly, maintenanceDaily, ...noticeFunctions] });
+  const inngestHandler = serveInngest({ client: inngest, functions: [generateBoard, questionImport, questionImportReconcile, maintenanceHourly, maintenanceDaily, ...noticeFunctions] });
   app.on(['GET', 'POST', 'PUT'], '/api/inngest', (c) => asJob(() => inngestHandler(c))); // FR-25: job timeouts
   // Lane routes mount under /v1 with requireUser (F02 uploads, F05 ai, F08 stripe webhook is public + signature).
   app.get('/v1/me', requireUser, (c) => c.json({ ok: true, data: { userId: c.get('userId') } }));
@@ -166,6 +171,12 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.use('/v1/coverage/*', requireUser).route('/v1/coverage', coverageRoutes);
   app.use('/v1/review/*', requireUser).route('/v1/review', reviewRoutes);
   app.use('/v1/challenge/*', requireUser).route('/v1/challenge', challengeRoutes({ grade, stream }));
+  app.use('/v1/editorial/questions/*', requireUser).route('/v1/editorial/questions', questionEditorialRoutes);
+  app.get('/v1/question-features', requireUser, () => questionFeatureResponse());
+  app.use('/v1/questions/*', requireUser, questionFeatureGate('catalog'), questionUserAdmission).route('/v1/questions', questionsRoutes());
+  app.use('/v1/question-institutions/*', requireUser, questionFeatureGate('catalog')).route('/v1/question-institutions', questionInstitutionsRoutes());
+  app.use('/v1/exams/*', requireUser, questionFeatureGate('catalog')).route('/v1/exams', examsRoutes());
+  app.use('/v1/question-sessions/*', requireUser, questionFeatureGate('sessions'), questionUserAdmission).route('/v1/question-sessions', questionSessionsRoutes());
   app.use('/v1/challenge-ai/*', requireUser).route('/v1/challenge-ai', challengeAiRoutes()); // G25 F32
   app.use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
   app.use('/v1/imports/*', requireUser).route('/v1/imports', importsRoutes(createImports({ anki: anki ?? ankiPort }))); // F06 Anki import

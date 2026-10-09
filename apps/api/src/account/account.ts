@@ -4,6 +4,7 @@ import { err, ok, type DeleteAccount, type ExportAccount } from '@remoa/contract
 import type { StripePort } from '../billing/stripe';
 import { run } from '../db';
 import { invalidate } from '../cache';
+import { collectQuestionExport, finishQuestionExport } from '../questions/privacy/export';
 
 const DAY = 86_400_000;
 const omit = <T extends object, K extends keyof T>(o: T, k: K): Omit<T, K> => Object.fromEntries(Object.entries(o).filter(([key]) => key !== k)) as Omit<T, K>; // assigned_to has no grant for `authenticated` (D-427)
@@ -17,9 +18,8 @@ export const isAccountDeleted = (userId: string) =>
   });
 
 /** F08 FR-7: only the user's own rows; the LGPD export is the one place that names every column (getTableColumns, D-1066); explicit userId filters on top of RLS (boards are readable for approved seeds). */
-export const exportAccount: ExportAccount = async (userId) =>
-  ok(
-    await run(userId, async (tx, s) => {
+export const exportAccount: ExportAccount = async (userId) => {
+  const data = await run(userId, async (tx, s) => {
       const mine = tx.select({ id: s.boards.id }).from(s.boards).where(eq(s.boards.userId, userId));
       const [profile] = await tx.select(getTableColumns(s.profiles)).from(s.profiles).where(eq(s.profiles.userId, userId));
       // F19 FR-9: tickets travel with the export (internal notes and assignee are staff data, not the user's).
@@ -31,6 +31,7 @@ export const exportAccount: ExportAccount = async (userId) =>
         })),
       );
       return {
+        questions: await collectQuestionExport(tx,userId),
         tickets,
         version: 1 as const,
         exportedAt: new Date(),
@@ -42,8 +43,9 @@ export const exportAccount: ExportAccount = async (userId) =>
         edges: await tx.select(getTableColumns(s.edges)).from(s.edges).where(inArray(s.edges.boardId, mine)),
         attempts: await tx.select(getTableColumns(s.attempts)).from(s.attempts).where(eq(s.attempts.userId, userId)),
       };
-    }),
-  );
+    });
+  return ok({...data,questions:await finishQuestionExport(data.questions,userId)});
+};
 
 /** Soft delete; `account/jobs.ts` purges after the grace period. Server-owned write, so superuser connection, not RLS. */
 export const deleteAccount = async (userId: string, stripe?: StripePort): ReturnType<DeleteAccount> => {

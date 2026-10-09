@@ -6,7 +6,14 @@ import { sql } from 'drizzle-orm';
 import { createHash, randomUUID as uuid } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { planDefinition } from '@remoa/contracts';
+import { receiptStore } from '../questions/generation/receipts';
 
+const receiptObjects=vi.hoisted(()=>new Map<string,Buffer>());
+vi.mock('../storage/storage',async orig=>({...await orig<typeof import('../storage/storage')>(),
+ putBytes:async(key:string,bytes:Uint8Array)=>{receiptObjects.set(key,Buffer.from(bytes));},
+ getBytes:async(key:string)=>{const value=receiptObjects.get(key);if(!value)throw Error('synthetic missing object');return value;},
+ headObject:async(key:string)=>receiptObjects.has(key)?{size:receiptObjects.get(key)!.length}:null,
+}));
 config({ path: '../../.env' });
 
 const AI_ENV = ['AI', 'OPENROUTER_API_KEY', 'AI_BASE_URL', 'AI_MODEL', 'AI_MODEL_FALLBACKS', 'AI_MAX_RETRIES', 'AI_RPM_LIMIT', 'AI_RPD_LIMIT', 'AI_REQUIRE_FREE', 'INNGEST_EVENT_KEY', 'INNGEST_DEV'] as const;
@@ -386,15 +393,17 @@ describe.skipIf(!process.env.DATABASE_URL)('G22 AI quotas, errors, jobs and flag
     it('cancel: aborts the running model call, gives the unit back, erases the text, saves no map', async () => {
       const u = await newUser('pro');
       live();
+      let entered!:()=>void;const providerEntered=new Promise<void>(resolve=>{entered=resolve;});
       let aborted = false;
       stubAi((init) => new Promise<Response>((_, reject) => {
+        entered();
         init?.signal?.addEventListener('abort', () => {
           aborted = true;
           reject(new DOMException('aborted', 'AbortError'));
         });
       }));
       const { data } = (await (await post(u, '/generate-board', { kind: 'text', title: 'Sepse', area: 'CM', text: TEXT })).json()) as { data: { jobId: string } };
-      for (let i = 0; i < 100 && (await job(u, data.jobId)).status !== 'running'; i++) await new Promise((r) => setTimeout(r, 10));
+      await providerEntered;
       const res = await post(u, `/jobs/${data.jobId}/cancel`);
       expect(res.status).toBe(200);
       expect(await job(u, data.jobId)).toMatchObject({ status: 'failed', error: 'canceled' });
@@ -405,6 +414,21 @@ describe.skipIf(!process.env.DATABASE_URL)('G22 AI quotas, errors, jobs and flag
       expect(row).toEqual({ text: null, board_id: null });
       expect((await post(u, `/jobs/${data.jobId}/cancel`)).status).toBe(409);
       expect((await post(u, `/jobs/${data.jobId}/retry`)).status).toBe(409); // canceled is final
+    });
+
+    it('cancel before provider starts makes no model request', async()=>{
+      const u=await newUser('pro');live();
+      let entered!:()=>void,release!:()=>void,finished!:()=>void;
+      const reserved=new Promise<void>(r=>{entered=r;});const proceed=new Promise<void>(r=>{release=r;});const done=new Promise<void>(r=>{finished=r;});
+      const original=receiptStore.reserve.bind(receiptStore);
+      const reserve=vi.spyOn(receiptStore,'reserve').mockImplementation(async(meta,call)=>{entered();await proceed;try{return await original(meta,call);}finally{finished();}});
+      const fetchSpy=stubAi(()=>extractReply([]));
+      try{
+        const {data}=(await(await post(u,'/generate-board',{kind:'text',title:'Before call',area:'CM',text:TEXT})).json()) as {data:{jobId:string}};
+        await reserved;expect((await post(u,`/jobs/${data.jobId}/cancel`)).status).toBe(200);release();await done;
+        await new Promise(r=>setTimeout(r,50));expect(fetchSpy.mock.calls.filter(c=>isAi(c[0]))).toHaveLength(0);
+        expect(await used(u,'ai_generations')).toBe(0);expect(await job(u,data.jobId)).toMatchObject({status:'failed',error:'canceled'});
+      }finally{release();reserve.mockRestore();}
     });
 
     it('dedup: two identical starts at once share one job and one unit', async () => {

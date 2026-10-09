@@ -1,6 +1,8 @@
+import { captureHttpEnvelope, HTTP_RECEIPT_MAX_BODY_BYTES, type HttpCompletionEnvelope } from './http-envelope';
 // G22 (D-1404–D-1409): the only HTTP client to an AI provider. OpenAI-compatible `POST {AI_BASE_URL}/chat/completions` (OpenRouter).
 // Retry with exponential backoff + jitter only on 429/5xx/timeout; fallback through AI_MODEL_FALLBACKS; classified errors;
 // a local per-minute/per-day counter; free/prod guards; one log line per attempt with no prompt, reply or key.
+import { nextCompletionReceipt, hasCompletionReceiptScope, ReceiptPersistenceError } from './receipts';
 import type { ZodType, ZodTypeDef } from 'zod';
 import { createLogger } from '@remoa/log';
 import { aiConfig, chainFor, missingConfig, type AiConfig, type AiFn } from './config';
@@ -164,6 +166,7 @@ const BLOCKED = /opus|^openrouter\/auto/i;
 
 /** Why a model may not be used here, or null. */
 export function refusal(model: string, c: AiConfig = aiConfig()): string | null {
+  if(!/^[a-zA-Z0-9/_.:@+-]{1,200}$/.test(model))return 'model identifier invalid';
   if (BLOCKED.test(model)) return 'model blocked in packages/ai (Opus or the auto router)';
   const price = knownPrices.get(model);
   if (c.requireFree && !model.endsWith(':free')) return 'AI_REQUIRE_FREE=1 and the model id does not end in :free';
@@ -306,6 +309,9 @@ export async function withRetries(
         last = e instanceof AiError ? e : timeout.aborted ? new AiError('timeout', { detail: 'AI_TIMEOUT_MS' }) : new AiError('provider_error', { detail: e instanceof Error ? e.name : 'fetch failed' });
       }
       logAttempt(o, { model, attempt, fallback, latencyMs: Date.now() - started, status: last.status ?? 'network', code: last.code });
+      // A receipt reservation covers exactly one uncertain provider request.
+      // Do not retry or fall back when its completion may already exist remotely.
+      if (hasCompletionReceiptScope(o.fn) && !last.local && (last.code==='timeout' || last.status===undefined || last.status<400)) throw last;
       if (!last.retryable) break;
       if (attempt < c.maxRetries) await sleep(backoffMs(attempt));
     }
@@ -353,33 +359,28 @@ const reasoningMandatory = new Set<string>();
 
 type ChatBody = ApiError & { model?: string; choices?: { message?: { content?: string | null; tool_calls?: { function?: { arguments?: string } }[] } }[]; usage?: Usage };
 
-async function complete(o: ChatOptions, messages: Message[], repaired?: boolean): Promise<Completion> {
+export function completionFromEnvelope(envelope:HttpCompletionEnvelope):Completion {
+  if(envelope.version!==1 || typeof envelope.bodyComplete!=='boolean' || typeof envelope.bodyBase64!=='string' || envelope.bodyBase64.length>Math.ceil(HTTP_RECEIPT_MAX_BODY_BYTES/3)*4 || !Number.isSafeInteger(envelope.bodyBytes)||envelope.bodyBytes<0||envelope.bodyBytes>HTTP_RECEIPT_MAX_BODY_BYTES || typeof envelope.model!=='string'|| !/^[a-zA-Z0-9/_.:@+-]{1,200}$/.test(envelope.model) || !Number.isSafeInteger(envelope.status)||envelope.status<200||envelope.status>299 || !Number.isSafeInteger(envelope.attempts)||envelope.attempts<1 || typeof envelope.fallback!=='boolean' || !Number.isFinite(envelope.latencyMs)||envelope.latencyMs<0 || ![null,'body_limit','body_read_failed'].includes(envelope.errorCode) || ![null,'application/json','text/plain'].includes(envelope.contentType) || envelope.bodyComplete&&envelope.errorCode!==null)throw new AiError('invalid_output',{status:200,final:true,detail:'envelope_metadata_invalid'});
+  if(!envelope.bodyComplete)throw new AiError('invalid_output',{status:200,final:true,detail:envelope.errorCode??'incomplete_body'});
+  let json:ChatBody;
+  try { const bytes=Buffer.from(envelope.bodyBase64,'base64');if(bytes.length!==envelope.bodyBytes || bytes.toString('base64')!==envelope.bodyBase64)throw Error('invalid_bytes');json=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) as ChatBody; }catch{throw new AiError('invalid_output',{status:200,final:true,detail:'body is not valid UTF-8 JSON'});}
+  if(!json || typeof json!=='object' || Array.isArray(json))throw new AiError('invalid_output',{status:200,final:true});
+  if(json.error){const error=classify(Number(json.error.code)||502,json.error.message);throw new AiError(error.code,{status:200,final:true,detail:'provider_error_envelope'});}
+  const message=json.choices?.[0]?.message;
+  const text=message?.tool_calls?.[0]?.function?.arguments || message?.content || '';
+  if(typeof text!=='string')throw new AiError('invalid_output',{status:200,final:true});
+  if(json.model!==undefined && (typeof json.model!=='string'||! /^[a-zA-Z0-9/_.:@+-]{1,200}$/.test(json.model)) || [json.usage?.prompt_tokens,json.usage?.completion_tokens].some(value=>value!==undefined && (!Number.isSafeInteger(value)||Number(value)<0)))throw new AiError('invalid_output',{status:200,final:true});
+  if(!text.trim())throw new AiError('empty_output',{status:200,final:true});
+  return{text,model:typeof json.model==='string'?json.model:envelope.model,tokensIn:json.usage?.prompt_tokens??0,tokensOut:json.usage?.completion_tokens??0,latencyMs:envelope.latencyMs,attempts:envelope.attempts,fallback:envelope.fallback,billable:true};
+}
+
+async function complete(o: ChatOptions, messages: Message[], repaired?: boolean, checkpoint?:(envelope:HttpCompletionEnvelope)=>Promise<void>): Promise<Completion> {
   const raw = await send(o, messages, false);
-  let json: ChatBody;
-  try {
-    json = (await raw.res.json()) as ChatBody;
-  } catch {
-    throw new AiError('invalid_output', { detail: 'body is not JSON' });
-  }
-  if (json.error) {
-    const e = classify(Number(json.error.code) || 502, json.error.message);
-    logAttempt(o, { model: raw.model, attempt: raw.attempts - 1, fallback: raw.fallback, latencyMs: Date.now() - raw.started, status: 200, code: e.code });
-    throw e;
-  }
-  const message = json.choices?.[0]?.message;
-  const text = message?.tool_calls?.[0]?.function?.arguments || message?.content || '';
-  const done: Completion = {
-    text,
-    model: json.model ?? raw.model,
-    tokensIn: json.usage?.prompt_tokens ?? 0,
-    tokensOut: json.usage?.completion_tokens ?? 0,
-    latencyMs: Date.now() - raw.firstStarted,
-    attempts: raw.attempts,
-    fallback: raw.fallback,
-    billable: true,
-  };
-  logAttempt(o, { model: done.model, attempt: raw.attempts - 1, fallback: raw.fallback, latencyMs: Date.now() - raw.started, status: 200, tokensIn: done.tokensIn, tokensOut: done.tokensOut, ...(repaired ? { repaired } : {}), ...(text.trim() ? {} : { code: 'empty_output' as const }) });
-  if (!text.trim()) throw new AiError('empty_output', { status: 200 });
+  const envelope=await captureHttpEnvelope(raw.res,{model:raw.model,attempts:raw.attempts,fallback:raw.fallback,latencyMs:Date.now()-raw.firstStarted});
+  if(checkpoint)await checkpoint(envelope);
+  const done=completionFromEnvelope(envelope);
+  logAttempt(o, { model: done.model, attempt: raw.attempts - 1, fallback: raw.fallback, latencyMs: Date.now() - raw.started, status: 200, tokensIn: done.tokensIn, tokensOut: done.tokensOut, ...(repaired ? { repaired } : {}), ...(done.text.trim() ? {} : { code: 'empty_output' as const }) });
+
   return done;
 }
 
@@ -427,7 +428,21 @@ function check<T>(schema: ZodType<T, ZodTypeDef, unknown>, text: string): { ok: 
  */
 export async function generateJson<T>(schema: ZodType<T, ZodTypeDef, unknown>, o: ChatOptions): Promise<Completion & { data: T; repaired: boolean }> {
   const opts = o.tool ? o : { ...o, json: true };
-  const done = await complete(opts, first(opts));
+  const completeDurably = async (messages: Message[], repaired = false) => {
+    const receipt = nextCompletionReceipt(opts.fn,repaired);
+    try {
+      const replay = receipt ? await receipt.hooks.load(receipt.call) : null;
+      if(replay)return replay;
+      const completion = await complete(opts,messages,repaired,receipt?.hooks.saveEnvelope ? envelope=>receipt.hooks.saveEnvelope!(receipt.call,envelope) : undefined);
+      if(receipt)await receipt.hooks.save(receipt.call,completion);
+      return completion;
+    } catch(error) {
+      if(error instanceof AiError){if(receipt?.hooks.failed)try{await receipt.hooks.failed(receipt.call,{code:error.code,knownNoCompletion:error.local || error.code!=='timeout' && error.status!==undefined && error.status>=400});}catch{throw new ReceiptPersistenceError('receipt_failure_record_failed');}throw error;}
+      if(error instanceof ReceiptPersistenceError)throw error;
+      throw new ReceiptPersistenceError(error instanceof Error ? error.name : 'unknown');
+    }
+  };
+  const done = await completeDurably(first(opts));
   // Counted only once the model replied: a transport error (429, 400, timeout) is not an invalid JSON (G22 live round, D-1438).
   jsonStats.calls += 1;
   const firstTry = check(schema, done.text);
@@ -435,7 +450,7 @@ export async function generateJson<T>(schema: ZodType<T, ZodTypeDef, unknown>, o
     jsonStats.validFirst += 1;
     return { ...done, data: firstTry.data, repaired: false };
   }
-  const fix = await complete(opts, [
+  const fix = await completeDurably([
     ...first(opts),
     { role: 'assistant', content: done.text },
     { role: 'user', content: `Sua resposta não passou na validação: ${firstTry.issue}. Responda de novo só com o JSON corrigido, no mesmo formato pedido, sem texto fora dele.` },

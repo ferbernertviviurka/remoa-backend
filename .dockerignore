@@ -8,3 +8,8 @@
 supabase/.temp
 docs
 .claude
+
+# Development output/fixtures; never runtime inputs or image contents.
+.emails
+.logs
+.ai

@@ -33,7 +33,7 @@ export const questionSources = ['ai', 'map', 'student'] as const;
 export const questionStatuses = ['draft', 'approved', 'archived'] as const;
 export const ALTERNATIVE_KEYS = ['A', 'B', 'C', 'D'] as const;
 export type AlternativeKey = (typeof ALTERNATIVE_KEYS)[number];
-export const challengeScopeKinds = ['card', 'module', 'branch', 'board'] as const;
+export const challengeScopeKinds = ['card', 'module', 'branch', 'board', 'bankQuestion'] as const;
 export const challengeSessionStatuses = ['active', 'finished', 'expired'] as const;
 export const challengeItemKinds = ['card', 'bank'] as const;
 /** FR-25 / FR-35. `prefilter` = local check without AI (FR-41); `pending` = waiting for AI quota (verdict null until a graded row is appended). */
@@ -63,6 +63,7 @@ export const challengeScopeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('module'), module: z.string().min(1).max(40) }).strict(),
   z.object({ kind: z.literal('branch'), rootCardId: idSchema }).strict(),
   z.object({ kind: z.literal('board') }).strict(),
+  z.object({kind:z.literal('bankQuestion'),questionId:idSchema}).strict(),
 ]);
 export type ChallengeScope = z.infer<typeof challengeScopeSchema>;
 
@@ -84,8 +85,9 @@ export const challengeConfigSchema = z
   })
   .strict()
   .superRefine((c, ctx) => {
-    const ok = c.scope.kind === 'card' ? c.n <= CHALLENGE_CARD_MAX : (CHALLENGE_SIZES as readonly number[]).includes(c.n);
+    const ok = c.scope.kind==='bankQuestion' ? c.n===1 : c.scope.kind === 'card' ? c.n <= CHALLENGE_CARD_MAX : (CHALLENGE_SIZES as readonly number[]).includes(c.n);
     if (!ok) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['n'], message: 'invalid_size' });
+    if(c.scope.kind==='bankQuestion' && (c.format!=='generated' || c.questionType!=='discursive'))ctx.addIssue({code:z.ZodIssueCode.custom,path:['scope'],message:'saved_discursive_only'});
     if (c.format === 'map' && c.questionType) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['questionType'], message: 'format_1_only' });
   });
 export type ChallengeConfig = z.infer<typeof challengeConfigSchema>;
@@ -117,7 +119,8 @@ const itemBase = { id: idSchema, position: z.number().int().nonnegative(), stem 
  * `.strict()` at every level: `correctKey`, `expectedAnswer`, `keyPoints`, `rubric`, `referenceRef`, `shuffleMap` fail to parse.
  */
 export const aiChallengeItemPublicSchema = z.discriminatedUnion('type', [
-  z.object({ ...itemBase, type: z.literal('discursive') }).strict(),
+  // CCR123: selected bank questions preserve their full stem; generation keeps its own 4k schema.
+  z.object({ ...itemBase, type: z.literal('discursive'), stem: z.string().min(1).max(20000) }).strict(),
   z.object({ ...itemBase, type: z.literal('objective'), alternatives: z.array(publicAlternative).length(4) }).strict(),
   z.object({ ...itemBase, type: z.literal('hidden_card') }).strict(),
   z.object({ ...itemBase, type: z.literal('edge'), fromTitle: z.string().min(1), toTitle: z.string().min(1) }).strict(),
@@ -367,3 +370,7 @@ export type Veredito = z.infer<typeof vereditoSchema>;
 
 /** Plan quota keys of this feature (D-1601). Windows: ai_question_batches per local day; ai_summaries per calendar month. */
 export type ChallengeAiQuotaKey = (typeof CHALLENGE_AI_QUOTA_KEYS)[number];
+
+/** CCR123: resolve one existing private question; the server selects config/reference, never generates. */
+export const savedQuestionStartInputSchema=z.object({}).strict();
+export const savedQuestionStartResultSchema=z.object({session:aiChallengeSessionPublicSchema}).strict();

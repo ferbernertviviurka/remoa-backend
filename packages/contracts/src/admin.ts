@@ -45,8 +45,10 @@ export const adminActions = [
   'blog.restore_revision', 'blog.upload_image', 'blog.category_upsert', 'blog.preview_link', 'sitemap.regenerate',
   /** Written by the blog.publish-scheduled job (actor system), not by withAdmin. */
   'blog.auto_publish',
+  'question.import', 'question.import_view', 'question.import_retry', 'question.import_cancel',
+  'question.catalog_view', 'question.history_view', 'question.report_view', 'question.report_resolve', 'question.candidate_create', 'question.candidate_number', 'question.context_resolve', 'question.candidate_update', 'question.review', 'question.publish', 'question.withdraw', 'question.rectify', 'question.source_update',
 ] as const;
-export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route', 'blog_post', 'blog_category', 'blog_asset', 'sitemap'] as const;
+export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route', 'blog_post', 'blog_category', 'blog_asset', 'sitemap', 'question', 'question_source', 'question_import', 'question_candidate', 'question_context', 'question_report'] as const;
 /** List filters. `deleting` = account in the 7-day grace (F13); `pending` = e-mail not confirmed. */
 export const adminUserStatuses = ['active', 'pending', 'suspended', 'deleting'] as const;
 export const adminUserOrigins = ['direct', 'referral'] as const;

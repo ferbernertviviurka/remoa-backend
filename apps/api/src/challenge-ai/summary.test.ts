@@ -1,3 +1,4 @@
+import { GenerationReceipts } from '../questions/generation/receipts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiError, generateJson } from '@remoa/ai';
 import { mapSummaryPublicSchema } from '@remoa/contracts';
@@ -329,4 +330,9 @@ describe('history and stale', () => {
     expect(r.ok && r.data.stale).toBe(false);
     expect(r.ok && Object.keys(r.data).sort()).toEqual(['boardId', 'boardVersion', 'createdAt', 'focus', 'id', 'sections', 'size', 'stale']);
   });
+});
+
+it('F33 summary injects receipt hooks before checklist screening and refunds persistence failure',async()=>{
+  const {store}=memStore();let ledger:GenerationReceipts|undefined;const receipts:NonNullable<SummaryDeps['receipts']>=meta=>{ledger=new GenerationReceipts(meta);vi.spyOn(ledger,'wrap').mockRejectedValue(Error('synthetic receipt outage'));return ledger;};
+  await expect(generateSummary(input(),{...deps(store),receipts})).rejects.toThrow();expect(ledger!.meta.producer).toBe('summary_checklist');expect(ledger!.wrap).toHaveBeenCalledTimes(1);expect(refundFn).toHaveBeenCalledTimes(1);expect(store.insert).not.toHaveBeenCalled();
 });

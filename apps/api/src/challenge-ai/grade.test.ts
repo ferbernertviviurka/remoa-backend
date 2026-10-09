@@ -75,6 +75,14 @@ function harness(o: { replies?: (Veredito | Error)[]; units?: number } = {}) {
   return { deps, reserve, model, refunds, unitsLeft: () => units };
 }
 
+it('CCR123 sends the entire selected 20k stem including its final negation to the existing grader',async()=>{
+  const h=harness();const stem='x'.repeat(19960)+' NÃO modificar o marcador final.';
+  const item=hidden({type:'discursive',kind:'bank',cardId:null,bankId:ITEM,referenceRef:{kind:'bank',bankId:ITEM},public:{id:ITEM,position:0,type:'discursive',stem}});
+  const result=await gradeAnswer(input({item}),h.deps);
+  expect(result.ok).toBe(true);expect(h.model).toHaveBeenCalledOnce();
+  expect(h.model.mock.calls[0]![1].system).toContain(stem);
+});
+
 const prior = (over: Partial<PriorAttempt> = {}): PriorAttempt => ({
   attemptNo: 1, answerHash: 'x', gradedBy: 'ai', verdict: 'partial', feedback: 'Faltou o gatilho.', hint: 'Pense no marcador.', manipulation: false,
   covered: [], missing: ['quando gama sobe'], criticalError: false, confidence: 0.8, model: 'test/model', promptVersion: 'desafios/corrigir-resposta@v1', ...over,

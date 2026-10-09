@@ -1,0 +1,13 @@
+{
+  "synthetic": true,
+  "node": "v24.2.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "cpu": "Apple M3 Pro",
+  "logicalCpus": 11,
+  "hostMemoryBytes": 19327352832,
+  "applicationPoolMax": 10,
+  "http": "127.0.0.1:43133",
+  "database": "local Docker PostgreSQL17.11",
+  "limits": "Host topology; container CPU/RAM limits were not measured. No WAN/JWKS/provider/storage assets in workload."
+}

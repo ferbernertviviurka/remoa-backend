@@ -1,6 +1,7 @@
 // G25 (F32) T2: format-1 questions (FR-6–FR-14, FR-17, FR-19). Saved unseen questions first; the model only for what is missing,
 // one generateJson call per batch (GEN_BATCH_SIZE), one retry per batch at most. Every kept question passed the server guards
 // (literal evidence, grounded numbers, no duplicate) and is saved as `draft` (rule 6) through the server connection.
+import { createGenerationReceipts, type GenerationReceipts } from '../questions/generation/receipts';
 import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -109,6 +110,7 @@ export function serializeMap(ctx: MapContext): { text: string; refs: Map<string,
 /** Card ids of a scope; `branch` follows the arrows from the root (the root included). */
 export function scopeCardIds(scope: ChallengeScope, cards: readonly ScopeCard[], edges: MapContext['edges']): string[] {
   const live = new Set(cards.map((c) => c.id));
+  if(scope.kind==='bankQuestion')return [];
   if (scope.kind === 'board') return cards.map((c) => c.id);
   if (scope.kind === 'card') return live.has(scope.cardId) ? [scope.cardId] : [];
   if (scope.kind === 'module') return cards.filter((c) => rec(c.didactics).modulo === scope.module).map((c) => c.id);
@@ -369,7 +371,7 @@ export type QuestionStore = {
 const STEM_SCAN = 500;
 
 const bankRow = (r: typeof import('@remoa/db').questionBank.$inferSelect): QuestionBankServer =>
-  questionBankServerSchema.parse(Object.fromEntries(Object.entries(r).filter(([k]) => k !== 'updatedAt')));
+  questionBankServerSchema.parse(Object.fromEntries(Object.keys(questionBankServerSchema.innerType().shape).map((k) => [k, r[k as keyof typeof r]])));
 
 export const dbStore: QuestionStore = {
   async context(userId, boardId, scope) {
@@ -407,6 +409,8 @@ export const dbStore: QuestionStore = {
     const { db, questionBank: q } = await dbm();
     const rows = await db.select().from(q).where(and(
       eq(q.userId, userId), eq(q.boardId, boardId), eq(q.type, type), ne(q.status, 'archived'),
+      eq(q.visibility, 'private'), sql`${q.origin} in ('ai_generated','user_authored')`,
+      sql`(${q.type}<>'objective' or (jsonb_array_length(${q.alternatives})=4 and ${q.correctKey} in ('A','B','C','D')))` ,
       isNotNull(q.enamedAreaId), isNotNull(q.enamedTopicId),
       difficulty ? eq(q.difficulty, difficulty) : undefined,
       sql`cardinality(${q.cardIds}) > 0 and ${q.cardIds} <@ ${uuids(cardIds)}`,
@@ -474,8 +478,8 @@ export type GenerateOutput = {
   stoppedBy: null | 'quota' | 'ai_error';
 };
 
-export type GenerateDeps = { store: QuestionStore; now: () => Date; newId: () => string };
-const defaultDeps: GenerateDeps = { store: dbStore, now: () => new Date(), newId: randomUUID };
+export type GenerateDeps = { store: QuestionStore; now: () => Date; newId: () => string; receipts?: typeof createGenerationReceipts };
+const defaultDeps: GenerateDeps = { store: dbStore, now: () => new Date(), newId: randomUUID, receipts:createGenerationReceipts };
 
 export const PROMPT_FOR: Record<QuestionType, 'gerar-perguntas-discursivas' | 'gerar-questoes-objetivas'> = {
   discursive: 'gerar-perguntas-discursivas',
@@ -524,6 +528,7 @@ async function ask(type: QuestionType, prompt: ChallengePrompt, vars: Record<str
  * question was discarded. A failed retry keeps what the first call gave.
  */
 export async function generateQuestions(input: GenerateInput, deps: GenerateDeps = defaultDeps): Promise<Result<GenerateOutput>> {
+  if(input.scope.kind==='bankQuestion')return err('validation','saved_question_requires_start_endpoint');
   if (input.charge !== 'once') return generateBatches(input, deps);
   const held = await reserveAi(input.userId, 'ai_question_batches', deps.now());
   if (!held.ok) return held;
@@ -557,6 +562,7 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
   const reusedAll: QuestionBankServer[] = [];
   let mapStems: string[] | null = null;
   let recent: string[] | null = null;
+  let batchNo=0;
 
   for (const [type, count] of types) {
     const reused = await store.unseen(input.userId, ctx.boardId, scopeIds, type, difficulty, count);
@@ -576,6 +582,8 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
 
     while (missing > 0 && !out.stoppedBy) {
       const size = Math.min(genBatchSize, missing);
+      const receiptBatch=batchNo++;
+      const ledgers:GenerationReceipts[]=[];
       const held = input.charge ? null : await reserveAi(input.userId, 'ai_question_batches', deps.now());
       if (held && !held.ok) {
         out.stoppedBy = 'quota';
@@ -609,7 +617,10 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
         let reply: Awaited<ReturnType<typeof ask>>;
         try {
           out.calls++;
-          reply = await ask(type, prompt, vars(size - kept.length), input.requestId ?? 'challenge-generate');
+          const ledger=deps.receipts?.({ownerId:input.userId,producer:type==='objective'?'challenge_objective':'challenge_discursive',requestKey:`${input.seed??input.requestId??randomUUID()}:${type}:${receiptBatch}:${attempt}`,promptId:prompt.meta.id,promptVersion:prompt.promptVersion,boardId:ctx.boardId,boardVersion:ctx.boardVersion,context:{scope:input.scope,n:input.n,difficulty:input.difficulty,focus:input.focus,refs:[...refs],tags:ctx.tags}});
+          if(ledger)ledgers.push(ledger);
+          const call=()=>ask(type,prompt,vars(size-kept.length),input.requestId??'challenge-generate');
+          reply=ledger?await ledger.wrap(call):await call();
         } catch (e) {
           log.warn('ai_error', { event: 'ai_error', fn: 'generate', type: e instanceof AiError ? e.code : 'failed', attempt });
           if (attempt === 0) await refund(); // the batch produced nothing
@@ -623,6 +634,9 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
         model ||= reply.model;
         log.info('ai_call', { event: 'ai_call', fn: 'generate', model: reply.model.slice(0, 80), latencyMs: Math.round(reply.latencyMs), status: 'ok', attempt });
         const screened = screenReply(type, reply.items, refs, existingStems(), dupThreshold);
+        const decisions=new Map<string,{state:'rejected'|'duplicate';reason:string}>();
+        for(const item of reply.items){const one=screenReply(type,[item],refs,existingStems(),dupThreshold);const reason=Object.entries(one.discarded).find(([,n])=>n>0)?.[0];if(reason)decisions.set(item.enunciado,{state:reason==='duplicate'?'duplicate':'rejected',reason});}
+        if(ledgers.at(-1))try{await ledgers.at(-1)!.markScreened(decisions);}catch(error){await refund();throw error;}
         addDiscards(out.discarded, screened.discarded);
         const onFocus = focus ? screened.kept.filter((k) => k.cardIds.includes(focus.card.id)) : screened.kept;
         offFocus.push(...screened.kept.filter((k) => !onFocus.includes(k)));
@@ -640,7 +654,7 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
           return toRow(c, { id, userId: input.userId, ctx, prompt, model, seed: input.seed ? `${input.seed}:${c.question.enunciado}` : id, now, classified: classified.get(i) ?? null });
         });
         const stored = keepTagged(rows);
-        await store.save(input.userId, stored);
+        if(ledgers.length){const first=ledgers[0]!;first.runs.push(...ledgers.slice(1).flatMap(l=>l.runs));await first.saveRows(stored);}else await store.save(input.userId, stored);
         fresh.push(...stored);
         mapStems.push(...stored.map((r) => r.stem));
         recent.unshift(...stored.map((r) => r.stem).reverse());
