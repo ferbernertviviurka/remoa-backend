@@ -4,13 +4,13 @@ const keys = {
   catalog: "QUESTIONS_CATALOG_ENABLED",
   sessions: "QUESTIONS_SESSIONS_ENABLED",
 } as const;
-/** Production rollout is explicit; independent switches never affect legacy F32. */
+/** Import and sessions stay closed in production until set. The catalog stays available unless explicitly turned off. */
 export function questionFeatures(env: NodeJS.ProcessEnv = process.env) {
   const dev = env.NODE_ENV === "development" || env.NODE_ENV === "test";
   return Object.fromEntries(
     Object.entries(keys).map(([feature, key]) => {
       const raw = env[key];
-      if (raw === undefined || raw === "") return [feature, dev];
+      if (raw === undefined || raw === "") return [feature, feature === "catalog" || dev];
       if (!["0", "1", "true", "false"].includes(raw))
         throw Error(`invalid ${key}: expected 0 or 1`);
       return [feature, raw === "1" || raw === "true"];

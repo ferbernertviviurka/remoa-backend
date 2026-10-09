@@ -1741,11 +1741,11 @@ export const dbData: DataPort = {
     return result;
   },
 
-  // FR-18: only the columns `authenticated` may read (no correct_key, expected_answer, key_points, explanation, distractor_notes), latest versions only
+  // FR-18: only columns `authenticated` may read. The answer key is not one of them, so the list cannot filter on it.
   bank: (userId, q) =>
     run(userId, async (tx) => {
       const where: SQL[] = [
-        sql`q.user_id = ${userId} AND q.visibility='private' AND q.origin IN ('ai_generated','user_authored') AND (q.type<>'objective' OR (jsonb_array_length(q.alternatives)=4 AND q.correct_key IN ('A','B','C','D')))`,
+        sql`q.user_id = ${userId} AND q.visibility='private' AND q.origin IN ('ai_generated','user_authored') AND (q.type<>'objective' OR jsonb_array_length(q.alternatives)=4)`,
         sql`not exists (select 1 from question_bank n where n.supersedes_id = q.id)`,
       ];
       if (q.board) where.push(sql`q.board_id = ${q.board}`);

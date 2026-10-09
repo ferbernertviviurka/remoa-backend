@@ -3,11 +3,11 @@ import { questionFeatures, questionAdmissionLimits } from "./config";
 import { createQuestionAdmission } from "./admission";
 afterEach(() => vi.unstubAllEnvs());
 describe("independent rollout and abuse admission", () => {
-  it("defaults closed in production/unset and open only in dev/test", () => {
+  it("keeps import and sessions closed in production and leaves the catalog available", () => {
     for (const NODE_ENV of [undefined, "production", "staging"])
       expect(questionFeatures({ NODE_ENV })).toEqual({
         import: false,
-        catalog: false,
+        catalog: true,
         sessions: false,
       });
     for (const NODE_ENV of ["test", "development"])

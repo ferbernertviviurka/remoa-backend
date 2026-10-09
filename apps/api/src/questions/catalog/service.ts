@@ -145,7 +145,8 @@ export const questionCatalog = {
       return { rows:page.filter(row=>row.id!==null), total: Number(page[0]?.total ?? 0) };
     });
     const more = rows.length > query.limit, selected = rows.slice(0, query.limit), last = selected.at(-1);
-    return questionListResultSchema.parse({ items: await Promise.all(selected.map(toQuestion)), total, nextCursor: more && last ? encodeQuestionCursor(String(last.cursor_at),String(last.id),userId,query) : null });
+    const nextCursor = more && last && process.env.SHARE_SECRET ? encodeQuestionCursor(String(last.cursor_at),String(last.id),userId,query) : null;
+    return questionListResultSchema.parse({ items: await Promise.all(selected.map(toQuestion)), total, nextCursor });
   },
   async get(userId: string, id: string) { return toQuestion(await run(userId, (tx) => getQuestionRow(tx,userId,id))); },
   async state(userId: string, id: string): Promise<QuestionUserState> {
