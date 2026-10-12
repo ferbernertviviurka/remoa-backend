@@ -8,7 +8,7 @@ export const questionAdminCatalogRoutes=new Hono<AdminEnv>()
 .get('/catalog',questionFeatureGate('catalog'),async c=>send(await withAdmin(c,'question.catalog_view',{reason:'Consultar catálogo administrativo de questões',target:{type:'route',id:c.req.path}},async(tx,audit)=>{
  const actor=await catalogStaff(tx,c.get('admin').id,'admin');if(!actor)return err('not_found','route not found');
  const input=parseWith(questionAdminCatalogQuerySchema,catalogQueryValues(c.req.url));if(!input.ok)return input;
- const result=await catalogPage(tx,actor,input.data,c.req.path);if(result.ok)audit.after({count:result.data.items.length,hasMore:result.data.nextCursor!==null,status:input.data.status??null,versions:input.data.versions});return result;
+ const result=await catalogPage(tx,actor,input.data,c.req.path);if(result.ok)audit.after({count:result.data.items.length,hasMore:result.data.nextCursor!==null,status:input.data.status??null,versions:input.data.versions,hashState:input.data.hashState??null});return result;
 })))
 .get('/:id/history',questionFeatureGate('catalog'),async c=>send(await withAdmin(c,'question.history_view',{reason:'Consultar versões históricas de questão institucional',target:{type:'question',id:c.req.param('id')}},async(tx,audit)=>{
  const actor=await catalogStaff(tx,c.get('admin').id,'admin');if(!actor)return err('not_found','route not found');

@@ -49,7 +49,7 @@ export function duplicateMatches(
 /** Diagnostic version only: never rewrite stored hashes/signatures during reads.
  * A legacy asset hash that no longer matches requires an explicit draft edit/new version.
  */
-export const QUESTION_CONTENT_HASH_VERSION = "f33-content-v2-jsonb-assets";
+export { QUESTION_CONTENT_HASH_VERSION } from "@remoa/contracts";
 function canonicalNested(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalNested);
   if (value !== null && typeof value === "object")
@@ -195,11 +195,11 @@ export function assertPublish(
     throw Error("institutional_public_only");
   if (q.catalogStatus === "withdrawn")
     throw Error("withdrawn_requires_new_version");
+  if (!lastReview || lastReview.decision !== "approved")
+    throw Error("latest_medical_review_required");
   if (q.contentHash !== expectedHash || q.contentHash !== q.reviewedHash)
     throw Error("content_hash_changed");
   if (
-    !lastReview ||
-    lastReview.decision !== "approved" ||
     lastReview.contentHash !== q.contentHash ||
     q.status !== "approved"
   )

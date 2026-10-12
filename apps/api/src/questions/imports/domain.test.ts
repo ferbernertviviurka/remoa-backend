@@ -141,6 +141,20 @@ describe("editorial gates", () => {
       ),
     ).toThrow("content_hash_changed");
   });
+  it("never-reviewed draft reports missing review before hash mismatch", () => {
+    const src = { rightsStatus: "authorized", rightsExpiresAt: null };
+    expect(() =>
+      assertPublish({ ...q, reviewedHash: null }, src, undefined, "hash"),
+    ).toThrow("latest_medical_review_required");
+    expect(() =>
+      assertPublish(
+        { ...q, contentHash: "edited" },
+        src,
+        { decision: "approved", contentHash: "hash" },
+        "edited",
+      ),
+    ).toThrow("content_hash_changed");
+  });
   it("hash is deterministic and material edit changes review identity", () => {
     const content = {
       stem: "S",

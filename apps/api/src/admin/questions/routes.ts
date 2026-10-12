@@ -1,5 +1,6 @@
 import { questionImportsPageRoutes } from "./imports-page";
 import { questionAdminCatalogRoutes } from './catalog';
+import { questionAdminOperationsRoutes } from './operations';
 import { parserWarningsResponse } from './parser-warnings';
 import {
   questionFeatureGate,
@@ -57,6 +58,7 @@ const readJson = async (c: { req: { json: () => Promise<unknown> } }) =>
   c.req.json().catch(() => null);
 import { questionAdminReportRoutes } from "../../questions/reports/admin";
 export const questionAdminRoutes = new Hono<AdminEnv>()
+  .route("/", questionAdminOperationsRoutes) // D-1804/D-1805
   .route("/", questionAdminCatalogRoutes)
   .route("/", questionImportsPageRoutes)
   .route("/reports", questionAdminReportRoutes)

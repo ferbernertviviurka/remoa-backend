@@ -5,7 +5,8 @@ import type { Tx } from '@remoa/db';
 import { err, ok, idSchema, questionAdminCatalogItemSchema, questionAdminCatalogPageSchema, questionVersionHistoryPageSchema, questionReviewHistoryPageSchema, questionReviewHistoryItemSchema, type QuestionAdminCatalogQuery, type QuestionHistoryQuery } from '@remoa/contracts';
 type Row=Record<string,unknown>;
 export type CatalogActor={id:string;role:'admin'|'reviewer'};
-export type CatalogCursorScope={actor:CatalogActor;route:string;query:Record<string,unknown>};
+/** role is only part of the binding; the generation outbox lists (D-1805) bind owner/admin cursors with the same HMAC. */
+export type CatalogCursorScope={actor:{id:string;role:string};route:string;query:Record<string,unknown>};
 const secret=()=>{const key=process.env.SHARE_SECRET;if(!key)throw Error('missing SHARE_SECRET for catalog discovery');return key;};
 const binding=(scope:CatalogCursorScope)=>{const {cursor: _cursor,...filters}=scope.query;void _cursor;return createHash('sha256').update(JSON.stringify({user:scope.actor.id,role:scope.actor.role,route:scope.route,order:'timestamp_desc_uuid_desc',filters:Object.fromEntries(Object.entries(filters).sort(([a],[b])=>a.localeCompare(b)))})).digest('hex');};
 export function encodeCatalogCursor(at:string,id:string,scope:CatalogCursorScope){const data=Buffer.from(JSON.stringify({at,id,binding:binding(scope)})).toString('base64url');return data+'.'+createHmac('sha256',secret()).update('f33-staff-discovery-v1:'+data).digest('base64url');}
@@ -26,11 +27,14 @@ export async function catalogStaff(tx:Tx,id:string,role?:CatalogActor['role']):P
 }
 const institution=sql`q.visibility='public' AND q.user_id IS NULL`;
 const columns=sql`q.id,coalesce(q.canonical_id,q.id) "canonicalId",q.supersedes_id "supersedesId",q.version,q.type,q.origin,left(q.stem,300) "stemPreview",q.catalog_status "catalogStatus",q.rights_status "rightsStatus",q.availability,q.source_id "sourceId",left(s.name,300) "sourceLabel",q.content_hash "contentHash",q.reviewed_hash "reviewedHash",q.created_at "createdAt",q.updated_at "updatedAt",q.published_at "publishedAt",to_char(q.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "cursorAt"`;
-const item=(row:Row)=>{const fields=Object.fromEntries(['id','canonicalId','supersedesId','version','type','origin','stemPreview','catalogStatus','rightsStatus','availability','sourceId','sourceLabel','contentHash','reviewedHash','createdAt','updatedAt','publishedAt'].map(k=>[k,row[k]]));for(const key of ['stemPreview','sourceLabel'])if(typeof fields[key]==='string')fields[key]=(fields[key] as string).slice(0,300);return questionAdminCatalogItemSchema.parse(fields);};
+/** drizzle's postgres-js execute() returns timestamptz as 'YYYY-MM-DD HH:MM:SS.ffffff+00' text, not ISO: parse before the wire schema. */
+const ts=(v:unknown)=>typeof v==='string'?new Date(v):v;
+const item=(row:Row)=>{const fields=Object.fromEntries(['id','canonicalId','supersedesId','version','type','origin','stemPreview','catalogStatus','rightsStatus','availability','sourceId','sourceLabel','contentHash','reviewedHash','createdAt','updatedAt','publishedAt'].map(k=>[k,['createdAt','updatedAt','publishedAt'].includes(k)?ts(row[k]):row[k]]));for(const key of ['stemPreview','sourceLabel'])if(typeof fields[key]==='string')fields[key]=(fields[key] as string).slice(0,300);return questionAdminCatalogItemSchema.parse(fields);};
 const escapedLike=(s:string)=>'%'+s.replace(/[\\%_]/g,'\\$&')+'%';
 export function catalogPageSQL(query:QuestionAdminCatalogQuery,cur:{at:string;id:string}|null){
  const clauses:SQL[]=[institution];
  if(query.status)clauses.push(sql`q.catalog_status=${query.status}`);if(query.sourceId)clauses.push(sql`q.source_id=${query.sourceId}::uuid`);if(query.type)clauses.push(sql`q.type=${query.type}`);
+ if(query.hashState)clauses.push(query.hashState==='missing'?sql`q.content_hash IS NULL`:sql`q.content_hash IS NOT NULL`); // D-1804; part of the cursor binding (all filters are)
  if(query.search)clauses.push(sql`(q.stem ILIKE ${escapedLike(query.search)} ESCAPE ${'\\'} OR s.name ILIKE ${escapedLike(query.search)} ESCAPE ${'\\'})`);
  if(query.versions==='latest')clauses.push(sql`NOT EXISTS(SELECT 1 FROM question_bank n WHERE n.visibility='public' AND n.user_id IS NULL AND coalesce(n.canonical_id,n.id)=coalesce(q.canonical_id,q.id) AND (n.version,n.created_at,n.id)>(q.version,q.created_at,q.id))`);
  if(cur)clauses.push(sql`(q.created_at,q.id)<(${cur.at}::timestamptz,${cur.id}::uuid)`);
@@ -51,5 +55,5 @@ export async function versionHistory(tx:Tx,actor:CatalogActor,id:string,query:Qu
 export async function reviewHistory(tx:Tx,actor:CatalogActor,id:string,query:QuestionHistoryQuery,route:string){
  const scope={actor,route,query},cur=position(query,scope);if(query.cursor&&!cur)return err('validation','invalid_cursor');if(!await rootOf(tx,id))return err('not_found','question not found');
  const rows=await tx.execute<Row>(sql`SELECT r.id,r.question_id "questionId",r.decision,r.content_hash "contentHash",r.reason,r.reviewer_name "reviewerName",r.reviewer_crm "reviewerCrm",r.reference_date "referenceDate",r.reviewed_at "reviewedAt",to_char(r.reviewed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "cursorAt" FROM question_editorial_reviews r JOIN question_bank q ON q.id=r.question_id WHERE r.question_id=${id}::uuid AND ${institution} ${cur?sql`AND (r.reviewed_at,r.id)<(${cur.at}::timestamptz,${cur.id}::uuid)`:sql``} ORDER BY r.reviewed_at DESC,r.id DESC LIMIT ${query.limit+1}`);
- const selected=rows.slice(0,query.limit),last=selected.at(-1);return ok(questionReviewHistoryPageSchema.parse({questionId:id,items:selected.map(r=>questionReviewHistoryItemSchema.parse(Object.fromEntries(['id','questionId','decision','contentHash','reason','reviewerName','reviewerCrm','referenceDate','reviewedAt'].map(k=>[k,r[k]])))),nextCursor:rows.length>query.limit&&last?encodeCatalogCursor(String(last.cursorAt),String(last.id),scope):null}));
+ const selected=rows.slice(0,query.limit),last=selected.at(-1);return ok(questionReviewHistoryPageSchema.parse({questionId:id,items:selected.map(r=>questionReviewHistoryItemSchema.parse(Object.fromEntries(['id','questionId','decision','contentHash','reason','reviewerName','reviewerCrm','referenceDate','reviewedAt'].map(k=>[k,k==='reviewedAt'?ts(r[k]):r[k]])))),nextCursor:rows.length>query.limit&&last?encodeCatalogCursor(String(last.cursorAt),String(last.id),scope):null}));
 }
