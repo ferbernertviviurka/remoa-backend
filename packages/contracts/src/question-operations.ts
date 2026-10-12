@@ -2,10 +2,12 @@
  * F33/G26 audited operations. Nothing here edits content, rights, review, integrity, answer key or taxonomy, or publishes.
  * D-1804/CCR146: content-hash preparation of institutional drafts whose content_hash is NULL (the PATCH CAS cannot match them).
  * D-1805/CCR144: bounded recovery of generation receipt/promotion outbox rows that reached the attempt limit.
+ * D-1819: institutional approval + publication of Remoa-owned questions (the only operation here that publishes).
  */
 import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
 import { auditEntrySchema, reasonSchema } from './admin';
+import { QUESTION_REMOA_RIGHTS_SCOPE } from './question-catalog';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.number().int().nonnegative();
@@ -133,3 +135,58 @@ export const questionGenerationMetricsSchema = z.object({
   audit: auditEntrySchema,
 }).strict();
 export type QuestionGenerationMetrics = z.infer<typeof questionGenerationMetricsSchema>;
+
+// ── D-1819: institutional approval (rule 6 exception, extends D-1522 to remoa_authored questions) ─────────────────
+export const QUESTION_INSTITUTIONAL_APPROVE_MAX = 500;
+/**
+ * POST /v1/admin/questions/institutional-approval (withAdmin 'question.institutional_approve', reauth, ONE audit row per call:
+ * target question_batch; after = idempotencyKey, requestHash, approverRole, approverName, rightsBasis, sourceId and per-item
+ * {id, outcome, version, contentHash}; never stem/alternatives/explanation). Agents never call it on their own (CLAUDE.md rule 6).
+ * Per item (own savepoint, lock order as publishQuestion), all must hold or the item is skipped with an outcome:
+ *   user_id IS NULL, visibility public, origin remoa_authored, not withdrawn/rejected/superseded → else not_eligible
+ *   catalog_status published → already_published · content_hash NULL → hash_missing (run D-1804 prepare first)
+ *   version = revision and content_hash = expectedContentHash = recomputed contentHash() → else conflict
+ *   type objective, availability active, correct_key among alternatives → else answer_key_missing (hard gate, no seal without a key)
+ *   enamed_area_id + enamed_topic_id set and consistent → else taxonomy_missing · explanation non-empty → else explanation_missing
+ *   source_id NULL or the Remoa-owned source → else source_mismatch
+ * Effect: link the single Remoa-owned source (rights_scope 'remoa_owned', authorized, evidence from the attestation; created on
+ * first use, never re-authorized if revoked → whole call fails conflict 'remoa_source_rights_revoked'); append a
+ * question_editorial_reviews row kind 'remoa_institutional', decision approved, reviewer_name = approverName, reviewer_crm NULL,
+ * content_hash = current hash, reference_date = approval date (America/Sao_Paulo); set status approved, rights_status authorized,
+ * reviewed_hash = content_hash, reviewer_name, reviewer_crm NULL, reference_date, validation_kind 'remoa_institutional'
+ * (integrity_confirmed/key_final/enamed_confirmed stay as they are: the seal is attestation, not confirmation); then the same
+ * publication path as publishQuestion. Revocation: existing withdraw/rectify flow.
+ */
+export const questionInstitutionalApproveItemSchema = z.object({ id: idSchema, revision: z.number().int().positive(), expectedContentHash: hash }).strict();
+export const questionInstitutionalAttestationSchema = z.object({
+  approverRole: z.literal('medical_founder'),
+  /** Display name only. Digits are refused so a CRM can never ride along. */
+  approverName: z.string().trim().min(3).max(200).refine((n) => !/\d/.test(n), 'approver_name_without_crm'),
+  rightsBasis: z.literal(QUESTION_REMOA_RIGHTS_SCOPE),
+  /** Fernando's explicit acceptance (D-1819): key, integrity and taxonomy were not separately confirmed. */
+  acceptsUnconfirmedChecks: z.literal(true),
+}).strict();
+export type QuestionInstitutionalAttestation = z.infer<typeof questionInstitutionalAttestationSchema>;
+export const questionInstitutionalApproveInputSchema = z.object({
+  items: z.array(questionInstitutionalApproveItemSchema).min(1).max(QUESTION_INSTITUTIONAL_APPROVE_MAX).refine(uniqueBy(i => i.id), 'duplicate_ids'),
+  attestation: questionInstitutionalAttestationSchema,
+  idempotencyKey: idSchema,
+  reason: reasonSchema,
+}).strict();
+export type QuestionInstitutionalApproveInput = z.infer<typeof questionInstitutionalApproveInputSchema>;
+export const questionInstitutionalApproveOutcomes = ['published', 'already_published', 'not_eligible', 'conflict', 'answer_key_missing', 'hash_missing', 'taxonomy_missing', 'explanation_missing', 'source_mismatch', 'not_found'] as const;
+export type QuestionInstitutionalApproveOutcome = typeof questionInstitutionalApproveOutcomes[number];
+export const questionInstitutionalApproveItemResultSchema = z.object({
+  id: idSchema,
+  outcome: z.enum(questionInstitutionalApproveOutcomes),
+  version: z.number().int().positive().nullable(),
+  contentHash: hash.nullable(),
+}).strict();
+export const questionInstitutionalApproveResultSchema = z.object({
+  /** Same admin + idempotencyKey + identical payload (items sorted by id, attestation) returns stored results; nothing rewritten. */
+  replayed: z.boolean(),
+  sourceId: idSchema,
+  results: z.array(questionInstitutionalApproveItemResultSchema).max(QUESTION_INSTITUTIONAL_APPROVE_MAX),
+  audit: auditEntrySchema,
+}).strict();
+export type QuestionInstitutionalApproveResult = z.infer<typeof questionInstitutionalApproveResultSchema>;

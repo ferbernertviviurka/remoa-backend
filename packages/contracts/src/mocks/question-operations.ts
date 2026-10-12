@@ -1,4 +1,4 @@
-import { QUESTION_CONTENT_HASH_VERSION, questionAdminOutboxPageSchema, questionGenerationMetricsSchema, questionHashPrepareResultSchema, questionOutboxRecoverResultSchema } from '../question-operations';
+import { QUESTION_CONTENT_HASH_VERSION, questionAdminOutboxPageSchema, questionInstitutionalApproveResultSchema, questionGenerationMetricsSchema, questionHashPrepareResultSchema, questionOutboxRecoverResultSchema } from '../question-operations';
 /** Synthetic engineering fixtures (D-1804/D-1805): ids, hashes and counts only, no content. */
 const id = '33000000-0000-4000-8000-000000000001';
 const createdAt = '2026-10-12T12:00:00.000Z';
@@ -14,3 +14,8 @@ export const mockQuestionGenerationMetrics = questionGenerationMetricsSchema.par
   backlog: [{ target: 'question-receipt', pending: 0, leased: 0, exhausted: 1, oldestPendingAt: null }, { target: 'question-promotion', pending: 0, leased: 0, exhausted: 0, oldestPendingAt: null }],
   throughput: [{ target: 'question-receipt', delivered: 0, recovered: 0 }, { target: 'question-promotion', delivered: 0, recovered: 0 }],
   cost: { runs: 10, runsWithKnownCost: 0, runsWithUnknownCost: 10, knownCostCents: 0 }, audit: audit('question.generation_view', 'route', '/v1/admin/questions/generation/metrics') });
+export const mockQuestionInstitutionalApproveResult = questionInstitutionalApproveResultSchema.parse({ replayed: false, sourceId: '33000000-0000-4000-8000-000000000009', results: [
+  { id, outcome: 'published', version: 1, contentHash: 'a'.repeat(64) },
+  { id: '33000000-0000-4000-8000-000000000002', outcome: 'answer_key_missing', version: 1, contentHash: 'b'.repeat(64) },
+  { id: '33000000-0000-4000-8000-000000000003', outcome: 'hash_missing', version: 1, contentHash: null },
+], audit: audit('question.institutional_approve', 'question_batch', id) });
