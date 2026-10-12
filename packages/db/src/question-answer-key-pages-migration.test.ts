@@ -8,8 +8,8 @@ const snapshot=JSON.parse(readFileSync(new URL('../migrations/meta/0051_snapshot
 describe('CCR133 answer key scope migration source',()=>{
  it('has the generated snapshot/journal chain without rewriting migration history',()=>{
   expect(snapshot.prevId).toBe(previous.id);
-  expect(journal.entries.at(-1)).toMatchObject({idx:51,tag:'0051_f33_answer_key_pages',breakpoints:true});
-  expect(journal.entries.at(-2)).toMatchObject({idx:50,tag:'0050_f33_source_lock_order'});
+  expect(journal.entries[51]).toMatchObject({idx:51,tag:'0051_f33_answer_key_pages',breakpoints:true});
+  expect(journal.entries[50]).toMatchObject({idx:50,tag:'0050_f33_source_lock_order'});
  });
  it('creates validation before its generated CHECK and keeps historical defaults nullable',()=>{
   expect(migration.indexOf('CREATE FUNCTION public.f33_valid_answer_key_pages')).toBeLessThan(migration.indexOf('ADD CONSTRAINT'));

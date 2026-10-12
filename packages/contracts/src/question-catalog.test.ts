@@ -50,7 +50,7 @@ describe('F33 catalog boundary', () => {
     expect(questionSourceInputSchema.safeParse({ name:'x',publisher:'x',url:'javascript:alert(1)',reason:'fixture testing' }).success).toBe(false);
     const staging=questionCandidatePayloadSchema.parse({stem:'synthetic',alternatives:[{key:'A',text:'one'},{key:'A',text:'two'}],correctKey:null,annulled:false});
     expect(staging.alternatives).toHaveLength(2);expect(staging.imagesConfirmed).toBe(false);
-    expect(QUESTION_PDF_PARSER_VERSION).toBe('f33-layout-v7');
+    expect(QUESTION_PDF_PARSER_VERSION).toBe('f33-layout-v8');
   });
   it('triage contracts exclude reporter identity and require an optimistic timestamp and audited reason',()=>{
     expect(questionReportQueueQuerySchema.parse({}).limit).toBe(30);

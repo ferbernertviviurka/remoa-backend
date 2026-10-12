@@ -21,6 +21,17 @@ const base = {
   truncated: false,
 };
 describe("private parser warnings contract", () => {
+  it("accepts trailing_unattached_text only with a question number", () => {
+    const item = { source: "exam", code: "trailing_unattached_text", count: 1 };
+    const wrap = (i: object) => ({ ...base, knownCount: 1, total: 1, items: [i] });
+    expect(
+      questionParserWarningsDataSchema.safeParse(wrap({ ...item, number: 50 }))
+        .success,
+    ).toBe(true);
+    expect(questionParserWarningsDataSchema.safeParse(wrap(item)).success).toBe(
+      false,
+    );
+  });
   it("distinguishes actual parsed zero from absent/null and incomplete key diagnostics", () => {
     expect(questionParserWarningsDataSchema.safeParse(base).success).toBe(true);
     const absent = {
