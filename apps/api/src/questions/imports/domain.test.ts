@@ -247,4 +247,24 @@ describe('context-managed draft structural guard',()=>{
  });
  it.each([{}, {contextBindings:[]}])('does not treat absent/empty bindings as managed %j',payload=>expect(isContextManaged(payload)).toBe(false));
  it.each([{contextBindings:null},{contextBindings:'invalid'},{contextBindings:[{contextId:'bad'}]}])('fails closed for malformed/present bindings %j',payload=>expect(isContextManaged(payload)).toBe(true));
+  it("D-1819 institutional seal: Remoa scope, institutional review, key; no CRM, flags not required", () => {
+    const iq = { ...q, validationKind: "remoa_institutional", origin: "remoa_authored", reviewerCrm: null, integrityConfirmed: false, keyFinal: false, enamedConfirmed: false };
+    const src = { rightsStatus: "authorized", rightsExpiresAt: null, rightsScope: "remoa_owned" };
+    const rev = { decision: "approved", contentHash: "hash", kind: "remoa_institutional" };
+    expect(() => assertPublish(iq, src, rev, "hash")).not.toThrow();
+    expect(() => assertPublish({ ...iq, origin: "official_exam" }, src, rev, "hash")).toThrow("institutional_scope_required");
+    expect(() => assertPublish(iq, { ...src, rightsScope: null }, rev, "hash")).toThrow("institutional_scope_required");
+    expect(() => assertPublish(iq, src, { ...rev, kind: undefined }, "hash")).toThrow("institutional_review_required");
+    expect(() => assertPublish(iq, src, { ...rev, contentHash: "old" }, "hash")).toThrow("institutional_review_required");
+    expect(() => assertPublish(iq, src, rev, "other")).toThrow("content_hash_changed");
+    expect(() => assertPublish(iq, { ...src, rightsStatus: "revoked" }, rev, "hash")).toThrow("source_rights_required");
+    expect(() => assertPublish({ ...iq, enamedTopicId: null }, src, rev, "hash")).toThrow("taxonomy_required");
+    expect(() => assertPublish({ ...iq, reviewerCrm: "1-SP" }, src, rev, "hash")).toThrow("institutional_attestation_required");
+    expect(() => assertPublish({ ...iq, explanation: " " }, src, rev, "hash")).toThrow("institutional_attestation_required");
+    expect(() => assertPublish({ ...iq, correctKey: null }, src, rev, "hash")).toThrow("final_key_required");
+    expect(() => assertPublish({ ...iq, availability: "annulled" }, src, rev, "hash")).toThrow("final_key_required");
+    // medical branch unchanged and never accepts an institutional review
+    expect(() => assertPublish(q, src, rev, "hash")).toThrow("latest_medical_review_required");
+    expect(() => assertPublish({ ...q, validationKind: "medical_review" }, src, { ...rev, kind: "medical_review" }, "hash")).not.toThrow();
+  });
 });

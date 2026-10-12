@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
-import { catalogAlternativesSchema, questionPublicSchema, questionUserStateSchema, examPaperPublicSchema, questionListResultSchema, questionInstitutionListSchema, type QuestionListQuery, type QuestionPublic, type QuestionUserState, type ExamPaperPublic } from '@remoa/contracts';
+import { catalogAlternativesSchema, questionPublicSchema, questionUserStateSchema, examPaperPublicSchema, questionListResultSchema, questionInstitutionListSchema, type QuestionListQuery, type QuestionPublic, type QuestionValidation, type QuestionUserState, type ExamPaperPublic } from '@remoa/contracts';
 import { Abort, asServer, run } from '../../db';
 import { invalidate } from '../../cache';
 import { presignGet } from '../../storage/storage';
@@ -46,7 +46,7 @@ export const occurrenceProjection=sql`(SELECT jsonb_build_object('items',coalesc
  WHERE o.question_id=q.id AND q.visibility='public' AND p.status='published' AND os.rights_status='authorized' AND (os.rights_expires_at IS NULL OR os.rights_expires_at>now()) ORDER BY p.year DESC,p.id,o.ordinal LIMIT 10) e)`;
 export const publicColumns = sql`q.id, coalesce(q.canonical_id,q.id) canonical_id, q.version, q.type, q.stem, q.alternatives,
  q.origin, q.visibility, q.availability, q.difficulty, q.enamed_topic_id, q.enamed_area_id, q.source_id, q.assets, ARRAY(SELECT c.id FROM cards c WHERE c.board_id=b.id AND c.deleted_at IS NULL AND c.id=ANY(q.card_ids)) card_ids, b.id board_id,
- q.created_at, q.created_at::text cursor_at, (q.reviewed_hash IS NOT NULL AND q.reviewed_hash=q.content_hash) reviewed,
+ q.created_at, q.created_at::text cursor_at, (q.reviewed_hash IS NOT NULL AND q.reviewed_hash=q.content_hash) reviewed, q.validation_kind, q.reviewer_name validation_label,
  src.name source_label, b.title board_title,${occurrenceProjection} occurrences,
  coalesce(us.favorite,false) favorite, coalesce(us.doubtful,false) doubtful, coalesce(us.annotation,'') annotation`;
 export const catalogJoins = (userId: string) => sql`LEFT JOIN question_sources src ON src.id=q.source_id
@@ -76,10 +76,23 @@ export function applyOccurrence(row: Row): Row {
   return {...row, alternatives:stored.data,correct_key:row.occurrence_annulled || row.availability==='annulled' ? null : original.correctKey,
     distractor_notes:notes?Object.fromEntries([...mapping].filter(([,key])=>notes[key]!==undefined).map(([key,canonicalKey])=>[key,notes[canonicalKey]])):null};
 }
+/** D-1819 public seal: institutional = "Remoa" (never a name or CRM); medical = reviewer name. Private/unreviewed = null. */
+export function validationOf(row: Row, reviewed = row.reviewed === true): QuestionValidation | null {
+  if (row.visibility !== 'public' || !reviewed) return null;
+  if (row.validation_kind === 'remoa_institutional') return { kind: 'remoa_institutional', label: 'Remoa' };
+  const label = typeof row.validation_label === 'string' ? row.validation_label.trim() : '';
+  return label ? { kind: 'medical_review', label } : null;
+}
+/** Reference-after-answer signature fields. Institutional: no reviewer name, never a CRM. */
+export function signature(row: Row, reviewed: boolean) {
+  const v = validationOf({ ...row, validation_label: row.validation_label ?? row.reviewer_name }, reviewed);
+  return v?.kind === 'remoa_institutional' ? { reviewerName: null, reviewerCrm: null, validation: v }
+    : { reviewerName: (row.reviewer_name as string | null) ?? null, reviewerCrm: (row.reviewer_crm as string | null) ?? null, validation: v };
+}
 export async function toQuestion(row: Row): Promise<QuestionPublic> {
   return questionPublicSchema.parse({ id: row.id, canonicalId: row.canonical_id ?? row.id, version: row.version, type: row.type, stem: row.stem, alternatives: row.alternatives,
     origin: row.origin, visibility: row.visibility, availability: row.availability, difficulty: row.difficulty, topicId: row.enamed_topic_id ?? null, areaId: row.enamed_area_id ?? null,
-    sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
+    sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, validation: validationOf(row), assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
     boardId: row.board_id ?? null, boardTitle: row.board_title ?? null, userState: { favorite: row.favorite ?? false, doubtful: row.doubtful ?? false, annotation: row.annotation ?? '' }, createdAt: row.created_at });
 }
 export function catalogWhere(userId: string, query: QuestionListQuery, activeOnly = false): SQL {

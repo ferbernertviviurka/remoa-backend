@@ -184,17 +184,24 @@ export interface PublicationGate {
   correctKey: string | null;
   visibility: string;
   userId: string | null;
+  /** D-1819: absent = medical_review. */
+  validationKind?: string;
+  origin?: string;
 }
 export function assertPublish(
   q: PublicationGate,
-  source: { rightsStatus: string; rightsExpiresAt: Date | null },
-  lastReview: { decision: string; contentHash: string } | undefined,
+  source: { rightsStatus: string; rightsExpiresAt: Date | null; rightsScope?: string | null },
+  lastReview: { decision: string; contentHash: string; kind?: string } | undefined,
   expectedHash: string,
 ) {
   if (q.visibility !== "public" || q.userId !== null)
     throw Error("institutional_public_only");
   if (q.catalogStatus === "withdrawn")
     throw Error("withdrawn_requires_new_version");
+  if (q.validationKind === "remoa_institutional")
+    return assertInstitutionalPublish(q, source, lastReview, expectedHash);
+  if (lastReview?.kind === "remoa_institutional")
+    throw Error("latest_medical_review_required");
   if (!lastReview || lastReview.decision !== "approved")
     throw Error("latest_medical_review_required");
   if (q.contentHash !== expectedHash || q.contentHash !== q.reviewedHash)
@@ -227,4 +234,35 @@ export function assertPublish(
     throw Error("medical_comment_required");
   if (q.availability === "active" && !q.correctKey)
     throw Error("final_key_required");
+}
+
+/**
+ * D-1819 (rule 6 exception): "Validado pela Remoa". Only remoa_authored content on the Remoa-owned source, approved by the
+ * latest remoa_institutional review of this exact hash, with a final key. Integrity/keyFinal/enamed flags and CRM are not
+ * required (attestation, not confirmation); a CRM present is refused.
+ */
+function assertInstitutionalPublish(
+  q: PublicationGate,
+  source: { rightsStatus: string; rightsExpiresAt: Date | null; rightsScope?: string | null },
+  lastReview: { decision: string; contentHash: string; kind?: string } | undefined,
+  expectedHash: string,
+) {
+  if (q.origin !== "remoa_authored" || source.rightsScope !== "remoa_owned")
+    throw Error("institutional_scope_required");
+  if (!lastReview || lastReview.decision !== "approved" || lastReview.kind !== "remoa_institutional")
+    throw Error("institutional_review_required");
+  if (q.contentHash !== expectedHash || q.contentHash !== q.reviewedHash)
+    throw Error("content_hash_changed");
+  if (lastReview.contentHash !== q.contentHash || q.status !== "approved")
+    throw Error("institutional_review_required");
+  if (
+    source.rightsStatus !== "authorized" ||
+    q.rightsStatus !== "authorized" ||
+    (source.rightsExpiresAt && source.rightsExpiresAt.getTime() <= Date.now())
+  )
+    throw Error("source_rights_required");
+  if (!q.enamedAreaId || !q.enamedTopicId) throw Error("taxonomy_required");
+  if (q.reviewerCrm !== null || !q.reviewerName?.trim() || !q.referenceDate || !q.explanation?.trim())
+    throw Error("institutional_attestation_required");
+  if (q.availability !== "active" || !q.correctKey) throw Error("final_key_required");
 }

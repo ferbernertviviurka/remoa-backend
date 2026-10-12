@@ -93,6 +93,7 @@ export async function reviewDto(
     reviewerName: row.reviewerName,
     reviewerCrm: row.reviewerCrm,
     referenceDate: row.referenceDate,
+    validationKind: row.validationKind,
     assets: await Promise.all(
       assets.map(async (asset) => ({
         ...asset,
@@ -153,6 +154,7 @@ export async function questionReviewDetail(c: Context<Env>, id: string) {
     if (!row) return err("not_found", "question not found");
     const [last] = await tx
       .select({
+        kind: r.kind,
         decision: r.decision,
         contentHash: r.contentHash,
         reviewerName: r.reviewerName,
@@ -245,6 +247,7 @@ export async function recordMedicalReview(
       reviewerId: c.get("userId"),
       reviewerName: identity.data.name,
       reviewerCrm: identity.data.crm,
+      kind: "medical_review",
       contentHash: hash,
       decision: input.data.decision,
       reason: input.data.reason,
@@ -273,6 +276,7 @@ export async function recordMedicalReview(
         reviewerName: approved ? identity.data.name : null,
         reviewerCrm: approved ? identity.data.crm : null,
         referenceDate: approved ? input.data.referenceDate : null,
+        validationKind: "medical_review",
       })
       .where(eq(q.id, id));
     }
