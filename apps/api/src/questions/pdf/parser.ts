@@ -5,6 +5,9 @@ import {
   lineQuestionNumber,
   excludeExamMargins,
   inferExamMarkerProfiles,
+  labelKey,
+  questionNumber,
+  splitAlternativeRow,
   type PdfLine,
 } from "./layout";
 import {
@@ -16,6 +19,7 @@ import {
   type Provenance,
   type QuestionCandidate,
   type PdfStructuralWarning,
+  type ParserIssue,
 } from "./types";
 import { QUESTION_PDF_PARSER_VERSION } from "@remoa/contracts";
 import { extractSharedContexts } from "./shared-context";
@@ -25,11 +29,60 @@ const provenance = (line: PdfLine): Provenance => ({
   method: line.page.method ?? "text",
 });
 const alternative = /^\s*(?:\(([A-Ja-j])\)|([A-Ja-j])[.)])\s*(.*)$/;
+interface ParsedAlternative { key: string; text: string; head: PdfLine; conts: PdfLine[] }
+/** D-1803: reading order is replaced only by a proven local grid (e.g. A B C | D E column-major):
+ * unique contiguous labels with real boxes on one page, every column contiguous top-down,
+ * columns left-to-right spelling A..N, each later-column label sharing a baseline with a first-column label,
+ * and every segment/continuation inside its own column. Anything else returns null (caller flags review). */
+function gridOrder(alternatives: ParsedAlternative[]): ParsedAlternative[] | null {
+  const page = alternatives[0]?.head.page;
+  if (!page || alternatives.some(a => a.head.page !== page)) return null;
+  const keys = alternatives.map(a => a.key).sort().join("");
+  if (keys !== "ABCDEFGHIJ".slice(0, alternatives.length)) return null;
+  const tol = Math.max(2, page.width * 0.01);
+  const columns: ParsedAlternative[][] = [];
+  for (const a of [...alternatives].sort((x, y) => x.head.bbox.x - y.head.bbox.x)) {
+    const col = columns.find(c => Math.abs(c[0]!.head.bbox.x - a.head.bbox.x) <= tol);
+    if (col) col.push(a); else columns.push([a]);
+  }
+  if (columns.length < 2) return null;
+  for (const col of columns) col.sort((x, y) => x.head.bbox.y - y.head.bbox.y);
+  const ordered = columns.flat();
+  if (ordered.map(a => a.key).join("") !== keys) return null;
+  for (const col of columns)
+    for (let i = 1; i < col.length; i++) if (col[i]!.head.bbox.y <= col[i - 1]!.head.bbox.y) return null;
+  const baseline = (a: ParsedAlternative) => a.head.bbox.y + a.head.bbox.height;
+  if (columns.slice(1).some(col => col.some(a => !columns[0]!.some(b => Math.abs(baseline(a) - baseline(b)) <= Math.max(1, b.head.bbox.height * 0.35)))))
+    return null;
+  const right = (c: number) => (columns[c + 1]?.[0]!.head.bbox.x ?? page.width + tol) - tol;
+  const columnOf = (line: PdfLine) => columns.findLastIndex(col => col[0]!.head.bbox.x - tol <= line.bbox.x);
+  for (const [c, col] of columns.entries())
+    if (col.some(a => a.head.bbox.x + a.head.bbox.width > right(c))) return null;
+  const conts = alternatives.flatMap(a => a.conts);
+  const result = ordered.map(a => ({ ...a, conts: [] as PdfLine[] }));
+  for (const line of conts) {
+    const c = columnOf(line);
+    if (line.page !== page || c < 0 || line.bbox.x + line.bbox.width > right(c)) return null;
+    const owner = result.filter(a => columns[c]!.some(b => b.key === a.key) && a.head.bbox.y < line.bbox.y).at(-1);
+    if (!owner) return null;
+    owner.conts.push(line);
+  }
+  return result;
+}
 function candidate(lines: PdfLine[], number: number): QuestionCandidate | null {
   let stem = "",
-    current: { key: string; text: string } | undefined;
-  const alternatives: { key: string; text: string }[] = [];
+    current: ParsedAlternative | undefined;
+  let alternatives: ParsedAlternative[] = [];
   const issues: QuestionCandidate["issues"] = [];
+  const fused = new Set<string>();
+  // Row split happens before marker corroboration; the question-marker line is never split.
+  lines = lines.flatMap((line, index) => {
+    if (index === 0) return [line];
+    const row = splitAlternativeRow(line);
+    if (row.ambiguous && !issues.includes("segmentation_incomplete")) issues.push("segmentation_incomplete");
+    for (const key of row.fused) fused.add(key);
+    return row.lines;
+  });
   if (lines.some(line=>line.ambiguousColumnPrelude)) issues.push("marker_profile_ambiguous");
   let firstCorroboratedA = -1;
   if (lines[0]?.bareMarkerProfile) {
@@ -43,19 +96,35 @@ function candidate(lines: PdfLine[], number: number): QuestionCandidate | null {
     let text = line.text;
     if (index === 0)
       text = text.replace(
-        /^(?:(?:QUEST[ÃA]O|QUESTION)\s*)?\d{1,3}\s*[{}:.)–-]*\s*/i,
+        /^(?:(?:QUEST[ÃA]O|QUESTION)\s*)?\d{1,3}\s*[{}:.,)–-]*\s*/i,
         "",
       );
-    const match = firstCorroboratedA>=0 && index<firstCorroboratedA ? null : text.match(alternative);
+    let match = firstCorroboratedA>=0 && index<firstCorroboratedA ? null : text.match(alternative);
+    // D-1807: "I." opens a roman statement block (I., II., III.) unless H already opened in this option region
+    // (reading order of a column-major grid may interleave, e.g. A F B G C H D I E J). Final contiguity still flags gaps.
+    if (match && (match[1] ?? match[2]!).toUpperCase() === "I" && !alternatives.some(a => a.key === "H"))
+      match = null;
     if (match) {
       current = {
         key: (match[1] ?? match[2]!).toUpperCase(),
         text: match[3] ?? "",
+        head: line,
+        conts: [],
       };
       alternatives.push(current);
-    } else if (current) current.text += ` ${text}`;
+    } else if (current) current.conts.push({ ...line, text });
     else stem += ` ${text}`;
   }
+  const keys = alternatives.map(a => a.key);
+  if (keys.some((key, i) => i > 0 && key <= keys[i - 1]!)) {
+    // Only a real label box can anchor a grid; never sort globally by letter.
+    const grid = alternatives.every(a => labelKey(a.head.items[0]?.text ?? "")) ? gridOrder(alternatives) : null;
+    if (grid) alternatives = grid;
+    else if (!issues.includes("segmentation_incomplete")) issues.push("segmentation_incomplete");
+  }
+  const present = [...new Set(keys)].sort().join("");
+  if ((alternatives.length && present !== "ABCDEFGHIJ".slice(0, present.length)) || [...fused].some(k => !keys.includes(k) && keys.includes(String.fromCharCode(k.charCodeAt(0) - 1))))
+    if (!issues.includes("segmentation_incomplete")) issues.push("segmentation_incomplete");
   // Cover instructions and reference tables with numbered lines are not objective questions.
   if (alternatives.length === 0) return null;
   stem = stem.trim();
@@ -110,7 +179,7 @@ function candidate(lines: PdfLine[], number: number): QuestionCandidate | null {
     originalNumber: number,
     parserMarkerEvidence: {originalNumber: number, provenance: provenance(lines[0]!)},
     stem,
-    alternatives: alternatives.map((a) => ({ ...a, text: a.text.trim() })),
+    alternatives: alternatives.map((a) => ({ key: a.key, text: [a.text, ...a.conts.map(l => l.text)].join(" ").trim() })),
     correctKey: null,
     annulled: false,
     provenance: origins,
@@ -154,10 +223,21 @@ export function parseExam(
     warnings.push(
       `margin_omitted:${omission.line.page.page}:${omission.reason}`,
     );
+  const detected = new Set(shared.pages.flatMap(page => examLines(page, markerHeight, profiles.get(page.page)).map(line => lineQuestionNumber(line, markerHeight, profiles.get(page.page)))));
+  const markerXs: number[] = [];
   for (const page of shared.pages)
     for (const line of examLines(page, markerHeight, profiles.get(page.page))) {
       const pageProfiles = profiles.get(page.page);
-      const next = lineQuestionNumber(line, markerHeight, pageProfiles);
+      let next = lineQuestionNumber(line, markerHeight, pageProfiles);
+      // D-1813: OCR may drop/replace the marker period ("63 “Com", "99, O"). Accept only the next expected number,
+      // never detected anywhere else, at an established marker x, after the previous question already has options.
+      // Only malformed punctuation the strict marker grammar cannot parse; a strict form rejected by a profile stays body.
+      const loose = next === null && number !== null && questionNumber(line.text) === null ? /^\s*(\d{1,3})[.,]?\s+\S/.exec(line.text) : null;
+      if (loose && Number(loose[1]) === number! + 1 && !detected.has(number! + 1) &&
+          markerXs.some(x => Math.abs(x - line.bbox.x) <= Math.max(2, page.width * 0.01)) &&
+          buffer.some((l, i) => i > 0 && alternative.test(l.text)))
+        next = number! + 1;
+      if (next !== null) markerXs.push(line.bbox.x);
       if(next!==null && /^\s*\d{1,3}\s*[{}]*\s*$/.test(line.text) && pageProfiles?.some(p=>p.bare)) line.bareMarkerProfile=true;
       // An unlabelled column prelude has uncertain attachment. Keep all text and flag review.
       if (line.columnStart && next===null && number!==null && buffer[0]?.bareMarkerProfile && !alternative.test(line.text)) line.ambiguousColumnPrelude=true;
@@ -167,9 +247,22 @@ export function parseExam(
       }
       if (number !== null) buffer.push(line);
     }
+  // D-1810: after the final question, text on a later page (no marker, no label) is never silently trusted as
+  // the last alternative's continuation: keep it, flag review. Earlier questions end at the next marker instead.
+  const finalLines = buffer, finalCandidate = number !== null ? candidates.length : -1;
   flush();
+  const lastHead = finalLines.findLastIndex((line, i) => i > 0 && alternative.test(line.text));
+  const trailing = candidates[finalCandidate];
+  if (trailing && lastHead > 0 && finalLines.slice(lastHead + 1).some(line => line.page.page > finalLines[lastHead]!.page.page)) {
+    if (!trailing.issues.includes("segmentation_incomplete")) trailing.issues.push("segmentation_incomplete");
+    warnings.push(`trailing_unattached_text:${trailing.originalNumber}` satisfies PdfStructuralWarning);
+  }
+  const headerTexts = [...new Set(filtered.omitted.filter(o => /[A-Za-zÀ-ÿ]{3}/.test(o.line.text)).map(o => o.line.text))];
   const seen = new Set<number>();
   for (const c of candidates) {
+    // D-1813: a proven running header left inside question text (other position) is flagged, never removed.
+    if (headerTexts.some(h => [c.stem, ...c.alternatives.map(a => a.text)].some(t => t.includes(h))) && !c.issues.includes("segmentation_incomplete"))
+      c.issues.push("segmentation_incomplete");
     if (shared.contexts.some(context => context.declaredNumbers.includes(c.originalNumber))) {
       c.ownStem = c.stem;
       c.issues.push("shared_context_unresolved");
@@ -179,8 +272,8 @@ export function parseExam(
       warnings.push(`duplicate_number:${c.originalNumber}`);
     }
     seen.add(c.originalNumber);
-    if (c.alternatives.length>10 || c.issues.includes('duplicate_alternative')) {
-      c.issues.push('segmentation_incomplete');
+    if (c.alternatives.length>10 || c.issues.includes('duplicate_alternative') || c.issues.includes('segmentation_incomplete')) {
+      if (!c.issues.includes('segmentation_incomplete')) c.issues.push('segmentation_incomplete');
       warnings.push(`segmentation_incomplete:${c.originalNumber}` satisfies PdfStructuralWarning);
     }
     if(c.issues.includes('marker_profile_ambiguous')) warnings.push(`marker_profile_ambiguous:${c.originalNumber}` satisfies PdfStructuralWarning);
@@ -194,6 +287,12 @@ export function parseExam(
       } else if (entry.annulled) {
         c.correctKey = null;
         c.confidence.answerKey = 0.8;
+      } else if (entry.key && c.alternatives.some((a) => a.key === entry.key) &&
+          ["segmentation_incomplete", "missing_alternatives", "duplicate_alternative"].some(i => c.issues.includes(i as ParserIssue))) {
+        // D-1813: an official letter over unproven alternatives is never presented as confirmed.
+        c.correctKey = null;
+        c.issues.push("ambiguous_answer_key");
+        c.confidence.answerKey = 0.2;
       } else if (entry.key && c.alternatives.some((a) => a.key === entry.key)) {
         c.correctKey = entry.key;
         c.confidence.answerKey = 0.95;

@@ -148,4 +148,5 @@ export type PdfStructuralWarning =
  | `expected_question_unmatched:${number}`
  | `duplicate_number:${number}`
  | `segmentation_incomplete:${number}`
- | `marker_profile_ambiguous:${number}`;
+ | `marker_profile_ambiguous:${number}`
+ | `trailing_unattached_text:${number}`;

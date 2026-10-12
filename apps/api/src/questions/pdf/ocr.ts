@@ -23,6 +23,39 @@ export interface OcrOptions {
   /** Controlled engineering QA only; production always requires the fixed best model. */
   expectedModelSha256?: string;
 }
+/** TSV word rows -> layout items. A TSV line keeps its OCR identity (baseline/column segmentation), but it is
+ * split into separate items at column-sized gaps between REAL word boxes (D-1813): tesseract often reports a grid
+ * row "B) ... D) ..." as one line. Gap evidence: wider than 1.5x the line's median word height and than 3x its
+ * median inter-word gap (or 3 word heights). Never a regex over joined text, never estimated glyph widths. */
+export function ocrTsvItems(tsv: string, scale: number): PdfLayoutItem[] {
+  const lineGroups = new Map<string, PdfLayoutItem[]>();
+  for (const row of tsv.split("\n").slice(1)) {
+    const fields = row.split("\t");
+    if (fields.length < 12 || fields[0] !== "5" || !fields[11]!.trim()) continue;
+    const [x = 0, y = 0, width = 0, height = 0, confidence = 0] = fields.slice(6, 11).map(Number);
+    if ([x, y, width, height, confidence].some((v) => !Number.isFinite(v))) continue;
+    const lineId = fields.slice(1, 5).join(":");
+    const group = lineGroups.get(lineId) ?? [];
+    group.push({ text: fields.slice(11).join("\t"), x: x * scale, y: y * scale, width: width * scale, height: height * scale });
+    lineGroups.set(lineId, group);
+  }
+  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
+  // Sorting glyph-top y independently can move a short word like “o” after its sentence: keep TSV line order.
+  return [...lineGroups.values()].flatMap((line) => {
+    const words = [...line].sort((a, b) => a.x - b.x);
+    const gaps = words.slice(1).map((w, i) => w.x - words[i]!.x - words[i]!.width);
+    const height = median(words.map((w) => w.height));
+    // Column gutter: never under 1.5 word heights; beyond 3 heights it is a gutter even when most gaps are gutters
+    // (a row of five short options has more gutters than word spaces).
+    const threshold = Math.max(1.5 * height, Math.min(3 * median(gaps), 3 * height));
+    const parts: PdfLayoutItem[][] = [[]];
+    words.forEach((w, i) => {
+      if (i > 0 && gaps[i - 1]! > threshold) parts.push([]);
+      parts.at(-1)!.push(w);
+    });
+    return parts.map((part) => ({ text: part.map((w) => w.text).join(" "), ...bounds(part) }));
+  });
+}
 /** Production workers need Poppler and Tesseract + the selected language data. No shell interpolation. */
 export function createTesseractOcr(options: OcrOptions = {}): OcrAdapter {
   const language = options.language ?? "por",
@@ -115,39 +148,7 @@ export function createTesseractOcr(options: OcrOptions = {}): OcrAdapter {
             env: { ...process.env, TESSDATA_PREFIX: modelPrefix },
           },
         );
-        const scale = 72 / dpi;
-        const lineGroups = new Map<string, PdfLayoutItem[]>();
-        for (const row of stdout.split("\n").slice(1)) {
-          const fields = row.split("\t");
-          if (fields.length < 12 || fields[0] !== "5" || !fields[11]!.trim())
-            continue;
-          const [x = 0, y = 0, width = 0, height = 0, confidence = 0] = fields
-            .slice(6, 11)
-            .map(Number);
-          if (
-            [x, y, width, height, confidence].some((v) => !Number.isFinite(v))
-          )
-            continue;
-          const lineId = fields.slice(1, 5).join(":");
-          const group = lineGroups.get(lineId) ?? [];
-          group.push({
-            text: fields.slice(11).join("\t"),
-            x: x * scale,
-            y: y * scale,
-            width: width * scale,
-            height: height * scale,
-          });
-          lineGroups.set(lineId, group);
-        }
-        // TSV line identities retain the baseline/column segmentation supplied by OCR.
-        // Sorting glyph-top y independently can move a short word like “o” after its sentence.
-        const items = [...lineGroups.values()].map((words) => ({
-          text: words
-            .sort((a, b) => a.x - b.x)
-            .map((w) => w.text)
-            .join(" "),
-          ...bounds(words),
-        }));
+        const items = ocrTsvItems(stdout, 72 / dpi);
         if (!items.length)
           throw new PdfParserError(
             "ocr_failed",
