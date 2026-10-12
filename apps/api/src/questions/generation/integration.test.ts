@@ -9,8 +9,9 @@ const objects=vi.hoisted(()=>new Map<string,Buffer>());
 vi.mock('../../storage/storage',()=>({putBytes:async(key:string,value:Buffer)=>{objects.set(key,value);},getBytes:async(key:string)=>{const value=objects.get(key);if(!value)throw Error('not found');return value;},headObject:async(key:string)=>objects.has(key)?{size:objects.get(key)!.length}:null}));
 import { GenerationReceipts,receiptStore,receiptHash,type ReceiptMeta,type ReceiptStore } from './receipts';
 import { reconcileQuestionGenerations } from './reconcile';
+import { assertF33TestDb } from '../test-db-guard';
 const url=process.env.DATABASE_URL;
-if(url){const target=new URL(url);if(!['127.0.0.1','localhost'].includes(target.hostname)||!['/remoa_f33_test_20261008','/f33_test'].includes(target.pathname))throw Error('isolated local f33_test required');}
+assertF33TestDb(url);
 describe.skipIf(!url)('durable generation receipts',()=>{
  let db:typeof Database.$client;const owner=randomUUID(),other=randomUUID(),board=randomUUID(),card=randomUUID();
  const meta=(requestKey:string=randomUUID()):ReceiptMeta=>({ownerId:owner,producer:'challenge_objective',requestKey,promptId:'synthetic',promptVersion:'test',boardId:board,boardVersion:1,context:{refs:[['c1',{id:card,type:'concept',title:'Synthetic evidence',front:'Synthetic evidence 0 1 2 3 4 5 6 7 8 9',back:'Synthetic evidence',payload:null,didactics:null}]]}});
@@ -90,6 +91,7 @@ describe.skipIf(!url)('durable generation receipts',()=>{
    const [session]=await db`INSERT INTO question_sessions(user_id,mode,config,idempotency_key) VALUES(${owner},'study','{}',${randomUUID()}) RETURNING id`;
    await db`INSERT INTO question_session_items(user_id,session_id,question_id,position,payload_public,reference_snapshot) VALUES(${owner},${session!.id},${question!.id},0,'{}','{}')`;
    await db`DELETE FROM boards WHERE id=${board}`;const [saved]=await db`SELECT board_id FROM question_bank WHERE id=${question!.id}`;expect(saved!.board_id).toBeNull();expect((await db`SELECT id FROM question_session_items WHERE session_id=${session!.id}`).length).toBe(1);expect((await db`SELECT id FROM question_generation_candidates WHERE question_id=${question!.id}`).length).toBeGreaterThan(0);
+   await db`INSERT INTO boards(id,user_id,title) VALUES(${board},${owner},'Synthetic board')`;await db`INSERT INTO cards(id,board_id,title) VALUES(${card},${board},'Synthetic evidence')`; // later tests share this fixture
  });
 
  it('legacy negative discovery rotates past LIMIT, survives restart and finds a plan created after HEAD',async()=>{
@@ -97,7 +99,7 @@ describe.skipIf(!url)('durable generation receipts',()=>{
    for(const [index,id]of ids.entries()){
      const record={version:1,runId:id,meta:meta('legacy-scan-'+id),call:{fn:'generate',index:0,repaired:false},completion:completion(1)};
      const key=`questions/generation/${owner}/${id}/receipt.json`,bytes=Buffer.from(JSON.stringify(record));objects.set(key,bytes);
-     await db`INSERT INTO question_generation_runs(id,user_id,producer,request_key,prompt_id,prompt_version,model,provider,payload_object_key,payload_hash,status,created_at) VALUES(${id},${owner},'challenge_objective',${'legacy-scan-'+id},'synthetic','test','test/model','openrouter',${key},${receiptHash(bytes)},'received',${new Date(new Date('2000-01-01T00:00:00.000Z').getTime()+index)})`;
+     await db`INSERT INTO question_generation_runs(id,user_id,producer,request_key,prompt_id,prompt_version,model,provider,payload_object_key,payload_hash,status,created_at) VALUES(${id},${owner},'challenge_objective',${'legacy-scan-'+id+':0:0'},'synthetic','test','test/model','openrouter',${key},${receiptHash(bytes)},'received',${new Date(new Date('2000-01-01T00:00:00.000Z').getTime()+index).toISOString()}::timestamptz)`;
      await db`INSERT INTO question_generation_candidates(run_id,ordinal,payload_object_key,state) VALUES(${id},0,${key},'pending')`;
    }
    // More runs than limit; negative markers rotate instead of permanently suppressing discovery.

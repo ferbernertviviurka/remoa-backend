@@ -1,15 +1,9 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { contentHash } from "./domain";
+import { assertF33TestDb } from "../test-db-guard";
 
 const url = process.env.DATABASE_URL;
-if (url) {
-  const target = new URL(url);
-  if (
-    !["localhost", "127.0.0.1"].includes(target.hostname) ||
-    target.pathname !== "/remoa_f33_test_20261008"
-  )
-    throw Error("local isolated f33_test required");
-}
+assertF33TestDb(url);
 
 describe.skipIf(!url)("CCR119 actual JSONB content hash roundtrip", () => {
   let db: typeof import("@remoa/db").db.$client;

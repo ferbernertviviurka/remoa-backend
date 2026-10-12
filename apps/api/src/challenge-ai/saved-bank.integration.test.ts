@@ -8,16 +8,10 @@ import {
   createChallengeAiService,
   dbIo,
 } from "../routes/challenge-ai";
+import { assertF33TestDb } from "../questions/test-db-guard";
 vi.mock("../cache", () => ({ invalidate: vi.fn(async () => {}) }));
 const url = process.env.DATABASE_URL;
-if (url) {
-  const p = new URL(url);
-  if (
-    !["localhost", "127.0.0.1"].includes(p.hostname) ||
-    p.pathname !== "/remoa_f33_test_20261008"
-  )
-    throw Error("Requires exact isolated local F33 test database");
-}
+assertF33TestDb(url);
 describe.skipIf(!url)(
   "CCR123 saved private discursive question SQL adapter",
   () => {

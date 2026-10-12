@@ -1,11 +1,11 @@
 /** FR32 loopback HTTP benchmark. Closed-loop 20 independent synthetic users, fixed 5 minutes. */
 import {randomUUID} from 'node:crypto';
-import {state,save} from './target.mjs';
-const seeded=state(),base='http://127.0.0.1:43133',duration=300000,warmup=30000;
+import {state,save,port} from './target.mjs';
+const seeded=state(),base=`http://127.0.0.1:${port}`,duration=300000,warmup=30000;
 const operations=['search','filter','wrong','recent','resume','answer','create'];
 const continuous=operations.filter(name=>name!=='create');
 const samples=Object.fromEntries(operations.map(name=>[name,[]]));const failures=[];
-const summary=values=>{const sorted=[...values].sort((a,b)=>a-b);const p=q=>sorted[Math.max(0,Math.ceil(sorted.length*q)-1)]??null;return {count:sorted.length,p50Ms:p(.5),p95Ms:p(.95),maxMs:sorted.at(-1)??null};};
+const summary=values=>{const sorted=[...values].sort((a,b)=>a-b);const p=q=>sorted[Math.max(0,Math.ceil(sorted.length*q)-1)]??null;return {count:sorted.length,p50Ms:p(.5),p95Ms:p(.95),p99Ms:p(.99),maxMs:sorted.at(-1)??null};};
 async function request(u,name,record){
  let path,method='GET',body;
  if(name==='search')path='/questions?scope=catalog&sourceId='+seeded.source+'&search=distinctive&limit=25';

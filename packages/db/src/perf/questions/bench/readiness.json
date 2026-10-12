@@ -1,0 +1,23 @@
+{
+  "synthetic": true,
+  "at": "2026-10-12T18:50:08.739Z",
+  "shape": {
+    "canonical": 50000,
+    "unique_canonical": 50000,
+    "null_canonical": 0,
+    "versions": 5000,
+    "attempts": 100000,
+    "trigger_mode": "origin",
+    "db_size": "425 MB"
+  },
+  "triggers": [
+    {
+      "tgname": "f33_validate_question",
+      "tgenabled": "O"
+    },
+    {
+      "tgname": "set_updated_at",
+      "tgenabled": "O"
+    }
+  ]
+}

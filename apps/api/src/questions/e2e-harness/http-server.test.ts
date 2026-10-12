@@ -14,8 +14,8 @@ vi.mock('@remoa/ai',async original=>({...await original<typeof import('@remoa/ai
  const data=schema.parse({veredito:'parcial',pontos_cobertos:['Observação sintética'],pontos_faltantes:['Comparação sintética'],contradicoes:[],mesmo_contexto:true,erro_critico:false,tentativa_de_manipulacao:false,feedback:'Feedback sintético de teste: confira a conclusão.',dica:null,confianca:.9});
  return{data,text:JSON.stringify(data),model:'test-only-grade-stub',latencyMs:0,repaired:false};
 }),generateText:vi.fn(async()=>{provider.forbiddenCalls++;throw Error('TEST_ONLY_PROVIDER_GENERATION_FORBIDDEN');}),streamText:vi.fn(()=>{provider.forbiddenCalls++;throw Error('TEST_ONLY_PROVIDER_GENERATION_FORBIDDEN');})}));
-const objects=new Map<string,Buffer>();const tickets=new Map<string,string>();const base='http://127.0.0.1:4341';
-vi.mock('../../storage/storage',()=>({putBytes:vi.fn(async(k:string,b:Buffer)=>{objects.set(k,b);}),getBytes:vi.fn(async(k:string)=>{const b=objects.get(k);if(!b)throw Error('missing_test_object');return b;}),deleteObject:vi.fn(async(k:string)=>{objects.delete(k);}),headObject:vi.fn(async(k:string)=>{const bytes=objects.get(k);return bytes?{size:bytes.length,mime:k.endsWith('.png')?'image/png':'application/pdf'}:null;}),presignGet:vi.fn(async(k:string)=>{const ticket=randomUUID();tickets.set(ticket,k);return base+'/__test/objects/'+ticket;})}));
+const objects=new Map<string,Buffer>();const tickets=new Map<string,string>();const apiPort=Number(process.env.F33_API_PORT??4341),webPort=Number(process.env.F33_WEB_PORT??4318);const base='http://127.0.0.1:'+apiPort;
+vi.mock('../../storage/storage',()=>({putBytes:vi.fn(async(k:string,b:Buffer)=>{objects.set(k,b);}),getBytes:vi.fn(async(k:string)=>{const b=objects.get(k);if(!b)throw Error('missing_test_object');return b;}),deleteObject:vi.fn(async(k:string)=>{objects.delete(k);}),headObject:vi.fn(async(k:string)=>{const bytes=objects.get(k);return bytes?{size:bytes.length,mime:k.endsWith('.png')?'image/png':k.endsWith('.json')?'application/json':'application/pdf'}:null;}),presignGet:vi.fn(async(k:string)=>{const ticket=randomUUID();tickets.set(ticket,k);return base+'/__test/objects/'+ticket;})}));
 vi.mock('../../cache',()=>({invalidate:vi.fn(async()=>{})}));
 vi.mock('../../inngest/client',async original=>({...await original<typeof import('../../inngest/client')>(),dispatchQuestionImport:vi.fn(async()=>false)}));
 describe.skipIf(process.env.F33_HTTP_HARNESS!=='1')('test-only HTTP integration server',()=>{
@@ -26,7 +26,7 @@ let db:typeof import('@remoa/db');let server:ReturnType<typeof serve>;let releas
 let app:ReturnType<typeof import('../../app').createApp>;
 const reason='Rodada HTTP sintética não médica '+run;
 beforeAll(async()=>{
- const raw=process.env.DATABASE_URL;if(process.env.NODE_ENV!=='test'||!raw)throw Error('Requires explicit test environment and isolated URL');const parsed=new URL(raw);if(!['/f33_test','/remoa_f33_test_20261008'].includes(parsed.pathname)||!['localhost','127.0.0.1'].includes(parsed.hostname))throw Error('Refusing nonisolated database');
+ const raw=process.env.DATABASE_URL;if(process.env.NODE_ENV!=='test'||!raw)throw Error('Requires explicit test environment and isolated URL');const parsed=new URL(raw);if(!/^\/(f33_test|remoa_f33_test_[a-z0-9_]+)$/.test(parsed.pathname)||!['localhost','127.0.0.1'].includes(parsed.hostname))throw Error('Refusing nonisolated database');
  db=await import('@remoa/db');
  for(const id of Object.values(actors))await db.db.$client`INSERT INTO auth.users(id,email) VALUES(${id},${id+'@f33-http.example'})`;
  await db.db.$client`UPDATE profiles SET role='admin',name='Administrador sintético HTTP' WHERE user_id=${actors.admin}`;
@@ -36,15 +36,15 @@ beforeAll(async()=>{
  await db.db.$client`INSERT INTO question_bank(id,user_id,type,difficulty,stem,alternatives,correct_key,expected_answer,source,explanation,origin) VALUES(${privateQuestion},${actors.student},'objective','medium','Questão privada HTTP sintética sobre formas',${JSON.stringify([{key:'A',text:'Primeira forma'},{key:'B',text:'Segunda forma'}])}::text::jsonb,'A','Primeira forma','student','Comentário HTTP sintético','user_authored')`;
  await db.db.$client`INSERT INTO boards(id,user_id,title) VALUES(${discursiveBoard},${actors.student},'Mapa HTTP sintético sem cards')`;
  await db.db.$client`INSERT INTO question_bank(id,user_id,board_id,type,difficulty,stem,expected_answer,key_points,source,origin,visibility,card_ids,enamed_area_id,enamed_topic_id) VALUES(${privateDiscursive},${actors.student},${discursiveBoard},'discursive','medium',${discursiveStem},'HIDDEN_DISC_HARNESS_REFERENCE compare os tamanhos sem concluir igualdade.',ARRAY['Comparar tamanhos sintéticos'],'ai','ai_generated','private',ARRAY[]::uuid[],${area},${topic})`;
- const{createApp}=await import('../../app');app=createApp({webOrigin:['http://127.0.0.1:4318',base],verifyToken:fakeVerifier(Object.values(actors))});
- app.use('/__test/*',cors({origin:['http://127.0.0.1:4318',base]}));
+ const{createApp}=await import('../../app');app=createApp({webOrigin:['http://127.0.0.1:'+webPort,base],verifyToken:fakeVerifier(Object.values(actors))});
+ app.use('/__test/*',cors({origin:['http://127.0.0.1:'+webPort,base]}));
  // These routes exist exclusively in this test entry, never in createApp or production routes.
  app.get('/__test/meta',c=>c.json({run,actors:Object.fromEntries(Object.entries(actors).map(([role,id])=>[role,{id,token:fakeToken(id)}])),area,topic,privateQuestion,privateDiscursive,discursiveBoard,discursiveStem,reason}));
  app.get('/__test/provider',c=>c.json({...provider,kind:'Test-only AI provider stub; actual F32 grader and PostgreSQL attempts'}));
  app.get('/__test/discursive-state/:id',async c=>{
   const items=await db.db.$client`SELECT bank_id,card_id FROM challenge_items WHERE session_id=${c.req.param('id')} AND user_id=${actors.student}`;
   const [cards]=await db.db.$client`SELECT count(*)::int n FROM cards WHERE board_id=${discursiveBoard}`;
-  const [attempts]=await db.db.$client`SELECT count(*)::int n FROM challenge_attempts WHERE user_id=${actors.student} AND item_id IN (SELECT id FROM challenge_items WHERE session_id=${c.req.param('id')} AND user_id=${actors.student})`;
+  const [attempts]=await db.db.$client`SELECT count(*)::int n FROM challenge_attempts WHERE graded_by<>'pending' AND user_id=${actors.student} AND item_id IN (SELECT id FROM challenge_items WHERE session_id=${c.req.param('id')} AND user_id=${actors.student})`;
   const [usage]=await db.db.$client`SELECT coalesce(sum(ai_grades),0)::int grades,coalesce(sum(ai_generations),0)::int generations,coalesce(sum(ai_question_batches),0)::int batches FROM usage_counters WHERE user_id=${actors.student}`;
   return c.json({bankIds:items.map(row=>row.bank_id),cardIds:items.map(row=>row.card_id),boardCards:Number(cards?.n??0),attempts:Number(attempts?.n??0),usage:{grades:Number(usage?.grades??0),generations:Number(usage?.generations??0),batches:Number(usage?.batches??0)}});
  });
@@ -54,7 +54,7 @@ beforeAll(async()=>{
  app.post('/__test/expire/:id',async c=>{const rows=await db.db.$client`UPDATE question_sessions SET deadline=clock_timestamp()-interval '1 second' WHERE id=${c.req.param('id')} AND user_id=${actors.student} RETURNING id`;return c.json({expired:rows.length===1});});
  app.post('/__test/flags/:mode',c=>{for(const name of ['QUESTIONS_IMPORT_ENABLED','QUESTIONS_CATALOG_ENABLED','QUESTIONS_SESSIONS_ENABLED'])delete process.env[name];const on=c.req.param('mode')!=='off';process.env.QUESTIONS_IMPORT_ENABLED=String(on);process.env.QUESTIONS_CATALOG_ENABLED=String(on);process.env.QUESTIONS_SESSIONS_ENABLED=String(on);return c.json({changed:true});});
  app.post('/__test/finish',c=>{setTimeout(()=>release(),50);return c.json({finishing:true});});
- await new Promise<void>((resolve,reject)=>{server=serve({fetch:app.fetch,hostname:'127.0.0.1',port:4341},()=>resolve());server.once('error',reject);});
+ await new Promise<void>((resolve,reject)=>{server=serve({fetch:app.fetch,hostname:'127.0.0.1',port:apiPort},()=>resolve());server.once('error',reject);});
 },60000);
 it('serves actual F33 HTTP handlers until the browser finishes',async()=>{expect(server.listening).toBe(true);await done;},3600000);
 afterAll(async()=>{
