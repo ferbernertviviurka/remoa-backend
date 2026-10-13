@@ -111,8 +111,28 @@ describe.skipIf(!process.env.DATABASE_URL)('FR-19 query budget per route', () =>
   case_('GET /v1/question-sessions/:id',()=>student,'GET',()=>'/v1/question-sessions/'+catalogSessionId);
   case_('PUT /v1/question-sessions/:id/items/:itemId/answer',()=>student,'PUT',()=>'/v1/question-sessions/'+catalogSessionId+'/items/'+catalogItemId+'/answer',()=>({selectedKey:'A',mutationId:uuid(),revision:0,elapsedMs:100}));
 
+  // F34 (CCR-147)
+  const params = { count: 1, mode: 'study', source: 'catalog' };
+  case_('GET /v1/questions/:id/attempt',()=>student,'GET',()=>'/v1/questions/'+catalogQuestionId+'/attempt');
+  case_('POST /v1/questions/:id/answer',()=>student,'POST',()=>'/v1/questions/'+catalogQuestionId+'/answer',()=>({selectedKey:'A',mutationId:uuid(),elapsedMs:100}));
+  case_('GET /v1/exam-templates',()=>student,'GET',()=>'/v1/exam-templates');
+  case_('POST /v1/exam-templates',()=>student,'POST',()=>'/v1/exam-templates',()=>({name:'Budget '+uuid().slice(0,8),params}));
+  it('DELETE /v1/exam-templates/:id <= budget',async()=>{
+    const made=await measure('POST /v1/exam-templates',student,'POST','/v1/exam-templates',{name:'Budget '+uuid().slice(0,8),params});
+    const {n}=await measure('DELETE /v1/exam-templates/:id',student,'DELETE','/v1/exam-templates/'+(made.json as {data:{id:string}}).data.id);
+    expect(n).toBeLessThanOrEqual(QUERY_BUDGETS['DELETE /v1/exam-templates/:id']!);
+  });
+  case_('POST /v1/exam-builder/availability',()=>student,'POST',()=>'/v1/exam-builder/availability',()=>({}));
+  case_('POST /v1/exam-builder/preview',()=>student,'POST',()=>'/v1/exam-builder/preview',()=>({params}));
+  it('POST /v1/exam-builder/swap <= budget (409 no_replacement still runs the full lookup)',async()=>{
+    const res=await call(student,'POST','/v1/exam-builder/swap',{params,seed:'a'.repeat(32),questionId:catalogQuestionId,currentIds:[catalogQuestionId]},{});
+    expect([200,409]).toContain(res.status);const n=Number(res.headers.get('x-remoa-queries'));counts['POST /v1/exam-builder/swap']=n;
+    expect(n).toBeLessThanOrEqual(QUERY_BUDGETS['POST /v1/exam-builder/swap']!);
+  });
+  case_('POST /v1/exam-builder/revalidate',()=>student,'POST',()=>'/v1/exam-builder/revalidate',()=>({params,questionIds:[catalogQuestionId]}));
+
   it('every budget in QUERY_BUDGETS has a case here', () => {
-    const covered = new Set(['GET /v1/home', 'GET /v1/boards', 'GET /v1/review/hub', 'GET /v1/review/queue', 'GET /v1/boards/:id', 'POST /v1/challenge/rate', 'GET /v1/calendar/events', 'GET /v1/notifications', 'GET /v1/admin/overview','GET /v1/questions','GET /v1/questions/:id','GET /v1/exams','GET /v1/question-institutions','GET /v1/question-sessions','POST /v1/question-sessions','GET /v1/question-sessions/:id','PUT /v1/question-sessions/:id/items/:itemId/answer']);
+    const covered = new Set(['GET /v1/home', 'GET /v1/boards', 'GET /v1/review/hub', 'GET /v1/review/queue', 'GET /v1/boards/:id', 'POST /v1/challenge/rate', 'GET /v1/calendar/events', 'GET /v1/notifications', 'GET /v1/admin/overview','GET /v1/questions','GET /v1/questions/:id','GET /v1/exams','GET /v1/question-institutions','GET /v1/question-sessions','POST /v1/question-sessions','GET /v1/question-sessions/:id','PUT /v1/question-sessions/:id/items/:itemId/answer','GET /v1/questions/:id/attempt','POST /v1/questions/:id/answer','GET /v1/exam-templates','POST /v1/exam-templates','DELETE /v1/exam-templates/:id','POST /v1/exam-builder/availability','POST /v1/exam-builder/preview','POST /v1/exam-builder/swap','POST /v1/exam-builder/revalidate']);
     expect(Object.keys(QUERY_BUDGETS).sort()).toEqual([...covered].sort());
   });
 });

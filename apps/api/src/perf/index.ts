@@ -35,6 +35,16 @@ export const QUERY_BUDGETS: Record<string, number> = {
   'POST /v1/question-sessions': 29, // real write-session auth + filtered selection23; full-paper validation adds two statements
   'GET /v1/question-sessions/:id': 16, // normal10; expiration reads items + freezes report
   'PUT /v1/question-sessions/:id/items/:itemId/answer': 32, // normal26; expiration adds two statements
+  // F34 (measured by perf/budget.test.ts on the isolated DB, harness counts the session check; facets is counted under 'GET /v1/questions/:id' above, same 4)
+  'GET /v1/questions/:id/attempt': 10, // 7 without an attempt row; 10 with the gated reference
+  'POST /v1/questions/:id/answer': 42, // first answer: access check + internal 1-item session snapshot; a retry is 23
+  'GET /v1/exam-templates': 5,
+  'POST /v1/exam-templates': 12, // advisory lock + plan + count + insert
+  'DELETE /v1/exam-templates/:id': 5,
+  'POST /v1/exam-builder/availability': 5,
+  'POST /v1/exam-builder/preview': 8,
+  'POST /v1/exam-builder/swap': 8,
+  'POST /v1/exam-builder/revalidate': 5,
 };
 
 // On globalThis: vitest/tsx reload this module while drizzle-orm (patched once) stays cached; both must see the same store.

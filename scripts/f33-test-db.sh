@@ -31,7 +31,7 @@ fi
 # Stub-only (marker comment): add late columns/tables idempotently. A real Supabase auth schema has no marker and is never altered.
 if [[ "$(psql "$URL" -Atc "select obj_description('auth'::regnamespace,'pg_namespace')")" == f33-test-stub ]]; then
 psql "$URL" -v ON_ERROR_STOP=1 -q <<'SQL'
-alter table auth.users add column if not exists email_confirmed_at timestamptz, add column if not exists banned_until timestamptz, add column if not exists deleted_at timestamptz;
+alter table auth.users add column if not exists email_confirmed_at timestamptz, add column if not exists banned_until timestamptz, add column if not exists deleted_at timestamptz, add column if not exists instance_id uuid, add column if not exists aud varchar(255), add column if not exists role varchar(255);
 create table if not exists auth.sessions (id uuid primary key, user_id uuid not null references auth.users(id) on delete cascade,
   created_at timestamptz default now(), updated_at timestamptz default now(), not_after timestamptz, refreshed_at timestamp, user_agent text, ip inet);
 SQL

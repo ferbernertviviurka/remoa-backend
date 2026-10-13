@@ -141,7 +141,7 @@ describe.skipIf(!url)('F34 BE-1 student bank', () => {
     // later correct attempt wins; progress follows
     const ok = await request(`/questions/${target}/answer`, 'POST', { selectedKey: 'E', mutationId: randomUUID(), elapsedMs: 900 }); expect(ok.body.data.result).toBe('correct');
     const wrong = await request(`/questions/${ids[4]}/answer`, 'POST', { selectedKey: 'B', mutationId: randomUUID(), elapsedMs: 900 }); expect(wrong.body.data.result).toBe('incorrect');
-    const list = await request(q('&limit=50')); const prog = (id: string) => list.body.data.items.find((i: Q) => i.id === id)!.progress;
+    const all = (await pages('')).flat(); const prog = (id: string) => all.find((i: Q) => i.id === id)!.progress;
     expect([prog(target), prog(ids[4]!), prog(ids[5]!)]).toEqual(['correct', 'wrong', 'unseen']);
     expect((await request(q('&limit=50'), 'GET', undefined, other)).body.data.items.every((i: Q) => i.progress === 'unseen')).toBe(true);
     expect((await request(q('&state=wrong&limit=50'))).body.data.total).toBe(1);
