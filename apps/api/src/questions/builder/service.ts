@@ -49,10 +49,13 @@ const toItem = (r: Row, pinned: boolean) => ({
   questionId: r.id, canonicalId: r.canonical_id, version: r.version, areaId: r.enamed_area_id ?? null, topicId: r.enamed_topic_id ?? null, origin: r.origin,
   difficulty: r.difficulty, stemPreview: stemPreview(r.stem), sourceLabel: r.source_label ?? null, validation: validationOf(r), pinned,
 });
-async function areaCounts(tx: Tx, userId: string, f: ExamBuilderFilter, excluded: readonly string[] = [], pinned: readonly string[] = []) {
-  const rows = await asServer<Row>(tx, sql`SELECT q.enamed_area_id area_id,count(DISTINCT ${canon})::int available,
-    count(DISTINCT ${canon}) FILTER (WHERE q.id=ANY(${ids(pinned)}))::int pinned FROM question_bank q
-    WHERE ${filterWhere(userId, f)} AND ${notIn(excluded)} GROUP BY 1 ORDER BY 1 NULLS LAST LIMIT 51`);
+/** Distinct canonical per area = number of (area, canonical) groups: hash aggregates, no sort of every eligible row. */
+const areaCountsSQL = (rows: SQL) => sql`SELECT area area_id,count(*)::int available,count(*) FILTER (WHERE p)::int pinned
+    FROM (SELECT area,canon,bool_or(pinned) p FROM ${rows} GROUP BY 1,2) x GROUP BY 1 ORDER BY 1 NULLS LAST LIMIT 51`;
+/** The eligible rows of a filter, narrow (no stem, no key): id, canonical, area, pinned, version. */
+const eligibleRows = (userId: string, f: ExamBuilderFilter, excluded: readonly string[], pinned: readonly string[]) =>
+  sql`SELECT q.id,${canon} canon,q.enamed_area_id area,q.id=ANY(${ids(pinned)}) pinned,q.version FROM question_bank q WHERE ${filterWhere(userId, f)} AND ${notIn(excluded)}`;
+function toAreas(f: ExamBuilderFilter, rows: Row[]) {
   const by = new Map(rows.map((r) => [(r.area_id as string | null) ?? null, r]));
   // Chosen areas always appear (0 = shortfall per area); otherwise every area with something available.
   return (f.areaIds.length ? f.areaIds : [...by.keys()]).map((areaId): AllocationArea & { pinned: number } =>
@@ -74,24 +77,36 @@ export async function recheck(tx: Tx, userId: string, source: Source, questionId
 
 export const examBuilder = {
   async availability(userId: string, f: ExamBuilderFilter) {
-    const areas = await run(userId, (tx) => areaCounts(tx, userId, f));
+    const rows = await run(userId, (tx) => asServer<Row>(tx, areaCountsSQL(sql`(${eligibleRows(userId, f, [], [])}) e`)));
+    const areas = toAreas(f, rows);
     return examAvailabilitySchema.parse({ total: areas.reduce((s, a) => s + a.available, 0), areas: areas.map(({ areaId, available }) => ({ areaId, available })) });
   },
+  /**
+   * G27 perf: ONE scan of the eligible set gives the per-area counts, the pinned rows and, per area, the first `count` candidates in
+   * md5(seed||':'||canonical) order (distinct canonical: a pinned version wins, then the newest). The allocation is computed here and
+   * the chosen ids are hydrated by primary key. Same output as the two-scan version for the same seed (equivalence.integration.test).
+   */
   async preview(userId: string, input: { params: ExamBuilderParams; seed?: string; pinnedIds: string[]; excludedIds: string[] }) {
     const { params, pinnedIds, excludedIds } = input, seed = input.seed ?? randomBytes(16).toString('hex');
     return run(userId, async (tx) => {
-      const areas = await areaCounts(tx, userId, params, excludedIds, pinnedIds);
+      const [scan] = await asServer<{ counts: Row[] | null; candidates: Row[] | null }>(tx, sql`WITH e AS MATERIALIZED (${eligibleRows(userId, params, excludedIds, pinnedIds)}),
+        d AS MATERIALIZED (SELECT DISTINCT ON (canon) id,canon,area,pinned,md5(${seed}||':'||canon::text) rnk FROM e ORDER BY canon,pinned DESC,version DESC),
+        -- top-N per area (bounded heap sort), never a full sort of the eligible set; rn = rank inside (area, not pinned)
+        r AS (SELECT t.id,t.canon,t.area,false pinned,row_number() OVER (PARTITION BY t.area ORDER BY t.rnk,t.canon) rn FROM (SELECT DISTINCT area FROM d) a
+          CROSS JOIN LATERAL (SELECT * FROM d WHERE d.area IS NOT DISTINCT FROM a.area AND NOT d.pinned ORDER BY d.rnk,d.canon LIMIT ${params.count}) t
+          UNION ALL SELECT id,canon,area,true,0 FROM d WHERE pinned)
+        SELECT (SELECT jsonb_agg(to_jsonb(c)) FROM (${areaCountsSQL(sql`e`)}) c) counts,
+          (SELECT jsonb_agg(jsonb_build_object('id',id,'canon',canon,'area',area,'pinned',pinned,'rn',rn)) FROM r) candidates`);
+      const areas = toAreas(params, scan?.counts ?? []);
       let allocation;
       try { allocation = allocateExam(areas, params.count, params.distribution); } catch { throw validation('pinned_exceeds_count'); }
-      const needs = allocation.rows.map((r) => ({ area: r.areaId, need: r.allocated - (areas.find((a) => a.areaId === r.areaId)?.pinned ?? 0) }));
+      const needs = new Map(allocation.rows.map((r) => [r.areaId, r.allocated - (areas.find((a) => a.areaId === r.areaId)?.pinned ?? 0)]));
       // Pinned (still eligible) stay; the rest of each area comes in md5(seed||':'||canonical_id) order (D-1825). Never completes a shortfall.
-      const rows = await asServer<Row>(tx, sql`WITH e AS (SELECT DISTINCT ON (${canon}) q.id,${canon} canon,q.enamed_area_id area,q.id=ANY(${ids(pinnedIds)}) pinned
-        FROM question_bank q WHERE ${filterWhere(userId, params)} AND ${notIn(excludedIds)} ORDER BY ${canon},(q.id=ANY(${ids(pinnedIds)})) DESC,q.version DESC),
-        r AS (SELECT e.*,md5(${seed}||':'||e.canon::text) AS rnk,row_number() OVER (PARTITION BY e.area,e.pinned ORDER BY md5(${seed}||':'||e.canon::text),e.canon) rn FROM e)
-        SELECT ${itemColumns},r.pinned FROM r JOIN jsonb_to_recordset(${JSON.stringify(needs)}::jsonb) n(area uuid,need int) ON n.area IS NOT DISTINCT FROM r.area
-        JOIN question_bank q ON q.id=r.id LEFT JOIN question_sources src ON src.id=q.source_id
-        WHERE r.pinned OR r.rn<=n.need
-        ORDER BY ${params.shuffle ? sql`md5(${seed}||':order:'||r.canon::text)` : sql`r.area NULLS LAST,r.rnk`},r.canon`);
+      const chosen = (scan?.candidates ?? []).filter((c) => { const need = needs.get((c.area as string | null) ?? null); return need !== undefined && (c.pinned === true || Number(c.rn) <= need); })
+        .map(({ id, canon, area, pinned }) => ({ id, canon, area, pinned }));
+      const rows = !chosen.length ? [] : await asServer<Row>(tx, sql`SELECT ${itemColumns},x.pinned FROM jsonb_to_recordset(${JSON.stringify(chosen)}::jsonb) x(id uuid,canon uuid,area uuid,pinned boolean)
+        JOIN question_bank q ON q.id=x.id LEFT JOIN question_sources src ON src.id=q.source_id WHERE ${readable(userId)}
+        ORDER BY ${params.shuffle ? sql`md5(${seed}||':order:'||x.canon::text)` : sql`x.area NULLS LAST,md5(${seed}||':'||x.canon::text)`},x.canon`);
       return examPreviewSchema.parse({ seed, allocation, items: rows.map((r) => toItem(r, r.pinned === true)) });
     });
   },

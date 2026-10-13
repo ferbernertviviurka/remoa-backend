@@ -14,7 +14,7 @@ describe.skipIf(process.env.G27_HTTP_HARNESS!=='1')('G27 QA HTTP server',()=>{
  const pub:string[]=[],drafts:string[]=[],extra:string[]=[];let privA:string,privB:string,privAnotherA:string;
  const diffs=['easy','medium','hard'] as const;const keys=['A','B','C','D','E'];
  const alt=JSON.stringify(keys.map(k=>({key:k,text:'Alternativa sintética '+k})));
- let db:ReturnType<typeof import('@remoa/db')['db']['$client']>;let server:ReturnType<typeof serve>;let release:()=>void;const done=new Promise<void>(r=>{release=r;});
+ let db:typeof import('@remoa/db')['db']['$client'];let server:ReturnType<typeof serve>;let release:()=>void;const done=new Promise<void>(r=>{release=r;});
  const H='a'.repeat(64);
  async function publish(id:string,institutional:boolean){
   if(institutional){

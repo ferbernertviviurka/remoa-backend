@@ -13,7 +13,7 @@ import { isProduction, perfEnv } from '@remoa/config';
  * `db` = sum of every query's time; `dbWall` = time with at least one query in flight (P-449: Promise.all inside a transaction
  * pipelines on one connection, so each query also waits for its siblings and the sum can exceed the request's total).
  */
-export type PerfStore = { route: string; log: Logger; queries: number; db: number; dbWall: number; inflight: number; wallT0: number; ext: number; extNames: Set<string>; marks: Map<string, number> };
+export type PerfStore = { route: string; budget?: string; log: Logger; queries: number; db: number; dbWall: number; inflight: number; wallT0: number; ext: number; extNames: Set<string>; marks: Map<string, number> };
 
 /** FR-19: query budget per route (`METHOD /path` as Hono matches it). The one place; the dev warning and the bench read it. */
 export const QUERY_BUDGETS: Record<string, number> = {
@@ -33,11 +33,13 @@ export const QUERY_BUDGETS: Record<string, number> = {
   'GET /v1/question-institutions': 4,
   'GET /v1/question-sessions': 10, // normal4; bulk expiration adds two statements, not one per session
   'POST /v1/question-sessions': 29, // real write-session auth + filtered selection23; full-paper validation adds two statements
+  'POST /v1/question-sessions#builder': 32, // G27 builder start (budgetAs): plain 23 + owner lock, active-builder check, recheck (+3 with a template)
+  'POST /v1/question-sessions/:id/finish': 17, // G27: lock + items + freeze report + items/visibility gate
   'GET /v1/question-sessions/:id': 16, // normal10; expiration reads items + freezes report
   'PUT /v1/question-sessions/:id/items/:itemId/answer': 32, // normal26; expiration adds two statements
   // F34 (measured by perf/budget.test.ts on the isolated DB, harness counts the session check; facets is counted under 'GET /v1/questions/:id' above, same 4)
   'GET /v1/questions/:id/attempt': 10, // 7 without an attempt row; 10 with the gated reference
-  'POST /v1/questions/:id/answer': 42, // first answer: access check + internal 1-item session snapshot; a retry is 23
+  'POST /v1/questions/:id/answer': 8, // G27: read + one insert (session/item/attempt + gate); a retry is also 8, a lost concurrent race 11
   'GET /v1/exam-templates': 5,
   'POST /v1/exam-templates': 12, // advisory lock + plan + count + insert
   'DELETE /v1/exam-templates/:id': 5,
@@ -103,6 +105,12 @@ patch(PostgresJsPreparedQuery.prototype, 'execute', preparedSql);
 patch(PostgresJsPreparedQuery.prototype, 'all', preparedSql);
 patch(PostgresJsSession.prototype, 'query', firstArg);
 patch(PostgresJsSession.prototype, 'queryObjects', firstArg);
+
+/** Counts this request against another QUERY_BUDGETS key (a variant of the route, e.g. `POST /v1/question-sessions#builder`). */
+export function budgetAs(key: string) {
+  const s = als.getStore();
+  if (s) s.budget = key;
+}
 
 /** Adds already-measured external time (e.g. Stripe's `response` event). */
 export function addExternal(name: string, dur: number) {
@@ -173,6 +181,6 @@ export const perfMiddleware = createMiddleware<{ Variables: { log: Logger } }>(a
     c.res.headers.set('server-timing', value);
     c.res.headers.set('x-remoa-queries', String(s.queries));
   }
-  const budget = QUERY_BUDGETS[route];
-  if (budget !== undefined && s.queries > budget && !isProduction()) s.log.warn('query budget exceeded', { route, queries: s.queries, budget });
+  const key = s.budget ?? route, budget = QUERY_BUDGETS[key];
+  if (budget !== undefined && s.queries > budget && !isProduction()) s.log.warn('query budget exceeded', { route: key, queries: s.queries, budget });
 });

@@ -35,9 +35,8 @@ export const readable = (userId: string, historical = false): SQL => sql`(
    SELECT 1 FROM question_sources src WHERE src.id = q.source_id AND src.rights_status = 'authorized' AND (src.rights_expires_at IS NULL OR src.rights_expires_at > now())))
 )`;
 /** A published replacement permanently supersedes selection, even if later withdrawn. Drafts never hide the published version. */
-export const latest = sql`NOT EXISTS (SELECT 1 FROM question_bank newer WHERE coalesce(newer.canonical_id,newer.id) = coalesce(q.canonical_id,q.id)
- AND (newer.version > q.version OR (newer.version = q.version AND (newer.created_at,newer.id) > (q.created_at,q.id)))
- AND ((q.visibility='private' AND newer.user_id=q.user_id) OR (q.visibility='public' AND newer.visibility='public' AND (newer.published_at IS NOT NULL OR newer.catalog_status='published'))))`;
+/** CCR-149 (0056): `question_superseded` holds every row a newer version supersedes (server-maintained by statement triggers). */
+export const latest = sql`NOT EXISTS (SELECT 1 FROM question_superseded sup WHERE sup.question_id = q.id)`;
 /** Historical warnings consider usable replacements, never an unapproved public draft. */
 export const obsoleteSuccessor=sql`EXISTS(SELECT 1 FROM question_bank n WHERE coalesce(n.canonical_id,n.id)=coalesce(q.canonical_id,q.id) AND n.version>q.version AND
  ((q.visibility='private' AND n.user_id=q.user_id AND n.visibility='private' AND n.status<>'archived' AND n.catalog_status NOT IN('rejected','withdrawn') AND n.availability IN('active','annulled')) OR
@@ -98,7 +97,7 @@ export async function toQuestion(row: Row): Promise<QuestionPublic> {
     sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, validation: validationOf(row), assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
     boardId: row.board_id ?? null, boardTitle: row.board_title ?? null, userState: { favorite: row.favorite ?? false, doubtful: row.doubtful ?? false, annotation: row.annotation ?? '' }, createdAt: row.created_at });
 }
-const many = <T>(plural: readonly T[] | undefined, single?: T): T[] => [...new Set([...(plural ?? []), ...(single === undefined ? [] : [single])])];
+export const many = <T>(plural: readonly T[] | undefined, single?: T): T[] => [...new Set([...(plural ?? []), ...(single === undefined ? [] : [single])])];
 /** F34 FR-7: OR inside a group, AND across groups. The singular field ORs into its plural group. */
 export type FilterGroup = 'area' | 'topic' | 'institution' | 'year' | 'difficulty';
 /** Occurrence (paper) conditions of the year/institution/exam filters; they must hold on the same paper row. */

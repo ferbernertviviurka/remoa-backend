@@ -1,23 +1,19 @@
 /**
  * F34 FR-15/FR-16 (D-1822): answer from the preview drawer, outside a session the student sees. The server corrects through an internal
- * 1-item study session (`config.drawer`, finalized right away, BE-2's answerInDrawer; kept out of history). Idempotent by mutationId.
+ * 1-item study session (`config.drawer`, stored finished, BE-2's answerInDrawer; kept out of history). Idempotent by mutationId.
  * The key, explanation and verdict leave only here, after the attempt is stored.
  */
 import { sql } from 'drizzle-orm';
-import { questionDrawerAttemptSchema, questionReferenceAfterAnswerSchema, type QuestionDrawerAnswerInput } from '@remoa/contracts';
+import { questionDrawerAttemptSchema, questionReferenceAfterAnswerSchema } from '@remoa/contracts';
 import { asServer, run } from '../../db';
 import { answerInDrawer } from '../sessions/service';
 import { answerOutcome } from '../sessions/recalculation';
-import { conflict, getQuestionRow, lastAttemptsSQL, missing, obsoleteSuccessor, readable, type Row } from './service';
+import { getQuestionRow, lastAttemptsSQL, missing, obsoleteSuccessor, readable, type Row } from './service';
 
 const object = (v: unknown): Row => (typeof v === 'object' && v !== null ? (v as Row) : {});
 
-export async function drawerAnswer(userId: string, id: string, input: QuestionDrawerAnswerInput) {
-  const q = await run(userId, (tx) => getQuestionRow(tx, userId, id));
-  if (q.type !== 'objective') throw conflict('discursive_use_challenge');
-  if (q.availability !== 'active') throw conflict('question_not_answerable');
-  return answerInDrawer(userId, id, input);
-}
+/** Eligibility (404 / discursive_use_challenge / question_not_answerable), idempotency and the reference gate live in answerInDrawer. */
+export const drawerAnswer = answerInDrawer;
 
 /** GET /:id/attempt: the caller's latest counted attempt on this question (any version of the canonical), or null. Reference gated by current access. */
 export async function drawerLastAttempt(userId: string, id: string) {

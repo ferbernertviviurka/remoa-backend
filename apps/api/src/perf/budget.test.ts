@@ -129,10 +129,20 @@ describe.skipIf(!process.env.DATABASE_URL)('FR-19 query budget per route', () =>
     expect([200,409]).toContain(res.status);const n=Number(res.headers.get('x-remoa-queries'));counts['POST /v1/exam-builder/swap']=n;
     expect(n).toBeLessThanOrEqual(QUERY_BUDGETS['POST /v1/exam-builder/swap']!);
   });
+  it('POST /v1/question-sessions#builder and POST /v1/question-sessions/:id/finish <= budget',async()=>{
+    const aiId=uuid();
+    await dbm.db.execute(sql`INSERT INTO question_bank(id,user_id,type,difficulty,stem,alternatives,correct_key,expected_answer,source,origin)
+      VALUES(${aiId},${student},'objective','medium','Synthetic budget AI question',${JSON.stringify([{key:'A',text:'Synthetic A'},{key:'B',text:'Synthetic B'}])}::text::jsonb,'A','Synthetic A','student','ai_generated')`);
+    const builder={seed:'b'.repeat(32),params:{count:1,mode:'study',source:'ai'},templateId:null};
+    const {n,json}=await measure('POST /v1/question-sessions#builder',student,'POST','/v1/question-sessions',{mode:'study',questionIds:[aiId],count:1,builder},{'idempotency-key':uuid()});
+    expect(n).toBeLessThanOrEqual(QUERY_BUDGETS['POST /v1/question-sessions#builder']!);
+    const fin=await measure('POST /v1/question-sessions/:id/finish',student,'POST','/v1/question-sessions/'+json.data.id+'/finish',{});
+    expect(fin.n).toBeLessThanOrEqual(QUERY_BUDGETS['POST /v1/question-sessions/:id/finish']!);
+  });
   case_('POST /v1/exam-builder/revalidate',()=>student,'POST',()=>'/v1/exam-builder/revalidate',()=>({params,questionIds:[catalogQuestionId]}));
 
   it('every budget in QUERY_BUDGETS has a case here', () => {
-    const covered = new Set(['GET /v1/home', 'GET /v1/boards', 'GET /v1/review/hub', 'GET /v1/review/queue', 'GET /v1/boards/:id', 'POST /v1/challenge/rate', 'GET /v1/calendar/events', 'GET /v1/notifications', 'GET /v1/admin/overview','GET /v1/questions','GET /v1/questions/:id','GET /v1/exams','GET /v1/question-institutions','GET /v1/question-sessions','POST /v1/question-sessions','GET /v1/question-sessions/:id','PUT /v1/question-sessions/:id/items/:itemId/answer','GET /v1/questions/:id/attempt','POST /v1/questions/:id/answer','GET /v1/exam-templates','POST /v1/exam-templates','DELETE /v1/exam-templates/:id','POST /v1/exam-builder/availability','POST /v1/exam-builder/preview','POST /v1/exam-builder/swap','POST /v1/exam-builder/revalidate']);
+    const covered = new Set(['GET /v1/home', 'GET /v1/boards', 'GET /v1/review/hub', 'GET /v1/review/queue', 'GET /v1/boards/:id', 'POST /v1/challenge/rate', 'GET /v1/calendar/events', 'GET /v1/notifications', 'GET /v1/admin/overview','GET /v1/questions','GET /v1/questions/:id','GET /v1/exams','GET /v1/question-institutions','GET /v1/question-sessions','POST /v1/question-sessions','POST /v1/question-sessions#builder','POST /v1/question-sessions/:id/finish','GET /v1/question-sessions/:id','PUT /v1/question-sessions/:id/items/:itemId/answer','GET /v1/questions/:id/attempt','POST /v1/questions/:id/answer','GET /v1/exam-templates','POST /v1/exam-templates','DELETE /v1/exam-templates/:id','POST /v1/exam-builder/availability','POST /v1/exam-builder/preview','POST /v1/exam-builder/swap','POST /v1/exam-builder/revalidate']);
     expect(Object.keys(QUERY_BUDGETS).sort()).toEqual([...covered].sort());
   });
 });

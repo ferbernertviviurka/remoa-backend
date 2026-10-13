@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
 import {
@@ -10,8 +10,8 @@ import { Abort, asServer, pgArray, run } from '../../db';
 import { recheck } from '../builder/service';
 import { questionFeatures } from '../runtime/config';
 import { invalidate } from '../../cache';
-import { withTiming } from '../../perf';
-import { applyOccurrence, catalogJoins, catalogWhere, conflict, missing, obsoleteSuccessor, paperAccess, publicAssets, publicColumns, readable, signature, toQuestion, validation, type Row } from '../catalog/service';
+import { budgetAs, withTiming } from '../../perf';
+import { applyOccurrence, catalogJoins, catalogWhere, conflict, latest, missing, obsoleteSuccessor, paperAccess, publicAssets, publicColumns, readable, signature, toQuestion, validation, type Row } from '../catalog/service';
 
 import { answerOutcome } from './recalculation';
 const object = (value: unknown): Row => typeof value === 'object' && value !== null ? value as Row : {};
@@ -156,30 +156,61 @@ async function createRow(tx:Tx,userId:string,config:QuestionSessionConfig,key:st
   return session!;
 }
 /**
- * F34 FR-15/16 (D-1822): drawer answer = internal 1-item study session (config.drawer), answered and finalized in one transaction,
- * idempotent by mutationId, outside the history. The reference comes only after the attempt is stored, through the access gate.
+ * F34 FR-15/16 (D-1822): drawer answer = internal 1-item study session (config.drawer), stored already answered and finished,
+ * idempotent by mutationId (= the session's idempotency key), outside the history. G27 perf: 2 statements on the first answer
+ * (read + one insert of session/item/answer with the access gate), 2 on a retry; the key leaves only after the attempt is stored.
  */
 export async function answerInDrawer(userId:string,questionId:string,input:QuestionDrawerAnswerInput):Promise<QuestionDrawerAttempt>{
+  const config:QuestionSessionConfig={mode:'study',questionIds:[questionId],count:1,timerSec:null,shuffle:false,drawer:true};
+  const cfg=JSON.stringify(config),key=input.mutationId;
+  // Gate + attempt: current access to the saved reference (historical access + obsolescence), same rule as `reference()`.
+  const gate=sql`LEFT JOIN LATERAL (SELECT q.availability,${obsoleteSuccessor} obsolete FROM question_bank q WHERE q.id=${questionId} AND ${readable(userId,true)}) cur ON true`;
+  const attempt=(row:Row|undefined):QuestionDrawerAttempt=>{
+    if(!row?.visible)throw missing();
+    const saved=object(row.reference_snapshot);
+    const ref=questionReferenceAfterAnswerSchema.parse({...saved,annulled:saved.annulled===true||row.availability==='annulled',obsolete:saved.obsolete===true||row.obsolete===true});
+    const stored=questionReferenceAfterAnswerSchema.parse(row.reference_snapshot);const result=answerOutcome(true,input.selectedKey,stored.correctKey,stored.annulled);
+    return questionDrawerAttemptSchema.parse({questionId,selectedKey:input.selectedKey,result:result==='unanswered'?'incorrect':result,answeredAt:row.submitted_at,reference:ref});
+  };
+  /** Retry (or lost race): the stored attempt of this key; another config under the same key or another choice is a conflict. */
+  const replay=async(tx:Tx)=>{
+    const [row]=await asServer<Row>(tx,sql`SELECT s.config=${cfg}::jsonb same,i.selected_key,i.reference_snapshot,a.submitted_at,cur.availability IS NOT NULL visible,cur.availability,cur.obsolete
+      FROM question_sessions s LEFT JOIN question_session_items i ON i.session_id=s.id AND i.user_id=s.user_id
+      LEFT JOIN LATERAL (SELECT submitted_at FROM question_answers WHERE item_id=i.id AND user_id=${userId} ORDER BY submitted_at DESC LIMIT 1) a ON true ${gate}
+      WHERE s.user_id=${userId} AND s.idempotency_key=${key} ORDER BY i.position LIMIT 1`);
+    if(!row)throw missing();
+    if(!row.same)throw conflict('idempotency_key_reused');
+    if(row.selected_key!==input.selectedKey||!row.submitted_at)throw conflict('mutation_id_reused');
+    return attempt(row);
+  };
   const result=await run(userId,async(tx)=>{
-    const session=await createRow(tx,userId,{mode:'study',questionIds:[questionId],count:1,timerSec:null,shuffle:false,drawer:true},input.mutationId);
-    const [item]=await items(tx,userId,String(session.id));if(!item)throw missing();
-    const ref=questionReferenceAfterAnswerSchema.parse(item.reference_snapshot);
-    if(session.status==='active'){
-      const alternatives=object(item.payload_public).alternatives as {key:string}[]|null;
-      if(!alternatives?.some((a)=>a.key===input.selectedKey))throw validation('invalid_alternative');
-      await asServer(tx,sql`INSERT INTO question_answers(user_id,session_id,item_id,mutation_id,selected_key,correct,elapsed_ms,revision) VALUES(${userId},${session.id},${item.id},${input.mutationId},${input.selectedKey},${ref.annulled?null:input.selectedKey===ref.correctKey},${input.elapsedMs},1)`);
-      await asServer(tx,sql`UPDATE question_session_items SET selected_key=${input.selectedKey},answered=true,revision=revision+1,updated_at=now() WHERE id=${item.id} AND user_id=${userId}`);
-      await finalize(tx,userId,session);item.selected_key=input.selectedKey;
-    }else if(item.selected_key!==input.selectedKey)throw conflict('mutation_id_reused');
-    const [answer]=await asServer<Row>(tx,sql`SELECT submitted_at FROM question_answers WHERE item_id=${item.id} AND user_id=${userId} ORDER BY submitted_at DESC LIMIT 1`);
-    const result=answerOutcome(true,input.selectedKey,ref.correctKey,ref.annulled);
-    return questionDrawerAttemptSchema.parse({questionId,selectedKey:input.selectedKey,result:result==='unanswered'?'incorrect':result,answeredAt:answer!.submitted_at,reference:await reference(tx,userId,item)});
+    // Same eligibility as the public start by ids (readable, latest, active, objective) with the drawer's specific errors.
+    const [q]=await asServer<Row>(tx,sql`SELECT ${selectionColumns},EXISTS(SELECT 1 FROM question_sessions s WHERE s.user_id=${userId} AND s.idempotency_key=${key}) replay
+      FROM question_bank q ${catalogJoins(userId)} WHERE q.id=${questionId} AND ${readable(userId)} AND ${latest}`);
+    if(!q)throw missing();
+    if(q.type!=='objective')throw conflict('discursive_use_challenge');
+    if(q.availability!=='active')throw conflict('question_not_answerable');
+    if(q.replay)return replay(tx);
+    const row=applyOccurrence(q),question=await toQuestion({...row,assets:[]}),ref=snapshotReference(row);
+    if(!question.alternatives?.some((a)=>a.key===input.selectedKey))throw validation('invalid_alternative');
+    const sessionId=randomUUID(),itemId=randomUUID(),correct=ref.annulled?null:input.selectedKey===ref.correctKey;
+    const report=frozenReport({id:sessionId},[{id:itemId,answered:true,selected_key:input.selectedKey,reference_snapshot:ref}]);
+    // One statement: session (finished, revision 1), item (answered, revision 1), the attempt, then the gate. ON CONFLICT = a concurrent
+    // first call with the same key won the unique (user_id, idempotency_key): nothing is written here and the stored attempt is replayed.
+    const [saved]=await asServer<Row>(tx,sql`WITH s AS (INSERT INTO question_sessions(id,user_id,mode,paper_id,config,idempotency_key,deadline,status,revision,finished_at,report)
+        VALUES(${sessionId},${userId},'study',NULL,${cfg}::jsonb,${key},NULL,'finished',1,clock_timestamp(),${JSON.stringify(report)}::jsonb) ON CONFLICT (user_id,idempotency_key) DO NOTHING RETURNING id),
+      i AS (INSERT INTO question_session_items(id,user_id,session_id,question_id,position,original_number,payload_public,reference_snapshot,shuffle_map,selected_key,answered,revision)
+        SELECT ${itemId},${userId},s.id,${questionId},0,NULL,${JSON.stringify({...question,assets:row.assets??[]})}::jsonb,${JSON.stringify(ref)}::jsonb,'{}'::jsonb,${input.selectedKey},true,1 FROM s RETURNING id),
+      a AS (INSERT INTO question_answers(user_id,session_id,item_id,mutation_id,selected_key,correct,elapsed_ms,revision)
+        SELECT ${userId},${sessionId},i.id,${input.mutationId},${input.selectedKey},${correct},${input.elapsedMs},1 FROM i RETURNING submitted_at)
+      SELECT a.submitted_at,${JSON.stringify(ref)}::jsonb reference_snapshot,cur.availability IS NOT NULL visible,cur.availability,cur.obsolete FROM a ${gate}`);
+    return saved?attempt(saved):replay(tx);
   });await invalidate('question.changed',{userId});return result;
 }
 export const questionSessionService={
   async create(userId:string,config:QuestionSessionConfig,key:string){
     if(config.drawer)throw validation('drawer_internal_only');
-    if(config.builder){const f=questionFeatures();if(!f.bankStudent||!f.catalog)throw new Abort({code:'not_found',message:'route not found'});}
+    if(config.builder){budgetAs('POST /v1/question-sessions#builder');const f=questionFeatures();if(!f.bankStudent||!f.catalog)throw new Abort({code:'not_found',message:'route not found'});}
     return run(userId,async(tx)=>{const session=await createRow(tx,userId,config,key);return withTiming('questions.public',()=>publicSession(tx,userId,session));});
   },
   async get(userId:string,id:string){return run(userId,async(tx)=>publicSession(tx,userId,await settle(tx,userId,await lockedSession(tx,userId,id))));},
