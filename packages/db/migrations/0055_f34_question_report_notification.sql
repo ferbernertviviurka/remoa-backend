@@ -1,0 +1,1 @@
+ALTER TYPE "public"."notification_type" ADD VALUE 'question_report_resolved';

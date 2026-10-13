@@ -78,7 +78,9 @@ describe('notifications', () => {
     expect(notificationPrefKey('calendar_digest', { window: 'd1' })).toBe('calendar_d1');
   });
   it('D-760: every user type and every address notice has a template', () => {
-    for (const t of notificationTypes) expect(NOTIFICATION_TYPES[t].email, t).not.toBeNull();
+    // CCR-148: question_report_resolved is the one deliberate in-app-only type (no e-mail).
+    for (const t of notificationTypes.filter((x) => x !== 'question_report_resolved')) expect(NOTIFICATION_TYPES[t].email, t).not.toBeNull();
+    expect(NOTIFICATION_TYPES.question_report_resolved).toMatchObject({ category: 'support', prefKey: 'support', inApp: true, email: null });
     expect(Object.values(ADDRESS_NOTICES).map((a) => EMAIL_CLASS[a.email])).toEqual(['list', 'list', 'transactional', 'transactional']); // CCR-037: auth e-mails by address
   });
   it('effective prefs: defaults, stored rows, fixed and absent channels', () => {

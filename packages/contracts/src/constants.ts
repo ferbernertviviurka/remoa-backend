@@ -88,6 +88,8 @@ export const notificationTypes = [
   'dispute_resolved',
   // D-1213: the free Pro trial ends in TRIAL_NOTICE_DAYS days / today.
   'trial_ending',
+  // CCR-148 (F34 FR-18): the reporter learns that a question report was analysed. In-app only.
+  'question_report_resolved',
 ] as const;
 
 /** Chips on /notificacoes, in this order (Todas is "no category"). */
