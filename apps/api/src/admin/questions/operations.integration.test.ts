@@ -220,18 +220,17 @@ describe.skipIf(!url)('F33 operations: content-hash prepare + outbox recovery (D
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('recovery: replay, 409 on changed payload, reauth required, tampered object rejected', async () => {
+  it('recovery: replay, 409 on changed payload, stale sign-in accepted (D-1838), tampered object rejected', async () => {
     const id = await outbox(student);
     const body = { items: [{ outboxId: id, expectedAttempts: 20, expectedAttemptLimit: 20 }], extraAttempts: 2, idempotencyKey: randomUUID(), reason };
     const before = await auditCount('question.generation_recover');
-    expect((await req('/generation/recover', 'POST', body, admin, 60 * 60_000)).status).toBe(403);
-    const first = (await (await req('/generation/recover', 'POST', body)).json() as { data: { replayed: boolean } }).data;
+    const first = (await (await req('/generation/recover', 'POST', body, admin, 60 * 60_000)).json() as { data: { replayed: boolean } }).data;
     const again = (await (await req('/generation/recover', 'POST', body)).json() as { data: { replayed: boolean } }).data;
     expect([first.replayed, again.replayed]).toEqual([false, true]);
     const [row] = await pg`SELECT attempt_limit FROM question_outbox WHERE id=${id}`;
     expect(row!.attempt_limit).toBe(22);
     expect((await req('/generation/recover', 'POST', { ...body, extraAttempts: 3 })).status).toBe(409);
-    expect(await auditCount('question.generation_recover')).toBe(before + 4);
+    expect(await auditCount('question.generation_recover')).toBe(before + 3);
     const tampered = await outbox(student);
     const [t] = await pg`SELECT payload_reference FROM question_outbox WHERE id=${tampered}`;
     objects.set(String(t!.payload_reference), receipt(other, randomUUID()));
