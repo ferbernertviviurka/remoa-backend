@@ -96,3 +96,8 @@ export const questionReports = pgTable('question_reports', {
 export const examTemplates = pgTable('exam_templates', {
   id: id(), userId: userId(), name: text('name').notNull(), params: jsonb('params').$type<ExamBuilderParams>().notNull(), ...timestamps,
 }, (t) => [unique('exam_templates_owner_name_uq').on(t.userId, t.name), index('exam_templates_owner_created_idx').on(t.userId, t.createdAt), check('exam_templates_name_chk', sql`char_length(btrim(${t.name})) between 1 and 80`)]);
+/** CCR-149 / D-1833: ids hidden by the catalog `latest` rule (a newer version exists from the row's own perspective). Server-only, maintained by
+ * the question_superseded_sync trigger on question_bank (0056); never written by the app. `latest` ⇔ NOT EXISTS here. */
+export const questionSuperseded = pgTable('question_superseded', {
+  questionId: uuid('question_id').primaryKey().references(() => questionBank.id, { onDelete: 'cascade' }),
+}).enableRLS();
