@@ -1,0 +1,91 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const m = vi.hoisted(() => ({ pool: vi.fn(), statements: vi.fn(), request: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+vi.mock('./db', () => ({ warmPool: m.pool, warmStatements: m.statements }));
+vi.mock('./app', () => ({ createApp: () => ({ request: m.request }) }));
+vi.mock('@remoa/log', () => ({ createLogger: () => ({ info: m.info, warn: m.warn, error: m.error }) }));
+import { HOT_PATHS, warmUp } from './warmup';
+const deps = { webOrigin: 'https://example.test' };
+const deferred = () => {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((r) => { resolve = r; });
+  return { promise, resolve };
+};
+const flush = () => vi.advanceTimersByTimeAsync(0);
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.resetAllMocks();
+  m.pool.mockResolvedValue(undefined);
+  m.statements.mockResolvedValue(undefined);
+  m.request.mockImplementation(async () => new Response('{}'));
+});
+afterEach(() => { vi.useRealTimers(); });
+describe('startup warm-up budget', () => {
+  it('warms all paths and clears the cap after success', async () => {
+    const ready = warmUp(deps, 100);
+    expect(ready()).toBe(false);
+    await flush();
+    expect(ready()).toBe(true);
+    expect(m.request).toHaveBeenCalledTimes(HOT_PATHS.length + 1);
+    expect(m.statements).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(m.warn).not.toHaveBeenCalled();
+    expect(m.info).toHaveBeenCalledWith('warm-up done', expect.any(Object));
+  });
+  it('logs failed warming as degraded and clears the cap', async () => {
+    m.pool.mockRejectedValueOnce(new Error('pool failed'));
+    const ready = warmUp(deps, 100);
+    await flush();
+    expect(ready()).toBe(true);
+    expect(m.error).toHaveBeenCalledWith('warm-up failed', expect.objectContaining({ degraded: true }));
+    expect(m.request).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(m.warn).not.toHaveBeenCalled();
+  });
+  it('aborts pool warming at the cap and does not start routes after late completion', async () => {
+    const pool = deferred();
+    m.pool.mockReturnValueOnce(pool.promise);
+    const ready = warmUp(deps, 100);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ready()).toBe(true);
+    expect(m.pool.mock.calls[0]![0].aborted).toBe(true);
+    expect(m.warn).toHaveBeenCalledWith('warm-up cap reached', { ms: 100, degraded: true });
+    pool.resolve();
+    await flush();
+    expect(m.request).not.toHaveBeenCalled();
+    expect(m.statements).not.toHaveBeenCalled();
+    expect(m.info).not.toHaveBeenCalled();
+  });
+  it('has one synthetic request active and stops launching work once capped', async () => {
+    const first = deferred();
+    m.request.mockImplementationOnce(async () => { await first.promise; return new Response('{}'); });
+    const ready = warmUp(deps, 100);
+    await flush();
+    expect(m.request).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ready()).toBe(true);
+    expect(m.request.mock.calls[0]![1].signal.aborted).toBe(true);
+    first.resolve();
+    await flush();
+    expect(m.request).toHaveBeenCalledOnce();
+    expect(m.statements).not.toHaveBeenCalled();
+    expect(m.info).not.toHaveBeenCalled();
+    expect(m.error).not.toHaveBeenCalled();
+  });
+  it('passes cancellation to preparation and never reports a capped run as done', async () => {
+    const preparing = deferred();
+    m.statements.mockReturnValueOnce(preparing.promise);
+    const ready = warmUp(deps, 100);
+    await flush();
+    expect(m.statements).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ready()).toBe(true);
+    expect(m.statements.mock.calls[0]![0].aborted).toBe(true);
+    preparing.resolve();
+    await flush();
+    expect(m.info).not.toHaveBeenCalled();
+    expect(m.warn).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
