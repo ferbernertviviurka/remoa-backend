@@ -76,5 +76,8 @@
   },
   "admin/questions/operations.ts": {
     "reason": "prepareContentHashes, approveInstitutional (D-1819, publica pelo mesmo caminho de publishQuestion) e recoverOutbox recebem a transação de withAdmin nas rotas admin/questions; withAdmin invalida admin.action após COMMIT. content_hash/source_id de rascunhos institucionais não publicados e attempt_limit da outbox são lidos só por consultas diretas (catálogo F33, outboxPage, métricas) sem cached(); nenhum leitor cacheado depende deles"
+  },
+  "questions/templates/service.ts": {
+    "reason": "exam_templates (F34): lista lida sempre direto do banco, sem cached(); nenhuma leitura cacheada depende da tabela"
   }
 }
