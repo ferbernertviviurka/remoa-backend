@@ -10,6 +10,8 @@ import { regenerateSitemap } from '../blog/sitemap';
 const CLEANUP_DAYS = 30;
 /** An upload not yet saved into a post (autosave ~5 s) is not an orphan: only assets older than this are swept. */
 const ORPHAN_GRACE_HOURS = 24;
+/** Repeat cache delivery after commits/restarts; bounded to avoid sweeping the entire blog every five minutes. */
+const PUBLICATION_RECONCILE_HOURS = 24;
 
 /**
  * FR-34: publish scheduled posts that are due. One UPDATE … WHERE status = 'scheduled' … RETURNING: a concurrent run blocks on
@@ -32,10 +34,20 @@ export async function publishScheduled(now: Date) {
     }
     return done;
   });
-  if (rows.length) {
+  // invalidate() forwards web tags in the background. Reconcile recent automatic publications on every sweep,
+  // including a previous run whose process stopped after COMMIT. updated_at also catches an old overdue backlog
+  // just published now (published_at deliberately keeps the admin's scheduled date). No published row is mutated.
+  const recent = await db.execute<{ id: string; slug: string; category_slug: string | null }>(sql`
+    select p.id, p.slug, c.slug as category_slug
+    from blog_posts p left join blog_categories c on c.id = p.category_id
+    where p.status = 'published' and p.deleted_at is null and p.publish_at is not null
+      and p.published_at = p.publish_at and p.publish_at <= ${now.toISOString()}::timestamptz
+      and p.updated_at >= ${now.toISOString()}::timestamptz - make_interval(hours => ${PUBLICATION_RECONCILE_HOURS})`);
+  const effects = [...new Map([...rows, ...recent].map((p) => [p.id, p])).values()];
+  if (effects.length) {
     const log = createLogger({ requestId: newRequestId() });
-    log.info('blog scheduled posts published', { count: rows.length, slugs: rows.map((r) => r.slug) });
-    await invalidate('blog.changed', { slugs: rows.map((r) => r.slug), categorySlugs: rows.flatMap((r) => (r.category_slug ? [r.category_slug] : [])) }, log);
+    log.info('blog scheduled posts published', { count: rows.length, reconciled: effects.length });
+    await invalidate('blog.changed', { slugs: effects.map((r) => r.slug), categorySlugs: effects.flatMap((r) => (r.category_slug ? [r.category_slug] : [])) }, log);
     await regenerateSitemap({ reason: 'blog.publish-scheduled' }, now);
   }
   return { published: rows.length };

@@ -76,6 +76,10 @@ describe('hourly notification emails', () => {
     expect(tenSaoPaulo).toContain('inactivity.check');
   });
 
+  it('limits intermediate sweeps to calendar reminders', () => {
+    expect(Object.keys(dueNotificationEmailSteps(new Date('2026-10-09T13:05:00Z'), false))).toEqual(['calendar.dispatch-reminders']);
+  });
+
   it('sends the due mails and releases the lock', async () => {
     const out = await runDueNotificationEmails(new Date('2026-10-09T13:05:00Z'));
     expect(m.calendar).toHaveBeenCalledOnce();
@@ -106,12 +110,32 @@ describe('hourly notification emails', () => {
     expect(out).toMatchObject({ failed: ['review.reminder'] });
   });
 
-  it('aligns the next run to the UTC hour and does not overlap', async () => {
+  it('runs hourly jobs at the boundary, calendar between hours, and stops subsequent ticks', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-09T13:58:00Z'));
+    const run = vi.fn<(now: Date, hourly: boolean) => Promise<void>>(async () => undefined);
+    const stop = startHourlyNotificationEmails(run);
+    try {
+      await vi.advanceTimersByTimeAsync(7 * 60 * 1000);
+      expect(run.mock.calls).toEqual([
+        [new Date('2026-10-09T13:58:00Z'), true],
+        [new Date('2026-10-09T14:00:00Z'), true],
+        [new Date('2026-10-09T14:05:00Z'), false],
+      ]);
+      stop();
+      await vi.advanceTimersByTimeAsync(HOUR_MS);
+      expect(run).toHaveBeenCalledTimes(3);
+    } finally {
+      stop();
+    }
+  });
+
+  it('checks calendar every five minutes, keeps other jobs hourly, and does not overlap', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-09T13:20:00Z'));
     expect(msUntilNextHour(Date.now())).toBe(40 * 60 * 1000);
     let release: () => void = () => undefined;
-    const run = vi.fn(() => new Promise<void>((r) => {
+    const run = vi.fn<(now: Date, hourly: boolean) => Promise<void>>(() => new Promise<void>((r) => {
       release = r;
     }));
     const stop = startHourlyNotificationEmails(run);
@@ -122,8 +146,9 @@ describe('hourly notification emails', () => {
       expect(run).toHaveBeenCalledTimes(1);
       release();
       await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(40 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
       expect(run).toHaveBeenCalledTimes(2);
+      expect(run.mock.calls[1]).toEqual([new Date('2026-10-09T14:25:00Z'), false]);
     } finally {
       stop();
       release();

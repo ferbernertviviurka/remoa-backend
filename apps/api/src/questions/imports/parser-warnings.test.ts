@@ -56,6 +56,16 @@ const parsed = {
   detectedContexts: 0,
 };
 describe("immutable attempt diagnostics", () => {
+  it("allowlists trailing_unattached_text:N", () => {
+    const s = summarizeWarnings(plan(), 1, {
+      ...parsed,
+      examWarnings: ["trailing_unattached_text:50"],
+    });
+    expect(s.items).toEqual([
+      { source: "exam", code: "trailing_unattached_text", number: 50, count: 1 },
+    ]);
+    expect(s.unknownCount).toBe(0);
+  });
   it("counts both sources, truncation and unknowns without retaining their raw text", () => {
     const p = plan(),
       warnings = Array.from(

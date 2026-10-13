@@ -541,7 +541,7 @@ describe("durable import worker", () => {
     },
   );
 
-  it.each(["f33-layout-v1", "f33-layout-v2", "f33-layout-v3", "f33-layout-v4", "f33-layout-v5", "f33-layout-v6"])(
+  it.each(["f33-layout-v1", "f33-layout-v2", "f33-layout-v3", "f33-layout-v4", "f33-layout-v5", "f33-layout-v6", "f33-layout-v7"])(
     "fails legacy queued %s before download/layout/OCR and keeps the stored version unchanged",
     async (version) => {
       const h = harness();
@@ -570,9 +570,11 @@ describe("durable import worker", () => {
       expect(h.cost).toBe(0);
     },
   );
-  it("refuses old OCR versions before any IO/reservation without relabeling them", async () => {
+  it.each(["tesseract-por-v1", "tesseract-best-por-711de9db-180-psm3-tsv-line-v2"])(
+    "refuses old OCR version %s before any IO/reservation without relabeling it",
+    async (old) => {
     const h = harness();
-    h.job.ocrVersion = "tesseract-por-v1";
+    h.job.ocrVersion = old;
     const read = vi.fn(async () => bytes),
       layout = vi.fn(async () => ({ pages: [page(1)] }));
     const result = await runQuestionImport("job", {
@@ -587,8 +589,9 @@ describe("durable import worker", () => {
     expect(layout).not.toHaveBeenCalled();
     expect(h.ocr.readPage).not.toHaveBeenCalled();
     expect(h.cost).toBe(0);
-    expect(h.job.ocrVersion).toBe("tesseract-por-v1");
-  });
+    expect(h.job.ocrVersion).toBe(old);
+  },
+  );
   it("rejects a mismatched installed model before OCR or budget reservation", async () => {
     const h = harness(),
       read = vi.fn(async () => bytes),

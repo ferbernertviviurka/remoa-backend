@@ -85,6 +85,13 @@ describe.skipIf(!url)("CCR118 manual private page image", () => {
     currentRevision = 0,
     question: string;
   const reason = "Conferir imagem descoberta na página original";
+  // Every accepted write bumps question_imports.revision; a body that does not name one gets the current value.
+  const withImportRevision = async (input: unknown) => {
+    const [row] = await db`SELECT revision FROM question_imports WHERE id=${job}`;
+    return typeof input === "object" && input !== null
+      ? { importRevision: row!.revision as number, ...input }
+      : input;
+  };
   const call = async (
     id: string,
     input: unknown,
@@ -99,7 +106,7 @@ describe.skipIf(!url)("CCR118 manual private page image", () => {
           authorization: "Bearer " + fakeToken(user, age),
           "content-type": "application/json",
         },
-        body: JSON.stringify(input),
+        body: JSON.stringify(await withImportRevision(input)),
       },
     );
     return {
@@ -261,7 +268,7 @@ describe.skipIf(!url)("CCR118 manual private page image", () => {
             authorization: "Bearer " + fakeToken(admin),
             "content-type": "application/json",
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(await withImportRevision(body)),
         },
       );
       return { status: r.status, body: await r.json() };
@@ -333,7 +340,7 @@ describe.skipIf(!url)("CCR118 manual private page image", () => {
       }),
     });
     expect(publish.status).toBe(409);
-    expect((await publish.json()).error.message).toBe("content_hash_changed");
+    expect((await publish.json()).error.message).toBe("latest_medical_review_required");
   });
   it("idempotent repeat with current revision skips rendering/PUT; stale revision returns409", async () => {
     const before = control.put.mock.calls.length;

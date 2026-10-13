@@ -607,7 +607,8 @@ export async function publishQuestion(
   const locked = await lockPublicationQuestionGraph(tx, id);
   if (!locked.ok) return locked;
   const [row] = await tx.select().from(q).where(eq(q.id, id)).for("update");
-  if (!row || !row.sourceId) return err("not_found", "question not found");
+  if (!row) return err("not_found", "question not found");
+  if (!row.sourceId) return err("conflict", "source_required");
   if (
     row.version !== input.revision ||
     row.contentHash !== input.expectedContentHash
@@ -1071,7 +1072,7 @@ export async function candidatePageImageMetadata(
     return err("conflict", "candidate_revision_changed");
   if (
     !["review", "completed"].includes(meta.job.status) ||
-    !new Set<string>([PARSER_VERSION, "f33-layout-v1", "f33-layout-v2", "f33-layout-v3", "f33-layout-v4", "f33-layout-v5", "f33-layout-v6"]).has(
+    !new Set<string>([PARSER_VERSION, "f33-layout-v1", "f33-layout-v2", "f33-layout-v3", "f33-layout-v4", "f33-layout-v5", "f33-layout-v6", "f33-layout-v7"]).has(
       meta.job.parserVersion,
     )
   )

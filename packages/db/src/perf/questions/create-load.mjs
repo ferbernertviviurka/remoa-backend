@@ -1,7 +1,7 @@
 /** Separate creation sample: actual selection + 200 frozen items, unique idempotency keys, no provider calls. */
 import {randomUUID} from 'node:crypto';
-import {state,save} from './target.mjs';
-const seeded=state(),base='http://127.0.0.1:43133',samples=[],failures=[];
+import {state,save,port} from './target.mjs';
+const seeded=state(),base=`http://127.0.0.1:${port}`,samples=[],failures=[];
 const percentile=(values,p)=>[...values].sort((a,b)=>a-b)[Math.ceil(values.length*p)-1]??null;
 async function create(user,record){
  const started=performance.now();

@@ -72,6 +72,9 @@ async function sendGroup(g: Group, now: Date, notify: Notify): Promise<number> {
             data: { window: g.kind, date: g.occurrence_date, count: rows.length, eventIds: rows.map((r) => r.event_id) },
             email: { version: 'varios', window: g.kind, name, date: g.occurrence_date, timezone: tz, events: rows.slice(0, DIGEST_MAX).map(item), calendarUrl },
           });
+    // notify() returns an outcome instead of throwing on provider or infrastructure failures.
+    // Leave the rows scheduled so the same reference retries, without duplicating the bell notice.
+    if (res.email === 'failed') throw new Error('calendar reminder email failed');
     await tx.execute(sql`
       update calendar_reminders set status = 'sent', notification_id = ${res.notificationId}, email_delivery_id = ${res.emailDeliveryId}
       where id = any(${uuids(rows.map((r) => r.id))})`);

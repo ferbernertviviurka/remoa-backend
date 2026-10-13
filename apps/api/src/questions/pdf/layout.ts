@@ -228,6 +228,36 @@ export function excludeExamMargins(pages: PdfLayoutPage[]) {
           other.bbox.y / other.page.height - line.bbox.y / line.page.height,
         ) < 0.025,
     );
+  // D-1807 running margins: a page number is a bare integer, bottom-most in the footer band, outside any marker
+  // column, repeated at the same position on another page with the same page-index offset. A running header is
+  // removed only on pages with such a proven footer: top-most line in the header band, separated by a blank gap,
+  // not taller than the page's body text, and repeated verbatim at the same position on another proven page.
+  const tol = (line: PdfLine) => Math.max(2, line.page.width * 0.01);
+  const pageNumbers = rows.flatMap(({ page, lines }) => lines.filter(line =>
+    /^\d{1,3}$/.test(line.text) && line.bbox.y >= page.height * 0.92 &&
+    lines.every(other => other === line || other.bbox.y < line.bbox.y) &&
+    !(markerProfiles.get(page.page) ?? []).some(p => Math.abs(p.x - line.bbox.x) <= tol(line))));
+  const offset = (line: PdfLine) => Number(line.text) - line.page.page;
+  const samePlace = (a: PdfLine, b: PdfLine, center = false) =>
+    Math.abs((center ? a.bbox.x + a.bbox.width / 2 : a.bbox.x) / a.page.width - (center ? b.bbox.x + b.bbox.width / 2 : b.bbox.x) / b.page.width) <= 0.01 &&
+    Math.abs(a.bbox.y / a.page.height - b.bbox.y / b.page.height) <= 0.005;
+  const provenPageNumbers = new Set(pageNumbers.filter(line => pageNumbers.some(other =>
+    other.page.page !== line.page.page && offset(other) === offset(line) && samePlace(other, line, true))));
+  const numberedPages = new Set([...provenPageNumbers].map(line => line.page.page));
+  const topLine = (page: PdfLayoutPage, lines: PdfLine[]) => {
+    const [line, next] = [...lines].sort((a, b) => a.bbox.y - b.bbox.y);
+    if (!line || line.bbox.y + line.bbox.height > page.height * 0.09 || (next && next.bbox.y < line.bbox.y + line.bbox.height * 2) ||
+        line.bbox.height > median(lines.map(l => l.bbox.height)) + 0.01 || questionNumber(line.text) !== null ||
+        /^\s*(?:\([A-J]\)|[A-J][.)])/i.test(line.text)) return null;
+    return line;
+  };
+  const tops = rows.map(({ page, lines }) => topLine(page, lines)).filter((l): l is PdfLine => !!l);
+  const sameHeader = (a: PdfLine, b: PdfLine) => signature(a) === signature(b) && Math.abs(a.bbox.height - b.bbox.height) <= 0.1 && samePlace(a, b);
+  const runningHeaderCandidates = tops.filter(line => numberedPages.has(line.page.page));
+  const provenHeaders = runningHeaderCandidates.filter(line => runningHeaderCandidates.some(other => other.page.page !== line.page.page && sameHeader(other, line)));
+  // D-1813: OCR can miss a page number; a top line identical in text and position to a header already proven on
+  // numbered pages is the same running header. Exact match only.
+  const runningHeaders = new Set(tops.filter(line => provenHeaders.some(h => sameHeader(h, line))));
   const omitted: {
     line: PdfLine;
     reason: "known_margin" | "repeated_margin";
@@ -248,7 +278,7 @@ export function excludeExamMargins(pages: PdfLayoutPage[]) {
         repeated(line) &&
         !questionNumber(line.text) &&
         !/^\s*(?:\([A-J]\)|[A-J][.)])/i.test(line.text);
-      const isOfficial = repeatedOfficialMargin(line, first);
+      const isOfficial = repeatedOfficialMargin(line, first) || provenPageNumbers.has(line) || runningHeaders.has(line);
       if (!isKnown && !isRepeated && !isOfficial) continue;
       omitted.push({
         line,
@@ -284,4 +314,45 @@ export function examLines(page: PdfLayoutPage, minMarkerHeight = 0, profiles?: E
   const rightClean = clean(rightLines);
   if (rightClean[0]) rightClean[0].columnStart = true;
   return [...clean(leftLines), ...rightClean];
+}
+/** Complete label at the START of an original pdf.js item. Never matched inside concatenated text. */
+const itemLabel = /^\s*(?:\(([A-J])\)|([A-J])[.)])(?:\s|$)/;
+const fusedLabel = /(?:^|\s)(?:\(([A-J])\)|([A-J])[.)])(?=\s)/g;
+export const labelKey = (text: string): string | null => {
+  const m = itemLabel.exec(text);
+  return m ? (m[1] ?? m[2]!) : null;
+};
+/** Exam-only (D-1803): a row of horizontally printed alternatives is split only at original items whose
+ * start is a complete label, on the same baseline, after a column-sized gap and in increasing letter order.
+ * Boxes are the real item boxes; glyph widths are never estimated. Label-like items failing that proof keep
+ * the row intact (`ambiguous`). `fused` lists later labels seen inside an item's text, for review only. */
+export function splitAlternativeRow(line: PdfLine): { lines: PdfLine[]; ambiguous: boolean; fused: string[] } {
+  const items = [...line.items].sort((a, b) => a.x - b.x);
+  const first = items[0];
+  let key = first ? labelKey(first.text) : null;
+  const fusedIn = (group: PdfLayoutItem[], own: string | null) => {
+    const text = group.map(i => i.text).join(" ").replace(itemLabel, "");
+    return [...text.matchAll(fusedLabel)].map(m => m[1] ?? m[2]!).filter(k => !own || k > own);
+  };
+  if (!first || !key) return { lines: [line], ambiguous: false, fused: [] };
+  const groups: PdfLayoutItem[][] = [[first]];
+  let ambiguous = false;
+  for (const item of items.slice(1)) {
+    const next = labelKey(item.text), prev = groups.at(-1)!.at(-1)!;
+    if (next) {
+      const sameBaseline = Math.abs(item.y + item.height - first.y - first.height) <= Math.max(1, first.height * 0.2) &&
+        Math.abs(item.height - first.height) <= first.height * 0.2;
+      const gutter = item.x - prev.x - prev.width >= first.height * 0.8;
+      if (next > key! && sameBaseline && gutter) { groups.push([item]); key = next; continue; }
+      ambiguous = true;
+    }
+    groups.at(-1)!.push(item);
+  }
+  const fused = groups.flatMap(g => fusedIn(g, labelKey(g[0]!.text)));
+  if (groups.length === 1) return { lines: [line], ambiguous, fused };
+  return {
+    lines: groups.map(g => ({ ...line, items: g, bbox: bounds(g), text: g.map(i => i.text).join(" ").replace(/\s+/g, " ").trim() })),
+    ambiguous,
+    fused,
+  };
 }

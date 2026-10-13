@@ -9,7 +9,7 @@ import {candidatePageImageMetadata} from './service';
 import {QUESTION_PDF_PARSER_VERSION} from '@remoa/contracts';
 beforeEach(()=>{fixture.version='f33-layout-v1';});
 describe('historical manual page review is independent from the current extraction version',()=>{
- it.each(['f33-layout-v1','f33-layout-v2','f33-layout-v3','f33-layout-v4','f33-layout-v5',QUESTION_PDF_PARSER_VERSION])('keeps reviewed %s available without parsing or relabeling',async version=>{
+ it.each(['f33-layout-v1','f33-layout-v2','f33-layout-v3','f33-layout-v4','f33-layout-v5','f33-layout-v6','f33-layout-v7',QUESTION_PDF_PARSER_VERSION])('keeps reviewed %s available without parsing or relabeling',async version=>{
   fixture.version=version;const result=await candidatePageImageMetadata('import','candidate',1,1);
   expect(result).toMatchObject({ok:true,data:{job:{parserVersion:version}}});expect(fixture.version).toBe(version);
  });

@@ -11,6 +11,7 @@ import { aiMode, missingConfig, validateAi } from '@remoa/ai';
 import { env as configEnv } from '@remoa/config';
 import { drainEmails } from './notifications/notify';
 import { notificationEmailsInflight, startHourlyNotificationEmails } from './notifications/hourly-emails';
+import { blogSchedulerInflight, startBlogScheduler } from './blog/scheduler';
 import { reconcileQuestionRuntime } from './questions/runtime/recovery';
 import { questionFeatures,questionAdmissionLimits } from './questions/runtime/config';
 import { warmUp } from './warmup';
@@ -58,13 +59,16 @@ const port = Number(process.env.PORT ?? 4000);
 const server = serve({ fetch: app.fetch, port });
 // D-1443: a 250 MB .apkg now streams through the API; Node's default 5 min for a whole request cuts slow connections. 15 min = Railway's cap.
 (server as import('node:http').Server).requestTimeout = 15 * 60_000;
-// Notification e-mails are due on the clock. Inngest and the Railway cron service are not running in production, so the API sweeps them every hour.
-startHourlyNotificationEmails();
+// Keep due reminders and scheduled publications running even without an external scheduler.
+const stopNotificationEmails = startHourlyNotificationEmails();
+const stopBlogScheduler = startBlogScheduler();
 // D-992: deploys send SIGTERM; stop taking requests and give deferred e-mails (and a sweep already in flight) up to 8 s to leave.
 process.once('SIGTERM', () => {
+  stopNotificationEmails();
+  stopBlogScheduler();
   server.close();
   void Promise.race([
-    Promise.all([drainEmails(8_000), notificationEmailsInflight()]),
+    Promise.all([drainEmails(8_000), notificationEmailsInflight(), blogSchedulerInflight()]),
     new Promise((r) => setTimeout(r, 8_000)),
   ]).finally(() => process.exit(0));
 });

@@ -26,6 +26,9 @@ const emailOutcome = (r: DeliverResult): NotifyEmailOutcome => {
   if (r.status === 'blocked') return 'capped';
   if (r.status === 'suppressed') return 'suppressed';
   if (r.status === 'failed') return 'failed';
+  // A duplicate claim still queued is not a completed delivery (e.g. a crashed worker).
+  // Keep the caller retryable until deliverEmail can reclaim its existing stale claim.
+  if (r.status === 'queued' && 'duplicate' in r && r.duplicate) return 'failed';
   return 'duplicate' in r && r.duplicate ? 'duplicate' : 'queued';
 };
 
@@ -121,6 +124,7 @@ export const notify: Notify = async (userId, type, payload, opts = {}) => {
     log.info('notify', { event: 'notify', type, inApp: res.inApp, email: res.email });
     return res;
   } catch (e) {
+    res.email = 'failed';
     log.error('notify failed', { type, error: e instanceof Error ? e.message : String(e) });
     return res;
   }

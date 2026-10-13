@@ -14,6 +14,7 @@ export const questionParserWarningCodes = [
   "expected_question_unmatched",
   "segmentation_incomplete",
   "marker_profile_ambiguous",
+  "trailing_unattached_text",
 ] as const;
 export const questionParserDiagnosticErrors = [
   "group_not_found",
@@ -41,6 +42,7 @@ export const questionParserWarningItemSchema = z
       "expected_question_unmatched",
       "segmentation_incomplete",
       "marker_profile_ambiguous",
+      "trailing_unattached_text",
     ].includes(v.code);
     if (
       numbered !== (v.number !== undefined) ||

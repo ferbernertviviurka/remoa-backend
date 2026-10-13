@@ -1,6 +1,6 @@
 // Notification e-mails (calendar, review, inactivity, onboarding, trial) are due on a clock.
 // Inngest crons and railway.cron.json (`0 * * * *` → maintenance.ts) are the other schedules.
-// Production runs neither (no Inngest signing key, API service is not a cron), so this process runs the sweep.
+// The API process also runs a fallback sweep, protected by a cross-replica lock.
 import { createLogger } from '@remoa/log';
 import { runSteps } from '../account/maintenance';
 import { sweepTrialNotices } from '../billing/trial-notice';
@@ -11,6 +11,7 @@ import { sendOnboardingEmails } from '../onboarding/emails';
 const log = createLogger({ requestId: 'job-notification-emails' });
 const LOCK_KEY = 'remoa:notification-emails';
 export const HOUR_MS = 60 * 60 * 1000;
+export const SWEEP_MS = 5 * 60 * 1000;
 
 /** Milliseconds until the next UTC hour boundary. Exactly on the hour waits a full hour. */
 export function msUntilNextHour(now = Date.now()) {
@@ -29,17 +30,19 @@ function dailyHour(cron: string): number | null {
 type Step = () => Promise<unknown>;
 
 /**
- * Jobs that look for notification e-mails that are due. Calendar and review are finer on Inngest
- * (5 and 15 min); once an hour still lands inside the calendar stale window (3 h) and inside each
- * user's reminder hour. Inactivity stays on its daily hour so a deploy does not mail everyone.
+ * Calendar dispatch runs every five minutes so early events receive their notice before starting.
+ * Other jobs retain the hourly sweep; inactivity stays on its daily hour.
  */
-export function dueNotificationEmailSteps(now: Date): Record<string, Step> {
+export function dueNotificationEmailSteps(now: Date, hourly = true): Record<string, Step> {
   const steps: Record<string, Step> = {
     'calendar.dispatch-reminders': () => noticeJobs['calendar.dispatch-reminders'].run(now),
+  };
+  if (!hourly) return steps;
+  Object.assign(steps, {
     'review.reminder': () => noticeJobs['review.reminder'].run(now),
     onboarding: () => sendOnboardingEmails(now),
     trial: () => sweepTrialNotices(now),
-  };
+  });
   const inactivityHour = dailyHour(noticeJobs['inactivity.check'].cron);
   if (inactivityHour !== null && now.getUTCHours() === inactivityHour) {
     steps['inactivity.check'] = () => noticeJobs['inactivity.check'].run(now);
@@ -75,9 +78,9 @@ async function withSweepLock<T>(fn: () => Promise<T>): Promise<T | { skipped: 'l
 }
 
 /** Looks up the notification e-mails that are due and sends them. One failure does not skip the rest. */
-export async function runDueNotificationEmails(now = new Date()) {
+export async function runDueNotificationEmails(now = new Date(), hourly = true) {
   const result = await asJob(() => withSweepLock(async () => {
-    const { out, failed } = await runSteps(dueNotificationEmailSteps(now));
+    const { out, failed } = await runSteps(dueNotificationEmailSteps(now, hourly));
     log.info('notification emails done', { ...out, failed });
     return { ...out, failed };
   }));
@@ -90,28 +93,28 @@ let inflight: Promise<unknown> = Promise.resolve();
 /** The sweep still running, if any. SIGTERM waits on it (bounded by the caller). */
 export const notificationEmailsInflight = () => inflight;
 
-/** Runs once now, then on every UTC hour. A second call does nothing until `stop`. */
-export function startHourlyNotificationEmails(run: (now: Date) => Promise<unknown> = runDueNotificationEmails) {
+/** Runs once now, then every five minutes; other mail jobs keep their hourly cadence. */
+export function startHourlyNotificationEmails(run: (now: Date, hourly: boolean) => Promise<unknown> = runDueNotificationEmails) {
   if (started) return () => undefined;
   started = true;
   let running = false;
   let interval: ReturnType<typeof setInterval> | undefined;
-  const tick = () => {
+  const tick = (hourly = false) => {
     if (running) return;
     running = true;
     inflight = Promise.resolve()
-      .then(() => run(new Date()))
+      .then(() => run(new Date(), hourly))
       .catch((e: unknown) => log.error('notification emails failed', { error: e instanceof Error ? e.message : String(e) }))
       .finally(() => {
         running = false;
       });
   };
-  tick();
+  tick(true);
   const arm = setTimeout(() => {
-    tick();
-    interval = setInterval(tick, HOUR_MS);
+    tick(new Date().getUTCMinutes() < 5);
+    interval = setInterval(() => tick(new Date().getUTCMinutes() < 5), SWEEP_MS);
     interval.unref?.();
-  }, msUntilNextHour());
+  }, SWEEP_MS - Date.now() % SWEEP_MS);
   arm.unref?.();
   return () => {
     started = false;

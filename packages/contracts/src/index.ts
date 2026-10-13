@@ -38,3 +38,4 @@ export * from './question-export';
 export * from './question-parser-warnings';
 
 export * from './question-admin-catalog';
+export * from './question-operations';

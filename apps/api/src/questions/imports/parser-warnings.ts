@@ -83,7 +83,7 @@ export function summarizeWarnings(
         m: RegExpMatchArray | null;
       if (
         (m = raw.match(
-          /^(duplicate_number|missing_question|unknown_or_ambiguous_key|conflicting_key|expected_question_unmatched|segmentation_incomplete|marker_profile_ambiguous):([1-9]\d{0,2})$/,
+          /^(duplicate_number|missing_question|unknown_or_ambiguous_key|conflicting_key|expected_question_unmatched|segmentation_incomplete|marker_profile_ambiguous|trailing_unattached_text):([1-9]\d{0,2})$/,
         ))
       )
         item = {

@@ -922,3 +922,4 @@ export const mocks = {
 
 export * from './question-catalog';
 export * from './question-admin-catalog';
+export * from './question-operations';

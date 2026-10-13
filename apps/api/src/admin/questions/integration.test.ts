@@ -9,9 +9,11 @@ import {
   QUESTION_PDF_PARSER_VERSION,
 } from "@remoa/contracts";
 const objects = new Map<string, Buffer>();
+const mimes = new Map<string, string>();
 vi.mock("../../storage/storage", () => ({
-  putBytes: vi.fn(async (k: string, b: Buffer) => {
+  putBytes: vi.fn(async (k: string, b: Buffer, mime?: string) => {
     objects.set(k, b);
+    mimes.set(k, mime ?? "application/octet-stream");
   }),
   getBytes: vi.fn(async (k: string) => {
     const b = objects.get(k);
@@ -21,7 +23,10 @@ vi.mock("../../storage/storage", () => ({
   deleteObject: vi.fn(async (k: string) => {
     objects.delete(k);
   }),
-  headObject: vi.fn(async (k: string) => (objects.has(k) ? {} : null)),
+  headObject: vi.fn(async (k: string) => {
+    const b = objects.get(k);
+    return b ? { size: b.length, mime: mimes.get(k) ?? "application/octet-stream" } : null;
+  }),
   presignGet: vi.fn(async (k: string) => "https://example.org/private/" + k),
 }));
 vi.mock("../../cache", () => ({ invalidate: vi.fn(async () => {}) }));
@@ -271,19 +276,26 @@ describe.skipIf(!url)("F33 admin upload to medical publication", () => {
       reason,
     };
     const path = "/admin/imports/" + importId + "/candidates/" + candidateId;
-    expect((await request(path, "PATCH", input)).status).toBe(422);
+    // the import revision moves with every accepted write (revision+1): read the current one before each PATCH
+    const importRevision = async () =>
+      (await request("/admin/imports/" + importId)).data.import.revision as number;
+    expect(
+      (await request(path, "PATCH", { ...input, importRevision: await importRevision() })).status,
+    ).toBe(422);
     expect(
       (
         await request(path, "PATCH", {
           ...input,
           imagesConfirmed: true,
           areaId: wrongArea,
+          importRevision: await importRevision(),
         })
       ).status,
     ).toBe(422);
     const accepted = await request(path, "PATCH", {
       ...input,
       imagesConfirmed: true,
+      importRevision: await importRevision(),
     });
     expect(accepted.status).toBe(200);
     questionId = accepted.data.questionId;
@@ -295,7 +307,7 @@ describe.skipIf(!url)("F33 admin upload to medical publication", () => {
       user_id: null,
     });
     expect(
-      (await request(path, "PATCH", { ...input, imagesConfirmed: true }))
+      (await request(path, "PATCH", { ...input, imagesConfirmed: true, importRevision: await importRevision() }))
         .status,
     ).toBe(409);
     expect(
@@ -305,6 +317,7 @@ describe.skipIf(!url)("F33 admin upload to medical publication", () => {
           imagesConfirmed: true,
           correctKey: "B",
           revision: 1,
+          importRevision: await importRevision(),
         })
       ).status,
     ).toBe(200);
@@ -659,7 +672,11 @@ describe.skipIf(!url)("F33 admin upload to medical publication", () => {
     expect(clone.status).toBe(200);
     expect(clone.data.version).toBe(2);
     const capacityAfter = (await request("/admin/metrics")).data;
-    expect(capacityAfter.publicCanonical).toBe(capacityBefore.publicCanonical);
+    // Global publicCanonical moves while parallel files publish; measure only this test's own area (unique to it).
+    const ownArea = (m: { coverageByArea: { areaId: string; count: number }[] }) =>
+      m.coverageByArea.find((row) => row.areaId === area)?.count;
+    expect(ownArea(capacityBefore)).toBe(1);
+    expect(ownArea(capacityAfter)).toBe(ownArea(capacityBefore));
     expect(
       capacityAfter.publicByOrigin.reduce(
         (n: number, row: { count: number }) => n + row.count,

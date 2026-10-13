@@ -1,0 +1,100 @@
+{
+  "synthetic": true,
+  "startedAt": "2026-10-12T18:51:38.246Z",
+  "finishedAt": "2026-10-12T18:56:38.317Z",
+  "elapsedMs": 300063,
+  "vus": 20,
+  "warmupMs": 30000,
+  "durationMs": 300000,
+  "creationSchedule": "One200-item creation per VU at0/60/120/180/240seconds;100scheduled samples; owner switches to the new active session",
+  "transport": "loopback HTTP, local Postgres, no artificial WAN latency",
+  "cache": "existing application defaults; unique answer mutations, active simulation; no question assets/OCR/provider calls",
+  "counts": {
+    "canonical": 50000,
+    "versions": 5000,
+    "attempts": 100000,
+    "db_size": "425 MB"
+  },
+  "countsKind": "Initial seed; previous/load runs append answers and sessions",
+  "metrics": {
+    "search": {
+      "count": 8358,
+      "p50Ms": 59.95104099999298,
+      "p95Ms": 141.04154200002085,
+      "maxMs": 992.656707999995,
+      "p95Bytes": 60280,
+      "maxBytes": 60280,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "filter": {
+      "count": 8354,
+      "p50Ms": 197.26400000002468,
+      "p95Ms": 361.21408299999894,
+      "maxMs": 1274.6768339999835,
+      "p95Bytes": 66745,
+      "maxBytes": 66745,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "wrong": {
+      "count": 8352,
+      "p50Ms": 108.46479100000579,
+      "p95Ms": 214.856958999997,
+      "maxMs": 1024.855916999979,
+      "p95Bytes": 66708,
+      "maxBytes": 66708,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "recent": {
+      "count": 8351,
+      "p50Ms": 72.32133399997838,
+      "p95Ms": 156.6114579999994,
+      "maxMs": 875.3271250000107,
+      "p95Bytes": 5290,
+      "maxBytes": 5291,
+      "maxQueries": 4,
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "resume": {
+      "count": 8351,
+      "p50Ms": 78.800499999983,
+      "p95Ms": 172.43074999999953,
+      "maxMs": 1161.3631249999744,
+      "p95Bytes": 563070,
+      "maxBytes": 563072,
+      "maxQueries": 10,
+      "targetP95Ms": 400,
+      "pass": true
+    },
+    "answer": {
+      "count": 8347,
+      "p50Ms": 114.54412499999307,
+      "p95Ms": 261.4950839999947,
+      "maxMs": 1240.9285410000011,
+      "p95Bytes": 137,
+      "maxBytes": 138,
+      "maxQueries": 26,
+      "targetP95Ms": 400,
+      "pass": true
+    },
+    "create": {
+      "count": 100,
+      "p50Ms": 285.4122079999652,
+      "p95Ms": 530.5654580000264,
+      "maxMs": 570.554375000007,
+      "p95Bytes": 563070,
+      "maxBytes": 563070,
+      "maxQueries": 23,
+      "targetP95Ms": 400,
+      "pass": false
+    }
+  },
+  "failures": [],
+  "failureCount": 0
+}

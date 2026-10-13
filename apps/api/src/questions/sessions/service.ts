@@ -9,7 +9,7 @@ import {
 import { asServer, pgArray, run } from '../../db';
 import { invalidate } from '../../cache';
 import { withTiming } from '../../perf';
-import { applyOccurrence, catalogJoins, catalogWhere, conflict, missing, obsoleteSuccessor, paperAccess, publicAssets, publicColumns, readable, toQuestion, validation, type Row } from '../catalog/service';
+import { applyOccurrence, catalogJoins, catalogWhere, conflict, missing, obsoleteSuccessor, paperAccess, publicAssets, publicColumns, readable, signature, toQuestion, validation, type Row } from '../catalog/service';
 
 import { answerOutcome } from './recalculation';
 const object = (value: unknown): Row => typeof value === 'object' && value !== null ? value as Row : {};
@@ -33,7 +33,7 @@ async function reference(tx: Tx, userId: string, item: Row): Promise<QuestionRef
 }
 function snapshotReference(q: Row): QuestionReferenceAfterAnswer {
   return questionReferenceAfterAnswerSchema.parse({ questionId:q.id,version:q.version,correctKey:q.correct_key ?? null,explanation:q.explanation ?? null,distractorNotes:q.distractor_notes ?? null,
-    annulled:q.availability==='annulled' || q.occurrence_annulled===true, reviewed:q.reviewed ?? false,reviewerName:q.reviewer_name ?? null,reviewerCrm:q.reviewer_crm ?? null,referenceDate:q.reference_date ?? null,sourceUrl:q.source_url ?? null,obsolete:false });
+    annulled:q.availability==='annulled' || q.occurrence_annulled===true, reviewed:q.reviewed ?? false,...signature(q,q.reviewed===true),referenceDate:q.reference_date ?? null,sourceUrl:q.source_url ?? null,obsolete:false });
 }
 /** Fisher–Yates, server randomness; saved key mapping is never a public field. */
 export function shuffleQuestion(question: QuestionPublic, ref: QuestionReferenceAfterAnswer) {

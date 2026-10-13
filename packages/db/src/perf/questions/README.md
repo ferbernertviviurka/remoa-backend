@@ -65,3 +65,18 @@ Aquecimento: 2026-10-08T23:51:59.399Z; período medido: 23:52:29.502Z–23:57:29
 A meta é p95, não máximo: houve caudas acima de500ms em filtros e acima de400ms em resposta/criação. Retomada/criação preservaram200 itens e aproximadamente493kB por resposta; nenhum gabarito foi exposto antes da submissão/encerramento. As contagens de queries incluem controles de role e Auth.
 
 A readiness imediatamente anterior à carga final mediu50.000 raízes/50.000 IDs canônicos únicos,5.000 versões,114.082 respostas acumuladas e563MB na base isolada, com zero canonical_idNULL e triggers ativos. A contagem100.000 em load-results é explicitamente o seed inicial; cargas anteriores e esta carga acrescentam tentativas. Esta é evidência de desempenho com dados sintéticos locais, não comprovação de50.000 questões adquiridas nem latência de produção. Imagens, WAN, OCR, provedores e verificação remota JWT/JWKS permanecem fora da amostra.
+
+## Banco `remoa_f33_bench` (bench local)
+
+Mesmo harness, outro banco isolado (localhost, nome casando `remoa_perf|f33_(test|bench)`; qualquer outro é recusado). Criar com `scripts/f33-test-db.sh remoa_f33_bench`, depois, em `remoa-backend`:
+
+```sh
+export F33_PERF_DB=remoa_f33_bench   # opcionais: F33_PERF_DB_PORT=54322, F33_PERF_HTTP_PORT=43177
+node packages/db/src/perf/questions/seed.mjs && node packages/db/src/perf/questions/readiness.mjs
+pnpm --filter @remoa/db exec tsx src/perf/questions/server.mjs        # terminal 1
+node packages/db/src/perf/questions/load.mjs                          # terminal 2 (p50/p95/p99)
+F33_EXPLAIN_PHASE=final pnpm --filter @remoa/db exec tsx src/perf/questions/explain.mjs
+pnpm --filter @remoa/db exec tsx src/perf/questions/explain-extra.mjs # detalhe, admin, histórico, métricas
+```
+
+Com `F33_PERF_DB` os resultados e o `seed-state.json` ficam em `questions/bench/`, sem tocar os de `remoa_perf`.

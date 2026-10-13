@@ -3,7 +3,7 @@ import {
   type AnyPgColumn, boolean, check, foreignKey, index, integer, jsonb, pgTable, real, smallint, text, timestamp, unique, uniqueIndex, uuid,
 } from 'drizzle-orm/pg-core';
 import {
-  catalogAlternativeKeys, questionOrigins, questionVisibilities, questionCatalogStatuses, questionRightsStatuses, questionAvailabilityStatuses, aiItemTypes, cardRubricStatuses, challengeFormats, challengeItemKinds, challengeSessionStatuses, enamedTaxonomyKinds,
+  catalogAlternativeKeys, questionOrigins, questionVisibilities, questionCatalogStatuses, questionRightsStatuses, questionAvailabilityStatuses, aiItemTypes, cardRubricStatuses, challengeFormats, challengeItemKinds, challengeSessionStatuses, enamedTaxonomyKinds, questionValidationKinds,
   gradedBy, grades, questionDifficulties, questionSources, questionStatuses, questionTypes, summaryFocuses, summarySizes, verdicts,
   type AiAnswerInput, type AiChallengeItemPublic, type ChallengeConfig, type ChallengeScope, type QuestionEvidence, type QuestionStats,
   type ReferenceRef, type ShuffleMap, type SummarySection,
@@ -83,6 +83,8 @@ export const questionBank = pgTable('question_bank', {
   reviewedHash: text('reviewed_hash'),
   reviewerName: text('reviewer_name'),
   reviewerCrm: text('reviewer_crm'),
+  /** D-1819: medical_review = physician seal; remoa_institutional = "Validado pela Remoa" (attested, never confirmed; CRM null). */
+  validationKind: text('validation_kind', { enum: questionValidationKinds }).notNull().default('medical_review'),
   referenceDate: text('reference_date'),
   assets: jsonb('assets').notNull().default([]),
   publishedAt: timestamp('published_at', { withTimezone: true }),
@@ -105,7 +107,8 @@ export const questionBank = pgTable('question_bank', {
   check('question_bank_availability_chk', oneOf(t.availability, questionAvailabilityStatuses)),
   check('question_bank_public_privacy_chk', sql`${t.visibility} <> 'public' or (${t.boardId} is null and cardinality(${t.cardIds}) = 0 and ${t.evidences} = '[]'::jsonb)`),
   check('question_bank_owner_chk', sql`${t.userId} is not null or (${t.visibility} = 'public' and ${t.origin} in ('official_exam','remoa_authored'))`),
-  check('question_bank_publish_chk', sql`${t.catalogStatus} <> 'published' or (${t.visibility} = 'public' and ${t.rightsStatus} = 'authorized' and ${t.status} = 'approved' and ${t.integrityConfirmed} and ${t.keyFinal} and ${t.enamedConfirmed} and ${t.enamedAreaId} is not null and ${t.enamedTopicId} is not null and ${t.contentHash} is not null and ${t.reviewedHash} is not null and ${t.reviewedHash} = ${t.contentHash} and nullif(btrim(${t.reviewerName}),'') is not null and nullif(btrim(${t.reviewerCrm}),'') is not null and ${t.referenceDate} is not null)`),
+  check('question_bank_validation_kind_chk', oneOf(t.validationKind, questionValidationKinds)),
+  check('question_bank_publish_chk', sql`${t.catalogStatus} <> 'published' or (${t.visibility} = 'public' and ${t.rightsStatus} = 'authorized' and ${t.status} = 'approved' and ${t.enamedAreaId} is not null and ${t.enamedTopicId} is not null and ${t.contentHash} is not null and ${t.reviewedHash} is not null and ${t.reviewedHash} = ${t.contentHash} and nullif(btrim(${t.reviewerName}),'') is not null and ${t.referenceDate} is not null and ((${t.validationKind} = 'medical_review' and ${t.integrityConfirmed} and ${t.keyFinal} and ${t.enamedConfirmed} and nullif(btrim(${t.reviewerCrm}),'') is not null) or (${t.validationKind} = 'remoa_institutional' and ${t.userId} is null and ${t.origin} = 'remoa_authored' and ${t.reviewerCrm} is null and ${t.correctKey} is not null)))`),
   index('question_bank_board_idx').on(t.boardId),
   index('question_bank_supersedes_idx').on(t.supersedesId).where(sql`${t.supersedesId} is not null`),
   check('question_bank_type_chk', oneOf(t.type, questionTypes)),

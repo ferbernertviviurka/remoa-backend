@@ -8,7 +8,7 @@ type Row=Record<string,unknown>;
 /** Durable bounded worker. No provider call, no quota reservation, no public publication. */
 export async function reconcileQuestionGenerations(limit=20){
   const {db}=await dbm();const worker=randomUUID();
-  const jobs=await db.transaction(async tx=>tx.execute<Row>(sql`WITH pending AS (SELECT id FROM question_outbox WHERE target IN ('question-receipt','question-promotion') AND delivered_at IS NULL AND attempts<20 AND (lease_until IS NULL OR lease_until<now()) ORDER BY created_at LIMIT ${Math.min(50,Math.max(1,limit))} FOR UPDATE SKIP LOCKED), claimed AS (UPDATE question_outbox o SET worker_id=${worker},lease_until=now()+interval '2 minutes',attempts=attempts+1 FROM pending p WHERE o.id=p.id RETURNING o.*) SELECT claimed.*,r.user_id owner_id FROM claimed JOIN question_generation_runs r ON r.id=claimed.run_id`));
+  const jobs=await db.transaction(async tx=>tx.execute<Row>(sql`WITH pending AS (SELECT id FROM question_outbox WHERE target IN ('question-receipt','question-promotion') AND delivered_at IS NULL AND attempts<attempt_limit AND (lease_until IS NULL OR lease_until<now()) ORDER BY created_at LIMIT ${Math.min(50,Math.max(1,limit))} FOR UPDATE SKIP LOCKED), claimed AS (UPDATE question_outbox o SET worker_id=${worker},lease_until=now()+interval '2 minutes',attempts=attempts+1 FROM pending p WHERE o.id=p.id RETURNING o.*) SELECT claimed.*,r.user_id owner_id FROM claimed JOIN question_generation_runs r ON r.id=claimed.run_id`));
   let delivered=0,failed=0;
   // Rotate legacy discovery durably; a negative HEAD is a cooldown, never a permanent exclusion.
   const discovery=await db.transaction(async tx=>{
