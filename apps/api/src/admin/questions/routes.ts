@@ -23,12 +23,11 @@ import {
   questionCandidateNumberInputSchema,
   questionImportContextResolveInputSchema,
   reasonSchema,
-  ADMIN_LIMITS,
   questionOrigins,
 } from "@remoa/contracts";
 import { dbm } from "../../db";
 import {latest,readable} from "../../questions/catalog/service";
-import { withAdmin, reasonOf, send, isFresh, type AdminEnv } from "../core";
+import { withAdmin, reasonOf, send, type AdminEnv } from "../core";
 import {
   createImport,
   documentPreview,
@@ -171,11 +170,8 @@ export const questionAdminRoutes = new Hono<AdminEnv>()
         reason,
         target: { type: "question_import" as const, id: "document" },
       };
-      // withAdmin still owns denial audit; preparation only begins after its same reason/reauth gates pass.
-      if (
-        !reasonSchema.safeParse(reason).success ||
-        !isFresh(c.get("authAt"), ADMIN_LIMITS.reauthMinutes * 60_000)
-      )
+      // withAdmin still owns denial audit; preparation only begins after its same reason gate pass.
+      if (!reasonSchema.safeParse(reason).success)
         return send(
           await withAdmin(c, "question.import", opts, async () => ok({})),
         );
@@ -517,10 +513,7 @@ export const questionAdminRoutes = new Hono<AdminEnv>()
           target: { type: "question_candidate" as const, id: candidateId },
         };
       // Denial audit happens before decoding any PDF, exactly as document upload.
-      if (
-        !reasonSchema.safeParse(opts.reason).success ||
-        !isFresh(c.get("authAt"), ADMIN_LIMITS.reauthMinutes * 60_000)
-      )
+      if (!reasonSchema.safeParse(opts.reason).success)
         return send(
           await withAdmin(c, "question.candidate_update", opts, async () =>
             ok({}),

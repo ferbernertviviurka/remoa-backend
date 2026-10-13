@@ -8,7 +8,7 @@ import { Hono } from 'hono';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
 import {
-  ADMIN_LIMITS, err, ok, parseWith, reasonSchema, questionBankServerSchema, QUESTION_CONTENT_HASH_VERSION, QUESTION_OUTBOX_MAX_ATTEMPTS,
+  err, ok, parseWith, reasonSchema, questionBankServerSchema, QUESTION_CONTENT_HASH_VERSION, QUESTION_OUTBOX_MAX_ATTEMPTS,
   questionHashPrepareInputSchema, questionHashPrepareItemResultSchema, questionOutboxRecoverInputSchema, questionOutboxRecoverItemResultSchema,
   questionAdminOutboxQuerySchema, questionGenerationMetricsQuerySchema, questionRecoveryTargets,
   questionInstitutionalApproveInputSchema, questionInstitutionalApproveItemResultSchema, QUESTION_REMOA_RIGHTS_SCOPE,
@@ -16,7 +16,7 @@ import {
 } from '@remoa/contracts';
 import { env } from '@remoa/config';
 import { dbm, uuids } from '../../db';
-import { withAdmin, reasonOf, send, isFresh, type AdminEnv, type AuditCapture } from '../core';
+import { withAdmin, reasonOf, send, type AdminEnv, type AuditCapture } from '../core';
 import { lockAssociatedQuestionGraphs } from './recovery';
 import { publishQuestion } from './service';
 import { contentHash } from '../../questions/imports/domain';
@@ -303,8 +303,8 @@ export const questionAdminOperationsRoutes = new Hono<AdminEnv>()
     const json = await readJson(c);
     const opts = { reason: reasonOf(json), target: { type: 'question_outbox' as const, id: keyOf(json) } };
     const gate = <T extends object>(r: Result<T>) => withAdmin(c, 'question.generation_recover', opts, async () => r);
-    // withAdmin still writes the denial; storage is only read after the same reason/reauth gates and a valid body.
-    if (!reasonSchema.safeParse(opts.reason).success || !isFresh(c.get('authAt'), ADMIN_LIMITS.reauthMinutes * 60_000)) return send(await gate(ok({})));
+    // withAdmin still writes the denial; storage is only read after the same reason gate and a valid body.
+    if (!reasonSchema.safeParse(opts.reason).success) return send(await gate(ok({})));
     const input = parseWith(questionOutboxRecoverInputSchema, json);
     if (!input.ok) return send(await gate(input));
     const checks = await precheckRecovery(input.data);

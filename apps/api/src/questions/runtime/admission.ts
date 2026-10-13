@@ -51,14 +51,17 @@ export const questionFeatureGate = (feature: QuestionFeature) =>
       ? next()
       : send(err("not_found", "route not found")),
   );
-// ponytail: per-instance email cache, never expires; a changed e-mail needs an API restart to re-check.
-const emails = new Map<string, string | null>();
+// ponytail: per-instance email cache, never expires; a changed e-mail needs an API restart to re-check. Misses (no profile yet) are never cached.
+const emails = new Map<string, string>();
 /** D-1838: student-facing flags for this user; outside the allowlist the bank, sessions and builder read as closed. */
 async function studentAllowed(userId: string) {
   const allow = questionStudentEmails();
   if (!allow.length) return true;
-  if (!emails.has(userId)) emails.set(userId, (await accountState(userId))?.email?.toLowerCase() ?? null);
-  const e = emails.get(userId);
+  let e = emails.get(userId);
+  if (!e) {
+    e = (await accountState(userId))?.email?.toLowerCase();
+    if (e) emails.set(userId, e);
+  }
   return !!e && allow.includes(e);
 }
 /** D-1838: student-facing flags for this user; outside the allowlist the bank, sessions and builder read as closed. */

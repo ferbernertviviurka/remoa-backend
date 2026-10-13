@@ -173,6 +173,21 @@ export const questionImportStatusResultSchema=z.object({import:questionImportPro
 export const questionImportDetailSchema=z.object({import:questionImportProgressSchema,paper:questionExamPaperAdminSchema.nullable(),candidates:z.array(questionCandidateSchema),contexts:z.array(questionImportContextSchema).max(1000).default([]),acceptanceBlocked:z.boolean().default(false),documents:z.array(questionDocumentSchema),audit:auditEntrySchema}).strict();
 export const questionCandidateSavedSchema=z.object({candidate:questionCandidateSchema,questionId:idSchema.nullable(),importRevision:importRevisionSchema.default(0),affectedCandidates:z.array(questionCandidateSchema).default([]),audit:auditEntrySchema}).strict();
 export const questionCandidatePageImageResultSchema=questionCandidateSavedSchema;
+/**
+ * D-1838: POST /v1/admin/questions/imports/:id/candidates/accept — "Aceitar selecionadas". withAdmin 'question.candidate_update',
+ * target question_import, ONE audit row per call (after = per-item {id, outcome, code, questionId}), no 30-min reauth (D-1838).
+ * Each item runs the same updateCandidate path as the single PATCH (state accepted, payload as saved) in its own savepoint;
+ * `confirmsChecks` is the admin's one attestation for every item (integrity, final key, figures), as the per-item checkboxes.
+ * Accepted = draft in_review for medical review; never publishes. Whole call 409 when the import revision changed or the paper is
+ * frozen; 422 when a shared context is unresolved.
+ */
+export const QUESTION_CANDIDATE_ACCEPT_MAX = 200;
+export const questionCandidateAcceptInputSchema=z.object({importRevision:importRevisionSchema,items:z.array(z.object({id:idSchema,revision:z.number().int().nonnegative()}).strict()).min(1).max(QUESTION_CANDIDATE_ACCEPT_MAX).refine(items=>new Set(items.map(i=>i.id)).size===items.length,'duplicate_ids'),confirmsChecks:z.literal(true),reason:adminReason}).strict();
+export type QuestionCandidateAcceptInput=z.infer<typeof questionCandidateAcceptInputSchema>;
+export const questionCandidateAcceptOutcomes=['accepted','already_accepted','not_found','not_pending','conflict','has_issues','taxonomy_missing','answer_key_missing','needs_images','invalid'] as const;
+export type QuestionCandidateAcceptOutcome=typeof questionCandidateAcceptOutcomes[number];
+export const questionCandidateAcceptResultSchema=z.object({results:z.array(z.object({id:idSchema,outcome:z.enum(questionCandidateAcceptOutcomes),questionId:idSchema.nullable()}).strict()).max(QUESTION_CANDIDATE_ACCEPT_MAX),importRevision:importRevisionSchema,audit:auditEntrySchema}).strict();
+export type QuestionCandidateAcceptResult=z.infer<typeof questionCandidateAcceptResultSchema>;
 export const questionEditorialQueueSchema=z.object({items:z.array(questionReviewDetailSchema)}).strict();
 export const questionEditorialDetailSchema=z.object({question:questionReviewDetailSchema,source:questionSourceSchema.nullable(),latestReview:questionLatestReviewSchema.nullable()}).strict();
 export const questionMedicalReviewResultSchema=z.object({id:idSchema,decision:z.enum(['approved','changes_requested','rejected']),contentHash:z.string(),audit:auditEntrySchema}).strict();
