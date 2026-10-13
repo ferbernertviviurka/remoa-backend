@@ -77,6 +77,51 @@ describe.skipIf(!url)('F34 exam builder', () => {
     expect((await request('/exam-builder/availability', 'POST', { ...filter(), extra: 1 })).status).toBe(422);
   });
 
+  it('D-1846: boardId keeps only the AI questions of that map (catalog part untouched) in availability, preview and start', async () => {
+    const board = randomUUID();
+    await db`INSERT INTO boards(id,user_id,title) VALUES(${board},${owner},'Synthetic map')`;
+    await db`UPDATE question_bank SET board_id=${board} WHERE id=${aiA1}`;
+    try {
+      const total = async (over: Record<string, unknown>) => examAvailabilitySchema.parse((await request('/exam-builder/availability', 'POST', filter(over))).body.data).total;
+      expect(await total({ source: 'ai', areaIds: [], boardId: board })).toBe(1); // aiA1, not aiNone
+      expect(await total({ source: 'ai', areaIds: [], boardId: randomUUID() })).toBe(0);
+      expect(await total({ source: 'catalog_and_ai', boardId: board })).toBe(10); // 9 public + aiA1
+      const p = examPreviewSchema.parse((await preview({ params: params({ source: 'ai', areaIds: [], boardId: board, count: 5 }), pinnedIds: [], excludedIds: [] })).body.data);
+      expect(p.items.map((i) => i.questionId)).toEqual([aiA1]);
+      const s = await request('/question-sessions', 'POST', await startBody([aiNone], p.seed, { source: 'ai', areaIds: [], boardId: board }), owner, randomUUID());
+      expect([s.status, s.body.error?.message ?? s.body.error?.code]).toEqual([409, expect.stringMatching(/exam_changed/)]);
+    } finally {
+      await db`UPDATE question_bank SET board_id=null WHERE id=${aiA1}`;
+      await db`DELETE FROM boards WHERE id=${board}`;
+    }
+  });
+
+  it('D-1846: generate (AI=mock, no provider) saves questions of the map that the builder then finds by boardId', async () => {
+    const board = randomUUID(), matrix = randomUUID();
+    vi.stubEnv('AI', 'mock');
+    await db`INSERT INTO matrix_items(id,area,code,title) VALUES(${matrix},'CM',${'SYN-' + matrix.slice(0, 8)},'Synthetic matrix item')`;
+    await db`UPDATE enamed_taxonomy SET matrix_ref=${matrix} WHERE id=${topic}`;
+    await db`INSERT INTO boards(id,user_id,title,matrix_item_id) VALUES(${board},${owner},'Synthetic map',${matrix})`;
+    await db`INSERT INTO cards(board_id,title) VALUES(${board},'Synthetic card alpha'),(${board},'Synthetic card beta')`;
+    try {
+      expect((await request('/exam-builder/generate', 'POST', { boardId: board, count: 2 }, other)).status).toBe(404); // not the owner's map
+      const g = await request('/exam-builder/generate', 'POST', { boardId: board, count: 2 });
+      expect(g.status).toBe(200);
+      const ids = (g.body.data as unknown as { questionIds: string[] }).questionIds;
+      expect(ids.length).toBeGreaterThan(0);
+      extra.push(...ids);
+      expect(g.text).not.toMatch(/correct|stem/i);
+      const av = examAvailabilitySchema.parse((await request('/exam-builder/availability', 'POST', filter({ source: 'ai', areaIds: [], boardId: board }))).body.data);
+      expect(av.total).toBe(ids.length);
+    } finally {
+      vi.unstubAllEnvs();
+      await db`DELETE FROM question_bank WHERE board_id=${board}`;
+      await db`DELETE FROM boards WHERE id=${board}`;
+      await db`UPDATE enamed_taxonomy SET matrix_ref=null WHERE id=${topic}`;
+      await db`DELETE FROM matrix_items WHERE id=${matrix}`;
+    }
+  });
+
   it('preview is deterministic by seed, distinct, balanced, keeps pinned, honors excluded, never completes and never leaks the key', async () => {
     const first = await preview({ params: params() });
     expect(first.status).toBe(200);

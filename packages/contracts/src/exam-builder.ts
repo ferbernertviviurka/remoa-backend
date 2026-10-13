@@ -25,6 +25,8 @@ export const examBuilderFilterSchema = z.object({
   matrixItemIds: uniqueIds(EXAM_BUILDER_LIMITS.maxTopics),
   difficulties: z.array(z.enum(difficulties)).max(3).default([]).refine((a) => new Set(a).size === a.length, 'duplicate_difficulty'),
   progress: z.enum(examBuilderProgress).default('all'),
+  /** D-1846: map as base. Restricts the private ai_generated pool to questions generated from this map (the catalog part is unaffected). null = any map. */
+  boardId: idSchema.nullable().default(null),
 }).strict();
 export type ExamBuilderFilter = z.infer<typeof examBuilderFilterSchema>;
 export const examBuilderParamsSchema = examBuilderFilterSchema.extend({
@@ -87,3 +89,23 @@ export function allocateExam(areas: readonly AllocationArea[], count: number, di
 
 /** Stored inside question_sessions.config (snapshot of how the exam was built). Start = POST /v1/question-sessions with questionIds + builder. */
 export const questionSessionBuilderSchema = z.object({ seed: examSeedSchema, params: examBuilderParamsSchema, templateId: idSchema.nullable().default(null) }).strict();
+
+// --- D-1846: AI questions generated on the fly from a map, before the preview -------------------------------------
+/** Objective only (sessions take objective). Reuses the map's unseen saved questions first, then the model; charges ai_question_batches like F32. */
+export const EXAM_GENERATE_MAX = 20;
+export const examGenerateInputSchema = z.object({
+  boardId: idSchema,
+  count: z.number().int().min(1).max(EXAM_GENERATE_MAX),
+  difficulty: z.enum([...difficulties, 'mixed']).default('mixed'),
+}).strict();
+export type ExamGenerateInput = z.input<typeof examGenerateInputSchema>;
+export const examGenerateResultSchema = z.object({
+  /** Delivered ids (reused first): pin them in the preview. Never a stem or an answer key here. */
+  questionIds: z.array(idSchema).max(EXAM_GENERATE_MAX),
+  requested: z.number().int().min(0),
+  reused: z.number().int().min(0),
+  generated: z.number().int().min(0),
+  shortfall: z.number().int().min(0),
+  stoppedBy: z.enum(['quota', 'ai_error']).nullable(),
+}).strict();
+export type ExamGenerateResult = z.infer<typeof examGenerateResultSchema>;
