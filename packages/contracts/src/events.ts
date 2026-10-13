@@ -239,7 +239,6 @@ export const eventSchemas = {
   manipulation_detected: z.object({ gradedBy: z.enum(['prefilter', 'ai']) }).strict(),
   verdict_disputed: none,
   summary_generated: z.object({ size: z.enum(summarySizes), focus: z.enum(summaryFocuses), cards: count }).strict(),
-  bank_opened: none,
 } as const;
 
 export type EventName = keyof typeof eventSchemas;

@@ -55,6 +55,13 @@ export const PLAN_CHALLENGE_AI_LIMITS = {
   founder: { ai_question_batches: null, ai_summaries: null },
 } as const satisfies Record<Plan, Record<(typeof CHALLENGE_AI_QUOTA_KEYS)[number], number | null>>;
 
+/** F34 FR-4/FR-31 (D-1829, provisional until Q-106): saved exam templates per account. Exam size is 1..200 on every plan (EXAM_BUILDER_LIMITS). */
+export const PLAN_EXAM_BUILDER_LIMITS = {
+  free: { exam_templates: 3 },
+  pro: { exam_templates: 20 },
+  founder: { exam_templates: null },
+} as const satisfies Record<Plan, Record<'exam_templates', number | null>>;
+
 /** Upper bound of `limit` (default stays SESSION_SIZE): the Revisar hub starts the whole filtered selection. */
 export const REVIEW_SESSION_MAX = 100;
 
@@ -81,6 +88,8 @@ export const notificationTypes = [
   'dispute_resolved',
   // D-1213: the free Pro trial ends in TRIAL_NOTICE_DAYS days / today.
   'trial_ending',
+  // CCR-148 (F34 FR-18): the reporter learns that a question report was analysed. In-app only.
+  'question_report_resolved',
 ] as const;
 
 /** Chips on /notificacoes, in this order (Todas is "no category"). */
@@ -175,10 +184,10 @@ export type PlanFeatureKey = (typeof planFeatureKeys)[number];
  * anki_import_cards = cards por arquivo (F06); ai_question_batches = lotes de perguntas geradas/dia; ai_summaries = resumos/mês (F30, D-1601).
  * The challenge AI keys are not matrix rows (planFeatureKeys).
  */
-export type PlanDefinition = Record<PlanFeatureKey | (typeof CHALLENGE_AI_QUOTA_KEYS)[number], number | null>;
+export type PlanDefinition = Record<PlanFeatureKey | (typeof CHALLENGE_AI_QUOTA_KEYS)[number] | 'exam_templates', number | null>;
 export const planDefinition = (plan: Plan): PlanDefinition => {
   const p = PLAN_LIMITS[plan];
-  return { ...p.limits, ...PLAN_CHALLENGE_AI_LIMITS[plan], anki_imports: p.ankiImports, anki_import_cards: p.ankiImportMaxCards, new_cards_per_day: p.newCardsPerDay };
+  return { ...p.limits, ...PLAN_CHALLENGE_AI_LIMITS[plan], ...PLAN_EXAM_BUILDER_LIMITS[plan], anki_imports: p.ankiImports, anki_import_cards: p.ankiImportMaxCards, new_cards_per_day: p.newCardsPerDay };
 };
 
 export const usageTones = ['normal', 'warn', 'full'] as const;

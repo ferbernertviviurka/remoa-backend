@@ -2,7 +2,7 @@
 /** F33. Content versions use question_bank.supersedes_id; there is no second version chain. */
 import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
-import { questionImportStatuses, questionRightsStatuses, questionCandidateStatuses, questionValidationKinds, type QuestionPublic, type QuestionSessionConfig, type QuestionProvenance } from '@remoa/contracts';
+import { questionImportStatuses, questionRightsStatuses, questionCandidateStatuses, questionValidationKinds, type QuestionPublic, type QuestionSessionConfig, type ExamBuilderParams, type QuestionProvenance } from '@remoa/contracts';
 import { timestamps, userId,authUsers } from './common';
 // Institutional operation identities are attribution, never ownership of the institutional asset.
 const institutionalActor=()=>uuid('user_id').references(()=>authUsers.id,{onDelete:'set null'});
@@ -75,7 +75,9 @@ export const questionEditorialReviews = pgTable('question_editorial_reviews', {
 }, (t) => [index('question_editorial_question_hash_idx').on(t.questionId, t.contentHash), index('question_editorial_reviewer_idx').on(t.reviewerId), check('question_editorial_decision_chk', sql`${t.decision} in ('approved','changes_requested','rejected')`), check('question_editorial_kind_chk', sql`${t.kind} in ('medical_review','remoa_institutional')`), check('question_editorial_identity_chk', sql`length(btrim(${t.reviewerName})) > 0 and length(btrim(${t.reason})) >= 8 and case ${t.kind} when 'medical_review' then nullif(btrim(${t.reviewerCrm}),'') is not null else ${t.reviewerCrm} is null and ${t.decision} = 'approved' end`)]);
 export const questionSessions = pgTable('question_sessions', {
   id: id(), userId: userId(), mode: text('mode').notNull(), paperId: uuid('paper_id').references(() => examPapers.id), config: jsonb('config').$type<QuestionSessionConfig>().notNull(), status: text('status').notNull().default('active'), revision: integer('revision').notNull().default(0), idempotencyKey: text('idempotency_key').notNull(), startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(), deadline: timestamp('deadline', { withTimezone: true }), finishedAt: timestamp('finished_at', { withTimezone: true }), report: json('report'), ...timestamps,
-}, (t) => [unique('question_sessions_id_user_uq').on(t.id, t.userId), unique('question_sessions_owner_key_uq').on(t.userId, t.idempotencyKey), index('question_sessions_paper_idx').on(t.paperId), index('question_sessions_owner_created_idx').on(t.userId, t.createdAt), check('question_sessions_mode_chk', sql`${t.mode} in ('study','simulation')`), check('question_sessions_status_chk', sql`${t.status} in ('active','finished','expired')`)]);
+}, (t) => [unique('question_sessions_id_user_uq').on(t.id, t.userId), unique('question_sessions_owner_key_uq').on(t.userId, t.idempotencyKey), index('question_sessions_paper_idx').on(t.paperId), index('question_sessions_owner_created_idx').on(t.userId, t.createdAt), check('question_sessions_mode_chk', sql`${t.mode} in ('study','simulation')`), check('question_sessions_status_chk', sql`${t.status} in ('active','finished','expired')`),
+  // F34 D-1827: at most one active exam-builder session per owner (two tabs/double click). API settles expired ones first.
+  uniqueIndex('question_sessions_one_active_builder_uq').on(t.userId).where(sql`${t.status} = 'active' and ${t.config} ? 'builder'`)]);
 // question_id NO ACTION is DEFERRABLE INITIALLY DEFERRED in0045 for a whole-owner auth cascade.
 export const questionSessionItems = pgTable('question_session_items', {
   id: id(), userId: userId(), sessionId: uuid('session_id').notNull(), questionId: uuid('question_id').notNull().references(() => questionBank.id), position: integer('position').notNull(), originalNumber: text('original_number'), payloadPublic: jsonb('payload_public').$type<QuestionPublic>().notNull(), referenceSnapshot: json('reference_snapshot').notNull(), shuffleMap: json('shuffle_map'), selectedKey: text('selected_key'), doubtful: boolean('doubtful').notNull().default(false), answered: boolean('answered').notNull().default(false), revision: integer('revision').notNull().default(0), ...timestamps,
@@ -89,3 +91,13 @@ export const questionUserState = pgTable('question_user_state', {
 export const questionReports = pgTable('question_reports', {
   id: id(), userId: userId(), questionId: uuid('question_id').notNull().references(() => questionBank.id, { onDelete: 'cascade' }), version: integer('version').notNull(), type: text('type').notNull(), description: text('description').notNull(), status: text('status').notNull().default('open'), ...timestamps,
 }, (t) => [index('question_reports_owner_idx').on(t.userId), index('question_reports_question_idx').on(t.questionId)]);
+
+/** F34 FR-31 (D-1829): saved exam-builder params (never a question list). Owner-only; writes through the API (server role). */
+export const examTemplates = pgTable('exam_templates', {
+  id: id(), userId: userId(), name: text('name').notNull(), params: jsonb('params').$type<ExamBuilderParams>().notNull(), ...timestamps,
+}, (t) => [unique('exam_templates_owner_name_uq').on(t.userId, t.name), index('exam_templates_owner_created_idx').on(t.userId, t.createdAt), check('exam_templates_name_chk', sql`char_length(btrim(${t.name})) between 1 and 80`)]);
+/** CCR-149 / D-1833: ids hidden by the catalog `latest` rule (a newer version exists from the row's own perspective). Server-only, maintained by
+ * the question_superseded_sync trigger on question_bank (0056); never written by the app. `latest` ⇔ NOT EXISTS here. */
+export const questionSuperseded = pgTable('question_superseded', {
+  questionId: uuid('question_id').primaryKey().references(() => questionBank.id, { onDelete: 'cascade' }),
+}).enableRLS();

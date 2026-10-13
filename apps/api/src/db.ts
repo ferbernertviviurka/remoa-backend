@@ -9,7 +9,8 @@ import { liveSessionSql, SessionRejected, sessionGate, settleGate, type SessionR
 import { perfStore } from './perf';
 
 // Lazy: importing @remoa/db throws without DATABASE_URL, and app.test.ts must load the app without a database.
-export const dbm = () => import('@remoa/db');
+let databaseModule: Promise<typeof import('@remoa/db')> | undefined;
+export const dbm = () => (databaseModule ??= import('@remoa/db'));
 
 /** G21 FR-25 (D-993): per transaction (SET LOCAL), so they never leak to the next user of the pooled connection. */
 export const TIMEOUTS = { app: { statementMs: 5_000, idleTxMs: 10_000 }, job: { statementMs: 30_000, idleTxMs: 60_000 } } as const;
@@ -47,29 +48,58 @@ type RunCtx = { gate: Promise<unknown>; final: <R>(q: PromiseLike<R>) => Promise
  * with the pool handing out its idle connections in turn, every statement was cold up to 10 times after a deploy (p95 1–1,8 s on the
  * first pass). run() remembers each parameterized statement it sends (text + argument kinds: postgres.js keys its cache on both).
  * A new one wakes `warmIdle()`, which takes the pool's idle connections one at a time (never more than one held) and prepares there
- * what they lack; a run() also prepares up to WARM_PER_RUN after its transaction ends, before its connection goes back to the pool.
+ * what they lack; a run() records successful uses but releases its connection immediately after its transaction ends.
  * No request waits on either. ponytail: one Describe round trip per statement and connection, in the background; process-wide caps;
  * pids of closed connections stay in `warmOn` (a handful per day).
  */
 const WARM_PER_RUN = 4;
+export const WARM_OPERATION_MS = 2_000;
 let warming: Promise<void> | undefined;
-let again = false;
+
+/** A queued reserve cannot be cancelled by postgres.js. Release a late acquisition rather than orphaning it. */
+async function reserveForWarm(c: Dbm['db']['$client'], signal?: AbortSignal): Promise<Reserved> {
+  const pending = c.reserve();
+  try { return await warmWait(pending, signal); }
+  catch (e) { void pending.then((r) => r.release(), () => undefined); throw e; }
+}
+
+/** Bound only the queued acquisition; active driver queries keep their lease until they naturally settle. */
+function warmWait<T>(pending: PromiseLike<T>, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); fn();
+    };
+    const abort = () => finish(() => {
+      reject(new Error('database warm-up interrupted'));
+    });
+    const timer = setTimeout(abort, WARM_OPERATION_MS);
+    signal?.addEventListener('abort', abort, { once: true });
+    Promise.resolve(pending).then((v) => finish(() => resolve(v)), (e: unknown) => finish(() => reject(e)));
+    if (signal?.aborted) abort();
+  });
+}
+
+async function warmConnection(r: Reserved, signal?: AbortSignal) {
+  if (signal?.aborted) return;
+  const q = r.unsafe('select 1');
+  // postgres.js CancelRequest uses a separate socket and cancel() returns void. Do not release an active query
+  // on an artificial deadline: a delayed cancel could hit the next user's query on that connection.
+  await q;
+  if (signal?.aborted) return;
+  await shareStatements(r, (q as unknown as { state?: { pid?: number } }).state?.pid, new Set(), WARM_PER_RUN, signal);
+}
+
 function warmIdle(m: Dbm) {
-  if (warming) return void (again = true);
+  if (warming) return;
+  // One finite pass: a stream of newly learned queries must never keep a connection in an endless replay loop.
   warming = (async () => {
-    do {
-      again = false;
-      for (let i = 0; i < m.db.$client.options.max; i++) {
-        const r = await m.db.$client.reserve(); // the longest idle connection
-        try {
-          const q = r.unsafe('select 1');
-          await q;
-          await shareStatements(r, (q as unknown as { state?: { pid?: number } }).state?.pid, new Set(), Infinity);
-        } finally {
-          r.release();
-        }
-      }
-    } while (again);
+    for (let i = 0; i < m.db.$client.options.max; i++) {
+      const r = await reserveForWarm(m.db.$client);
+      try { await warmConnection(r); }
+      finally { r.release(); }
+    }
   })().catch(() => undefined).finally(() => (warming = undefined));
 }
 const learned = new Map<string, { q: string; args: unknown[] }>();
@@ -78,35 +108,39 @@ const shape = (x: unknown): unknown => (x instanceof Date ? new Date(0) : typeof
   : x instanceof Uint8Array ? new Uint8Array() : Array.isArray(x) ? [shape(x[0])] : null); // same inferred type, no user data kept
 const kindOf = (x: unknown): string => (x instanceof Date ? 'd' : typeof x === 'boolean' ? 'b' : typeof x === 'bigint' ? 'n'
   : x instanceof Uint8Array ? 'u' : Array.isArray(x) ? `a${kindOf(x[0])}` : '0');
-async function shareStatements(r: Reserved, pid: number | undefined, used: Set<string>, cap = WARM_PER_RUN) {
+async function shareStatements(r: Reserved, pid: number | undefined, used: Set<string>, cap = WARM_PER_RUN, signal?: AbortSignal) {
   if (!pid) return;
   const have = warmOn.get(pid) ?? new Set<string>();
   warmOn.set(pid, have);
   for (const k of used) have.add(k);
   let n = 0;
   for (const [k, s] of learned) {
-    if (n >= cap) break;
+    if (n >= cap || signal?.aborted) break;
     if (have.has(k)) continue;
-    have.add(k);
     n++;
-    await (r.unsafe(s.q, s.args as never[], { prepare: true }) as unknown as { describe: () => Promise<unknown> }).describe().catch(() => undefined);
+    const query = r.unsafe(s.q, s.args as never[], { prepare: true });
+    try {
+      await query.describe();
+      have.add(k); // a failed/aborted prepare remains eligible for a later finite pass
+    } catch (e) {
+      log().warn('database statement warm-up skipped', { error: e instanceof Error ? e.message : String(e) });
+      return;
+    }
   }
 }
 /**
- * D-1123: prepares every statement run() has learned so far on every pooled connection, all connections at once (boot warm-up: no
- * request is waiting yet, unlike warmIdle). The driver waits for each Describe, so it costs ~1 round trip per statement, in parallel.
+ * D-1123: one bounded prepare pass per available connection. Each worker releases independently, including failure/abort.
+ * Startup readiness does not promise all statements are prepared: ordinary requests can prepare cold statements themselves.
  */
-export async function warmStatements() {
+export async function warmStatements(signal?: AbortSignal) {
   const c = (await dbm()).db.$client;
-  const held = await Promise.all(Array.from({ length: c.options.max }, () => c.reserve()));
-  try {
-    await Promise.all(held.map(async (r) => {
-      const q = r.unsafe('select 1');
-      await q;
-      await shareStatements(r, (q as unknown as { state?: { pid?: number } }).state?.pid, new Set(), Infinity);
-    }));
-  } finally {
-    for (const r of held) r.release();
+  // Each acquisition owns its release. Never wait for the entire pool to be held before releasing anything:
+  // overlapping warmers can otherwise split the finite pool and wait forever for each other's reservations.
+  for (let i = 0; i < c.options.max; i++) {
+    if (signal?.aborted) return;
+    const r = await reserveForWarm(c, signal);
+    try { await warmConnection(r, signal); }
+    finally { r.release(); }
   }
 }
 const runCtx = new AsyncLocalStorage<RunCtx>();
@@ -151,8 +185,15 @@ async function pipelined<T, F>(m: Dbm, first: SQL, fn: (tx: Tx, first: Promise<F
   const tx = new PostgresJsTransaction(dialect, new PostgresJsSession(client as never, dialect, rel, {}) /* a reserved connection: no savepoint() (no nested tx.transaction in run) */, rel) as unknown as Tx;
   const end = (q: 'commit' | 'rollback') => {
     const ended = Promise.resolve(commit ?? r.unsafe(q));
-    // D-1106: back to the pool only after sharing statements (never awaited by the request)
-    void ended.then(() => shareStatements(r, (bq as { state?: { pid?: number } }).state?.pid ?? undefined, used), () => undefined).catch(() => undefined).finally(() => r.release());
+    // Return request connections immediately after COMMIT/ROLLBACK. Speculative prepares run in their own finite pass.
+    void ended.then(() => {
+      const pid = (bq as { state?: { pid?: number } }).state?.pid;
+      if (pid) {
+        const have = warmOn.get(pid) ?? new Set<string>();
+        for (const k of used) have.add(k);
+        warmOn.set(pid, have);
+      }
+    }, () => undefined).finally(() => r.release());
     const done = ended.then(() => undefined);
     if (wrote) return done;
     done.catch((e: unknown) => log().error('transaction end failed', { q, error: e instanceof Error ? e.message : String(e) }));
@@ -210,14 +251,17 @@ export const run = async <T>(userId: string, fn: (tx: Tx, s: typeof import('@rem
 };
 
 /**
- * D-1096: opens every pooled connection at boot. A new connection costs ~6 round trips (TCP, TLS, auth, type fetch: ~0,75 s with the
- * database 124 ms away), which the first requests after a deploy otherwise paid. Recycling is rare and staggered (6–12 h, D-1103).
- * D-1123: the statements themselves are prepared at boot by `warmUp()` (warmup.ts) before /health turns 200.
+ * D-1096: a finite best-effort pool acquisition pass at boot. Each lease returns before the next acquisition,
+ * so normal traffic and jobs needing a nested connection can advance. The driver may reuse the same connection:
+ * readiness promises availability, not that every pool member or learned statement is already warm.
  */
-export async function warmPool() {
+export async function warmPool(signal?: AbortSignal) {
   const c = (await dbm()).db.$client;
-  const held = await Promise.all(Array.from({ length: c.options.max }, () => c.reserve()));
-  for (const r of held) r.release();
+  for (let i = 0; i < c.options.max; i++) {
+    if (signal?.aborted) return;
+    const r = await reserveForWarm(c, signal);
+    r.release();
+  }
 }
 
 /**

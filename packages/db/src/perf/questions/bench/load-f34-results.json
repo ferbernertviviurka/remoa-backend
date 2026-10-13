@@ -1,0 +1,179 @@
+{
+  "synthetic": true,
+  "startedAt": "2026-10-13T11:49:05.087Z",
+  "elapsedMs": 300371,
+  "vus": 20,
+  "warmupMs": 30000,
+  "durationMs": 300000,
+  "hostLoadAvgBefore": [
+    4.4443359375,
+    6.6376953125,
+    9.83447265625
+  ],
+  "hostLoadAvgAfter": [
+    12.38720703125,
+    11.99609375,
+    11.552734375
+  ],
+  "requests": 27340,
+  "errorRate": 0,
+  "failureCount": 0,
+  "failures": [],
+  "metrics": {
+    "list": {
+      "count": 3016,
+      "p50Ms": 67.07008400000632,
+      "p95Ms": 133.43645800001104,
+      "p99Ms": 154.01758300000802,
+      "maxMs": 205.05154100002255,
+      "p95Bytes": 59,
+      "maxQueries": 4,
+      "queryHistogram": {
+        "4": 3016
+      },
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "facets": {
+      "count": 3019,
+      "p50Ms": 243.38966700001038,
+      "p95Ms": 314.3556669999962,
+      "p99Ms": 351.893250000001,
+      "maxMs": 566.1728749999893,
+      "p95Bytes": 420,
+      "maxQueries": 4,
+      "queryHistogram": {
+        "4": 3019
+      },
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "availability": {
+      "count": 3017,
+      "p50Ms": 185.61691599999904,
+      "p95Ms": 240.3988750000135,
+      "p99Ms": 263.00333300000057,
+      "maxMs": 445.29341600000043,
+      "p95Bytes": 112,
+      "maxQueries": 5,
+      "queryHistogram": {
+        "5": 3017
+      },
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "preview40": {
+      "count": 3017,
+      "p50Ms": 287.9450829999987,
+      "p95Ms": 351.1105000000098,
+      "p99Ms": 380.58145800000057,
+      "maxMs": 599.3667500000156,
+      "p95Bytes": 27711,
+      "maxQueries": 8,
+      "queryHistogram": {
+        "8": 3017
+      },
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "preview100": {
+      "count": 3014,
+      "p50Ms": 291.09679200005485,
+      "p95Ms": 354.4366250000312,
+      "p99Ms": 386.1299169999984,
+      "maxMs": 564.5922080000164,
+      "p95Bytes": 68921,
+      "maxQueries": 8,
+      "queryHistogram": {
+        "8": 3014
+      },
+      "targetP95Ms": 600,
+      "pass": true
+    },
+    "swap": {
+      "count": 3015,
+      "p50Ms": 242.72262499999488,
+      "p95Ms": 304.84191600000486,
+      "p99Ms": 328.92700000002515,
+      "maxMs": 527.1982920000155,
+      "p95Bytes": 715,
+      "maxQueries": 8,
+      "queryHistogram": {
+        "8": 3015
+      },
+      "targetP95Ms": 500,
+      "pass": true
+    },
+    "drawer": {
+      "count": 3014,
+      "p50Ms": 131.73475000000326,
+      "p95Ms": 187.91820899999584,
+      "p99Ms": 208.9994579999984,
+      "maxMs": 258.07345799999894,
+      "p95Bytes": 568,
+      "maxQueries": 8,
+      "queryHistogram": {
+        "8": 3014
+      },
+      "targetP95Ms": 400,
+      "pass": true
+    },
+    "resume": {
+      "count": 3014,
+      "p50Ms": 84.51020899997093,
+      "p95Ms": 150.68129200002295,
+      "p99Ms": 176.92312500000116,
+      "maxMs": 262.87100000001374,
+      "p95Bytes": 493288,
+      "maxQueries": 10,
+      "queryHistogram": {
+        "10": 3014
+      },
+      "targetP95Ms": 400,
+      "pass": true
+    },
+    "answer": {
+      "count": 3014,
+      "p50Ms": 131.73483299999498,
+      "p95Ms": 192.50291699997615,
+      "p99Ms": 215.4470830000064,
+      "maxMs": 384.98958299998776,
+      "p95Bytes": 138,
+      "maxQueries": 26,
+      "queryHistogram": {
+        "26": 3014
+      },
+      "targetP95Ms": 400,
+      "pass": true
+    },
+    "builderStart": {
+      "count": 100,
+      "p50Ms": 142.064916000003,
+      "p95Ms": 249.3742089999978,
+      "p99Ms": 255.93866600000183,
+      "maxMs": 260.5384589999994,
+      "p95Bytes": 104232,
+      "maxQueries": 32,
+      "queryHistogram": {
+        "32": 100
+      },
+      "targetP95Ms": 600,
+      "pass": true
+    },
+    "builderFinish": {
+      "count": 100,
+      "p50Ms": 64.84750000000349,
+      "p95Ms": 125.90204200000153,
+      "p99Ms": 148.78416599999764,
+      "maxMs": 155.98237500000687,
+      "p95Bytes": 19735,
+      "maxQueries": 17,
+      "queryHistogram": {
+        "17": 100
+      },
+      "targetP95Ms": 400,
+      "pass": true
+    }
+  },
+  "note": "seed has 1 area/1 topic; sessions resume/answer use seeded 200-item simulations; builder start+finish back to back x5/VU"
+}

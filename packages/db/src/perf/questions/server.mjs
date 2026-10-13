@@ -2,7 +2,7 @@
 import {targetUrl,state,save,port} from './target.mjs';
 process.env.DATABASE_URL=targetUrl();process.env.NODE_ENV='test';process.env.LOG_LEVEL='error';
 process.env.SHARE_SECRET='synthetic-fr32-benchmark-cursor';
-process.env.QUESTIONS_CATALOG_ENABLED='1';process.env.QUESTIONS_SESSIONS_ENABLED='1';process.env.QUESTIONS_IMPORT_ENABLED='0';
+process.env.QUESTIONS_CATALOG_ENABLED='1';process.env.QUESTIONS_SESSIONS_ENABLED='1';process.env.QUESTIONS_IMPORT_ENABLED='0';process.env.QUESTIONS_BANK_STUDENT_ENABLED='1';
 const {createApp}=await import('../../../../../apps/api/src/app.ts');
 const {liveSession}=await import('../../../../../apps/api/src/auth-session.ts');
 const {serve}=await import('../../../../../apps/api/node_modules/@hono/node-server/dist/index.mjs');

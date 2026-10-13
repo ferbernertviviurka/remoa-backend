@@ -64,6 +64,8 @@ export const NOTIFICATION_TYPES = {
   admin_alert: { category: 'account_billing', prefKey: 'account_billing', inApp: false, email: 'admin-alert', capRank: null },
   dispute_resolved: { category: 'support', prefKey: 'support', inApp: false, email: 'dispute-resolved', capRank: null },
   trial_ending: { category: 'account_billing', prefKey: 'account_billing', inApp: true, email: 'trial-ending', capRank: null },
+  /** CCR-148: in-app only (no e-mail template); obeys the `support` row. */
+  question_report_resolved: { category: 'support', prefKey: 'support', inApp: true, email: null, capRank: null },
 } as const satisfies Record<
   NotificationType,
   { category: NotificationCategory; prefKey: NotificationPrefKey | null; inApp: boolean; email: EmailTemplate | null; capRank: 1 | 2 | 3 | null }
@@ -94,6 +96,8 @@ export const notificationDataSchemas = {
   waitlist_joined: z.object({ interest: z.array(z.enum(storeInterests)).min(1) }),
   /** `last` = the notice on the final day; otherwise TRIAL_NOTICE_DAYS before `endsAt`. */
   trial_ending: z.object({ endsAt: iso, last: z.boolean() }),
+  /** CCR-148: ids and outcome only (report status 'resolved' | 'dismissed'); never question text, key or reviewer identity. */
+  question_report_resolved: z.object({ questionId: idSchema, reportId: idSchema, outcome: z.enum(['resolved', 'dismissed']) }).strict(),
 } as const satisfies Record<InAppNotificationType, z.ZodTypeAny>;
 export type NotificationDataMap = { [T in InAppNotificationType]: z.infer<(typeof notificationDataSchemas)[T]> };
 
@@ -124,6 +128,7 @@ export const notificationSchema = z.discriminatedUnion('type', [
   variant('support_reply'),
   variant('purchase'),
   variant('waitlist_joined'),
+  variant('question_report_resolved'),
 ]);
 export type Notification = z.infer<typeof notificationSchema>;
 

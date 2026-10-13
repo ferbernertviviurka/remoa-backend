@@ -32,6 +32,8 @@ export * from './cache';
 export * from './content';
 
 export * from './question-catalog';
+export * from './exam-builder';
+export * from './question-student';
 export * from './question-page-preview';
 
 export * from './question-export';

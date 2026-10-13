@@ -1,8 +1,10 @@
-export type QuestionFeature = "import" | "catalog" | "sessions";
+export type QuestionFeature = "import" | "catalog" | "sessions" | "bankStudent";
 const keys = {
   import: "QUESTIONS_IMPORT_ENABLED",
   catalog: "QUESTIONS_CATALOG_ENABLED",
   sessions: "QUESTIONS_SESSIONS_ENABLED",
+  // F34 FR-1 (CCR-147): student bank + exam builder; closed in production until set, like sessions.
+  bankStudent: "QUESTIONS_BANK_STUDENT_ENABLED",
 } as const;
 /** Import and sessions stay closed in production until set. The catalog stays available unless explicitly turned off. */
 export function questionFeatures(env: NodeJS.ProcessEnv = process.env) {

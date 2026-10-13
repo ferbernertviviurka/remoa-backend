@@ -1,15 +1,17 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
 import {
   catalogAlternativeKeys, questionAnswerSavedSchema, questionListQuerySchema,
   questionReferenceAfterAnswerSchema, questionSessionPublicSchema, questionSessionReportSchema,questionSessionSummaryPublicSchema,
-  type QuestionAnswerInput, type QuestionPublic, type QuestionReferenceAfterAnswer, type QuestionSessionConfig, type QuestionSessionReport,type QuestionListQuery,
+  questionDrawerAttemptSchema, type QuestionDrawerAnswerInput, type QuestionDrawerAttempt, type QuestionAnswerInput, type QuestionPublic, type QuestionReferenceAfterAnswer, type QuestionSessionConfig, type QuestionSessionReport,type QuestionListQuery,
 } from '@remoa/contracts';
-import { asServer, pgArray, run } from '../../db';
+import { Abort, asServer, pgArray, run } from '../../db';
+import { recheck } from '../builder/service';
+import { questionFeatures } from '../runtime/config';
 import { invalidate } from '../../cache';
-import { withTiming } from '../../perf';
-import { applyOccurrence, catalogJoins, catalogWhere, conflict, missing, obsoleteSuccessor, paperAccess, publicAssets, publicColumns, readable, signature, toQuestion, validation, type Row } from '../catalog/service';
+import { budgetAs, withTiming } from '../../perf';
+import { applyOccurrence, catalogJoins, catalogWhere, conflict, latest, missing, obsoleteSuccessor, paperAccess, publicAssets, publicColumns, readable, signature, toQuestion, validation, type Row } from '../catalog/service';
 
 import { answerOutcome } from './recalculation';
 const object = (value: unknown): Row => typeof value === 'object' && value !== null ? value as Row : {};
@@ -98,45 +100,118 @@ export async function settleSessionSummaries(tx:Tx,userId:string,sessions:Row[])
         for(const row of sessions){const current=updated.find(u=>u.id===row.id);if(current)Object.assign(row,current);}
       }
 }
+/** Builder start (D-1827): coherent snapshot, owner template, one active builder session, eligibility rechecked in this transaction. */
+async function startBuilder(tx:Tx,userId:string,config:QuestionSessionConfig){
+  const b=config.builder!,p=b.params,ids=config.questionIds!;
+  if(config.mode!==p.mode||ids.length>p.count||config.timerSec!==(p.timePerQuestionSec===null?null:p.timePerQuestionSec*ids.length))throw validation('builder_config_mismatch');
+  if(b.templateId){const [t]=await asServer<Row>(tx,sql`SELECT 1 FROM exam_templates WHERE id=${b.templateId} AND user_id=${userId}`);if(!t)throw validation('invalid_template');}
+  // Two tabs / double click with different keys: serialized per owner here; the partial unique index is the backstop.
+  await asServer(tx,sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId+':exam-builder'},33))`);
+  await activeBuilder(tx,userId);
+  if(!(await recheck(tx,userId,p.source,ids)).ok)throw conflict('exam_changed');
+}
+/** Settles an expired builder session; a still-active one is resumable, never replaced: 409 active_session_exists:<id>. */
+async function activeBuilder(tx:Tx,userId:string){
+  const active=await asServer<Row>(tx,sql`SELECT *,clock_timestamp() server_time FROM question_sessions WHERE user_id=${userId} AND status='active' AND config ? 'builder' FOR UPDATE`);
+  for(const s of active)if((await settle(tx,userId,s)).status==='active')throw conflict('active_session_exists:'+String(s.id));
+}
+/** Shared by the public start and the drawer; an idempotent retry returns the existing row. */
+async function createRow(tx:Tx,userId:string,config:QuestionSessionConfig,key:string):Promise<Row>{
+  // Owner-scoped transaction lock serializes retry before selection; it does not lock any other user's request.
+  await asServer(tx,sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId+':'+key},33))`);
+  const [existing]=await asServer<Row>(tx,sql`SELECT *,clock_timestamp() server_time FROM question_sessions WHERE user_id=${userId} AND idempotency_key=${key} FOR UPDATE`);
+  if(existing){if(JSON.stringify(existing.config)!==JSON.stringify(JSON.parse(JSON.stringify(config)))){
+    // jsonb property order differs from input. Compare canonical jsonb, not JavaScript property order.
+    const [same]=await asServer<Row>(tx,sql`SELECT config=${JSON.stringify(config)}::jsonb same FROM question_sessions WHERE id=${existing.id} AND user_id=${userId}`);
+    if(!same?.same)throw conflict('idempotency_key_reused');
+  }return settle(tx,userId,existing);}
+  if(config.builder)await startBuilder(tx,userId,config);
+  let rows:Row[];const timer=config.timerSec;
+  if(config.examId){
+    const [paper]=await asServer<Row>(tx,sql`SELECT p.duration_sec FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE p.id=${config.examId} AND ${paperAccess}`);if(!paper)throw missing();
+    rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns},o.original_keys,o.original_number,o.annulled occurrence_annulled FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${config.examId} AND ${readable(userId)} AND q.type='objective' ORDER BY o.ordinal LIMIT ${config.count}`);
+    const [count]=await asServer<Row>(tx,sql`SELECT count(*)::int n FROM exam_question_occurrences WHERE paper_id=${config.examId}`);
+    if(Number(count?.n??0)!==config.count || rows.length!==config.count)throw conflict('exam_count_must_match_full_paper');
+  }else if(config.questionIds){
+    if(new Set(config.questionIds).size!==config.questionIds.length || config.questionIds.length!==config.count)throw validation('selection_count_mismatch');
+    rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns} FROM question_bank q ${catalogJoins(userId)} WHERE q.id=ANY(${pgArray(config.questionIds,'uuid')}) AND ${catalogWhere(userId,questionListQuerySchema.parse({}),true)} ORDER BY array_position(${pgArray(config.questionIds,'uuid')},q.id)`);
+    if(rows.length!==config.questionIds.length)throw config.builder?conflict('exam_changed'):missing();
+  }else{
+    const query=config.filters!;if(query.cursor)throw validation('session_cursor_not_supported');
+    rows=await withTiming('questions.select',()=>asServer<Row>(tx,sessionFilterSelectionSQL(userId,query,config.count)));
+  }
+  if(!config.examId && !config.questionIds && rows.length<config.count)throw validation('insufficient_questions:'+rows.length);
+  rows=rows.map(applyOccurrence);
+  if(!rows.length)throw validation('no_eligible_questions');
+  const [session]=await asServer<Row>(tx,sql`INSERT INTO question_sessions(user_id,mode,paper_id,config,idempotency_key,deadline) VALUES(${userId},${config.mode},${config.examId??null},${JSON.stringify(config)}::jsonb,${key},CASE WHEN ${timer}::int IS NULL THEN NULL ELSE now()+make_interval(secs=>${timer}::int) END) ${config.builder?sql`ON CONFLICT (user_id) WHERE status='active' AND config ? 'builder' DO NOTHING`:sql``} RETURNING *,clock_timestamp() server_time`);
+  if(!session){await activeBuilder(tx,userId);throw conflict('active_session_exists');}
+  const payloads=await withTiming('questions.snapshot',async()=>{const payloads=[];
+  for(const [position,row]of rows.entries()){
+    const publicQ=await toQuestion({...row,assets:[]});
+    const ref=snapshotReference(row);const shuffled=config.shuffle?shuffleQuestion(publicQ,ref):{question:publicQ,reference:ref,map:{}};
+    payloads.push({question_id:row.id,position,original_number:row.original_number??null,payload_public:{...shuffled.question,assets:row.assets??[]},reference_snapshot:shuffled.reference,shuffle_map:shuffled.map});
+  }return payloads;});
+  await withTiming('questions.freeze',()=>asServer(tx,sql`INSERT INTO question_session_items(user_id,session_id,question_id,position,original_number,payload_public,reference_snapshot,shuffle_map)
+    SELECT ${userId}::uuid,${session!.id}::uuid,x.question_id,x.position,x.original_number,x.payload_public,x.reference_snapshot,x.shuffle_map FROM jsonb_to_recordset(${JSON.stringify(payloads)}::jsonb) AS x(question_id uuid,position int,original_number text,payload_public jsonb,reference_snapshot jsonb,shuffle_map jsonb)`));
+  return session!;
+}
+/**
+ * F34 FR-15/16 (D-1822): drawer answer = internal 1-item study session (config.drawer), stored already answered and finished,
+ * idempotent by mutationId (= the session's idempotency key), outside the history. G27 perf: 2 statements on the first answer
+ * (read + one insert of session/item/answer with the access gate), 2 on a retry; the key leaves only after the attempt is stored.
+ */
+export async function answerInDrawer(userId:string,questionId:string,input:QuestionDrawerAnswerInput):Promise<QuestionDrawerAttempt>{
+  const config:QuestionSessionConfig={mode:'study',questionIds:[questionId],count:1,timerSec:null,shuffle:false,drawer:true};
+  const cfg=JSON.stringify(config),key=input.mutationId;
+  // Gate + attempt: current access to the saved reference (historical access + obsolescence), same rule as `reference()`.
+  const gate=sql`LEFT JOIN LATERAL (SELECT q.availability,${obsoleteSuccessor} obsolete FROM question_bank q WHERE q.id=${questionId} AND ${readable(userId,true)}) cur ON true`;
+  const attempt=(row:Row|undefined):QuestionDrawerAttempt=>{
+    if(!row?.visible)throw missing();
+    const saved=object(row.reference_snapshot);
+    const ref=questionReferenceAfterAnswerSchema.parse({...saved,annulled:saved.annulled===true||row.availability==='annulled',obsolete:saved.obsolete===true||row.obsolete===true});
+    const stored=questionReferenceAfterAnswerSchema.parse(row.reference_snapshot);const result=answerOutcome(true,input.selectedKey,stored.correctKey,stored.annulled);
+    return questionDrawerAttemptSchema.parse({questionId,selectedKey:input.selectedKey,result:result==='unanswered'?'incorrect':result,answeredAt:row.submitted_at,reference:ref});
+  };
+  /** Retry (or lost race): the stored attempt of this key; another config under the same key or another choice is a conflict. */
+  const replay=async(tx:Tx)=>{
+    const [row]=await asServer<Row>(tx,sql`SELECT s.config=${cfg}::jsonb same,i.selected_key,i.reference_snapshot,a.submitted_at,cur.availability IS NOT NULL visible,cur.availability,cur.obsolete
+      FROM question_sessions s LEFT JOIN question_session_items i ON i.session_id=s.id AND i.user_id=s.user_id
+      LEFT JOIN LATERAL (SELECT submitted_at FROM question_answers WHERE item_id=i.id AND user_id=${userId} ORDER BY submitted_at DESC LIMIT 1) a ON true ${gate}
+      WHERE s.user_id=${userId} AND s.idempotency_key=${key} ORDER BY i.position LIMIT 1`);
+    if(!row)throw missing();
+    if(!row.same)throw conflict('idempotency_key_reused');
+    if(row.selected_key!==input.selectedKey||!row.submitted_at)throw conflict('mutation_id_reused');
+    return attempt(row);
+  };
+  const result=await run(userId,async(tx)=>{
+    // Same eligibility as the public start by ids (readable, latest, active, objective) with the drawer's specific errors.
+    const [q]=await asServer<Row>(tx,sql`SELECT ${selectionColumns},EXISTS(SELECT 1 FROM question_sessions s WHERE s.user_id=${userId} AND s.idempotency_key=${key}) replay
+      FROM question_bank q ${catalogJoins(userId)} WHERE q.id=${questionId} AND ${readable(userId)} AND ${latest}`);
+    if(!q)throw missing();
+    if(q.type!=='objective')throw conflict('discursive_use_challenge');
+    if(q.availability!=='active')throw conflict('question_not_answerable');
+    if(q.replay)return replay(tx);
+    const row=applyOccurrence(q),question=await toQuestion({...row,assets:[]}),ref=snapshotReference(row);
+    if(!question.alternatives?.some((a)=>a.key===input.selectedKey))throw validation('invalid_alternative');
+    const sessionId=randomUUID(),itemId=randomUUID(),correct=ref.annulled?null:input.selectedKey===ref.correctKey;
+    const report=frozenReport({id:sessionId},[{id:itemId,answered:true,selected_key:input.selectedKey,reference_snapshot:ref}]);
+    // One statement: session (finished, revision 1), item (answered, revision 1), the attempt, then the gate. ON CONFLICT = a concurrent
+    // first call with the same key won the unique (user_id, idempotency_key): nothing is written here and the stored attempt is replayed.
+    const [saved]=await asServer<Row>(tx,sql`WITH s AS (INSERT INTO question_sessions(id,user_id,mode,paper_id,config,idempotency_key,deadline,status,revision,finished_at,report)
+        VALUES(${sessionId},${userId},'study',NULL,${cfg}::jsonb,${key},NULL,'finished',1,clock_timestamp(),${JSON.stringify(report)}::jsonb) ON CONFLICT (user_id,idempotency_key) DO NOTHING RETURNING id),
+      i AS (INSERT INTO question_session_items(id,user_id,session_id,question_id,position,original_number,payload_public,reference_snapshot,shuffle_map,selected_key,answered,revision)
+        SELECT ${itemId},${userId},s.id,${questionId},0,NULL,${JSON.stringify({...question,assets:row.assets??[]})}::jsonb,${JSON.stringify(ref)}::jsonb,'{}'::jsonb,${input.selectedKey},true,1 FROM s RETURNING id),
+      a AS (INSERT INTO question_answers(user_id,session_id,item_id,mutation_id,selected_key,correct,elapsed_ms,revision)
+        SELECT ${userId},${sessionId},i.id,${input.mutationId},${input.selectedKey},${correct},${input.elapsedMs},1 FROM i RETURNING submitted_at)
+      SELECT a.submitted_at,${JSON.stringify(ref)}::jsonb reference_snapshot,cur.availability IS NOT NULL visible,cur.availability,cur.obsolete FROM a ${gate}`);
+    return saved?attempt(saved):replay(tx);
+  });await invalidate('question.changed',{userId});return result;
+}
 export const questionSessionService={
   async create(userId:string,config:QuestionSessionConfig,key:string){
-    const result=await run(userId,async(tx)=>{
-      // Owner-scoped transaction lock serializes retry before selection; it does not lock any other user's request.
-      await asServer(tx,sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId+':'+key},33))`);
-      const [existing]=await asServer<Row>(tx,sql`SELECT *,clock_timestamp() server_time FROM question_sessions WHERE user_id=${userId} AND idempotency_key=${key} FOR UPDATE`);
-      if(existing){if(JSON.stringify(existing.config)!==JSON.stringify(JSON.parse(JSON.stringify(config)))){
-        // jsonb property order differs from input. Compare canonical jsonb, not JavaScript property order.
-        const [same]=await asServer<Row>(tx,sql`SELECT config=${JSON.stringify(config)}::jsonb same FROM question_sessions WHERE id=${existing.id} AND user_id=${userId}`);
-        if(!same?.same)throw conflict('idempotency_key_reused');
-      }return publicSession(tx,userId,await settle(tx,userId,existing));}
-      let rows:Row[];const timer=config.timerSec;
-      if(config.examId){
-        const [paper]=await asServer<Row>(tx,sql`SELECT p.duration_sec FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE p.id=${config.examId} AND ${paperAccess}`);if(!paper)throw missing();
-        rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns},o.original_keys,o.original_number,o.annulled occurrence_annulled FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${config.examId} AND ${readable(userId)} AND q.type='objective' ORDER BY o.ordinal LIMIT ${config.count}`);
-        const [count]=await asServer<Row>(tx,sql`SELECT count(*)::int n FROM exam_question_occurrences WHERE paper_id=${config.examId}`);
-        if(Number(count?.n??0)!==config.count || rows.length!==config.count)throw conflict('exam_count_must_match_full_paper');
-      }else if(config.questionIds){
-        if(new Set(config.questionIds).size!==config.questionIds.length || config.questionIds.length!==config.count)throw validation('selection_count_mismatch');
-        rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns} FROM question_bank q ${catalogJoins(userId)} WHERE q.id=ANY(${pgArray(config.questionIds,'uuid')}) AND ${catalogWhere(userId,questionListQuerySchema.parse({}),true)} ORDER BY array_position(${pgArray(config.questionIds,'uuid')},q.id)`);
-        if(rows.length!==config.questionIds.length)throw missing();
-      }else{
-        const query=config.filters!;if(query.cursor)throw validation('session_cursor_not_supported');
-        rows=await withTiming('questions.select',()=>asServer<Row>(tx,sessionFilterSelectionSQL(userId,query,config.count)));
-      }
-      if(!config.examId && !config.questionIds && rows.length<config.count)throw validation('insufficient_questions:'+rows.length);
-      rows=rows.map(applyOccurrence);
-      if(!rows.length)throw validation('no_eligible_questions');
-      const [session]=await asServer<Row>(tx,sql`INSERT INTO question_sessions(user_id,mode,paper_id,config,idempotency_key,deadline) VALUES(${userId},${config.mode},${config.examId??null},${JSON.stringify(config)}::jsonb,${key},CASE WHEN ${timer}::int IS NULL THEN NULL ELSE now()+make_interval(secs=>${timer}::int) END) RETURNING *,clock_timestamp() server_time`);
-      const payloads=await withTiming('questions.snapshot',async()=>{const payloads=[];
-      for(const [position,row]of rows.entries()){
-        const publicQ=await toQuestion({...row,assets:[]});
-        const ref=snapshotReference(row);const shuffled=config.shuffle?shuffleQuestion(publicQ,ref):{question:publicQ,reference:ref,map:{}};
-        payloads.push({question_id:row.id,position,original_number:row.original_number??null,payload_public:{...shuffled.question,assets:row.assets??[]},reference_snapshot:shuffled.reference,shuffle_map:shuffled.map});
-      }return payloads;});
-      await withTiming('questions.freeze',()=>asServer(tx,sql`INSERT INTO question_session_items(user_id,session_id,question_id,position,original_number,payload_public,reference_snapshot,shuffle_map)
-        SELECT ${userId}::uuid,${session!.id}::uuid,x.question_id,x.position,x.original_number,x.payload_public,x.reference_snapshot,x.shuffle_map FROM jsonb_to_recordset(${JSON.stringify(payloads)}::jsonb) AS x(question_id uuid,position int,original_number text,payload_public jsonb,reference_snapshot jsonb,shuffle_map jsonb)`));
-      return withTiming('questions.public',()=>publicSession(tx,userId,session!));
-    });return result;
+    if(config.drawer)throw validation('drawer_internal_only');
+    if(config.builder){budgetAs('POST /v1/question-sessions#builder');const f=questionFeatures();if(!f.bankStudent||!f.catalog)throw new Abort({code:'not_found',message:'route not found'});}
+    return run(userId,async(tx)=>{const session=await createRow(tx,userId,config,key);return withTiming('questions.public',()=>publicSession(tx,userId,session));});
   },
   async get(userId:string,id:string){return run(userId,async(tx)=>publicSession(tx,userId,await settle(tx,userId,await lockedSession(tx,userId,id))));},
   async list(userId:string){
@@ -144,7 +219,7 @@ export const questionSessionService={
       const sessions=await asServer<Row>(tx,sql`SELECT s.id,s.mode,s.status,s.revision,s.started_at,s.deadline,s.finished_at,clock_timestamp() server_time,
         counts.count,counts.answered_count FROM question_sessions s LEFT JOIN LATERAL
         (SELECT count(*)::int count,count(*) FILTER(WHERE i.answered)::int answered_count FROM question_session_items i WHERE i.session_id=s.id AND i.user_id=${userId}) counts ON true
-        WHERE s.user_id=${userId} ORDER BY s.created_at DESC,s.id DESC LIMIT 20 FOR UPDATE OF s`);
+        WHERE s.user_id=${userId} AND s.config->'drawer' IS NULL ORDER BY s.created_at DESC,s.id DESC LIMIT 20 FOR UPDATE OF s`);
       await settleSessionSummaries(tx,userId,sessions);
       return sessions.map(s=>questionSessionSummaryPublicSchema.parse({id:s.id,mode:s.mode,status:s.status,revision:s.revision,startedAt:s.started_at,deadline:s.deadline??null,finishedAt:s.finished_at??null,serverTime:s.server_time,count:s.count,answeredCount:s.answered_count}));
     });

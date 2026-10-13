@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
 import { catalogAlternativesSchema, questionPublicSchema, questionUserStateSchema, examPaperPublicSchema, questionListResultSchema, questionInstitutionListSchema, type QuestionListQuery, type QuestionPublic, type QuestionValidation, type QuestionUserState, type ExamPaperPublic } from '@remoa/contracts';
-import { Abort, asServer, run } from '../../db';
+import { Abort, asServer, pgArray, run } from '../../db';
 import { invalidate } from '../../cache';
 import { presignGet } from '../../storage/storage';
 export type Row = Record<string, unknown>;
@@ -11,18 +11,21 @@ export const conflict = (message: string) => new Abort({ code: 'conflict', messa
 export const validation = (message: string) => new Abort({ code: 'validation', message });
 const secret = () => { const key = process.env.SHARE_SECRET; if (!key) throw new Error('missing SHARE_SECRET for catalog cursor'); return key; };
 const filterHash = (query: QuestionListQuery) => { const filters = { ...query }; delete filters.cursor; return createHash('sha256').update(JSON.stringify(filters)).digest('hex'); };
-export function encodeQuestionCursor(at: string, id: string, userId: string, query: QuestionListQuery) {
-  const data = Buffer.from(JSON.stringify({ at, id, uid: userId, filters: filterHash(query) })).toString('base64url');
+/** F34 FR-11: `s` = the sort key of the last item (difficulty rank or topic name); absent for `recent`. `sort` is already inside the filter hash. */
+export function encodeQuestionCursor(at: string, id: string, userId: string, query: QuestionListQuery, s?: string | number) {
+  const data = Buffer.from(JSON.stringify({ at, id, uid: userId, filters: filterHash(query), ...(s === undefined ? {} : { s }) })).toString('base64url');
   return data + '.' + createHmac('sha256', secret()).update('f33-cursor:' + data).digest('base64url');
 }
-export function decodeQuestionCursor(value: string, userId: string, query: QuestionListQuery): { at: string; id: string } {
+export function decodeQuestionCursor(value: string, userId: string, query: QuestionListQuery): { at: string; id: string; s?: string | number } {
   try {
     const [data, mac, extra] = value.split('.'); if (!data || !mac || extra) throw Error();
     const actual = Buffer.from(mac, 'base64url'), expected = createHmac('sha256', secret()).update('f33-cursor:' + data).digest();
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw Error();
     const row = JSON.parse(Buffer.from(data, 'base64url').toString()) as Row;
     if (row.uid !== userId || row.filters !== filterHash(query) || typeof row.at !== 'string' || typeof row.id !== 'string' || !/^[a-f\d-]{36}$/i.test(row.id) || Number.isNaN(Date.parse(row.at))) throw Error();
-    return { at: row.at, id: row.id };
+    const sorted = query.sort === 'difficulty' || query.sort === 'topic';
+    if (sorted ? (query.sort === 'difficulty' ? !Number.isInteger(row.s) : typeof row.s !== 'string') : row.s !== undefined) throw Error();
+    return { at: row.at, id: row.id, ...(sorted ? { s: row.s as string | number } : {}) };
   } catch { throw validation('invalid_cursor'); }
 }
 /** Every server read carries this access predicate, even when using a server connection. */
@@ -32,9 +35,8 @@ export const readable = (userId: string, historical = false): SQL => sql`(
    SELECT 1 FROM question_sources src WHERE src.id = q.source_id AND src.rights_status = 'authorized' AND (src.rights_expires_at IS NULL OR src.rights_expires_at > now())))
 )`;
 /** A published replacement permanently supersedes selection, even if later withdrawn. Drafts never hide the published version. */
-export const latest = sql`NOT EXISTS (SELECT 1 FROM question_bank newer WHERE coalesce(newer.canonical_id,newer.id) = coalesce(q.canonical_id,q.id)
- AND (newer.version > q.version OR (newer.version = q.version AND (newer.created_at,newer.id) > (q.created_at,q.id)))
- AND ((q.visibility='private' AND newer.user_id=q.user_id) OR (q.visibility='public' AND newer.visibility='public' AND (newer.published_at IS NOT NULL OR newer.catalog_status='published'))))`;
+/** CCR-149 (0056): `question_superseded` holds every row a newer version supersedes (server-maintained by statement triggers). */
+export const latest = sql`NOT EXISTS (SELECT 1 FROM question_superseded sup WHERE sup.question_id = q.id)`;
 /** Historical warnings consider usable replacements, never an unapproved public draft. */
 export const obsoleteSuccessor=sql`EXISTS(SELECT 1 FROM question_bank n WHERE coalesce(n.canonical_id,n.id)=coalesce(q.canonical_id,q.id) AND n.version>q.version AND
  ((q.visibility='private' AND n.user_id=q.user_id AND n.visibility='private' AND n.status<>'archived' AND n.catalog_status NOT IN('rejected','withdrawn') AND n.availability IN('active','annulled')) OR
@@ -95,32 +97,52 @@ export async function toQuestion(row: Row): Promise<QuestionPublic> {
     sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, validation: validationOf(row), assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
     boardId: row.board_id ?? null, boardTitle: row.board_title ?? null, userState: { favorite: row.favorite ?? false, doubtful: row.doubtful ?? false, annotation: row.annotation ?? '' }, createdAt: row.created_at });
 }
-export function catalogWhere(userId: string, query: QuestionListQuery, activeOnly = false): SQL {
-  const parts: SQL[] = [readable(userId), latest];
-  if (query.scope === 'mine') parts.push(sql`q.visibility='private' AND q.user_id=${userId}`);
-  if (query.scope === 'catalog') parts.push(sql`q.visibility='public'`);
-  if (activeOnly) parts.push(sql`q.availability='active' AND q.type='objective'`);
-  const fields = [['origin', query.origin], ['board_id', query.boardId], ['type', query.type], ['enamed_topic_id', query.topicId], ['enamed_area_id', query.areaId], ['source_id', query.sourceId], ['difficulty', query.difficulty]] as const;
-  for (const [name, value] of fields) if (value) parts.push(sql`${sql.raw('q.' + name)}=${value}`);
-  if (query.search) parts.push(sql`q.stem ILIKE ${'%' + query.search.replace(/[\\%_]/g, '\\$&') + '%'}`);
-  if(query.examId || query.year || query.institution){
-    const paperFilters:SQL[]=[sql`p.status='published' AND ps.rights_status='authorized' AND (ps.rights_expires_at IS NULL OR ps.rights_expires_at>now())`];
-    if(query.examId)paperFilters.push(sql`p.id=${query.examId}`);
-    if(query.year)paperFilters.push(sql`p.year=${query.year}`);
-    if(query.institution)paperFilters.push(sql`lower(btrim(p.institution))=lower(${query.institution})`);
-    parts.push(sql`EXISTS(SELECT 1 FROM exam_question_occurrences o JOIN exam_papers p ON p.id=o.paper_id JOIN question_sources ps ON ps.id=p.source_id WHERE o.question_id=q.id AND ${sql.join(paperFilters,sql` AND `)})`);
-  }
-  if (query.state === 'favorite') parts.push(sql`us.favorite=true`);
-  if (query.state === 'doubtful') parts.push(sql`us.doubtful=true`);
-  if (query.state && ['unseen','answered','wrong'].includes(query.state)) {
-    // Batch the owner's latest eligible attempts once; never rescan thousands of answers for each catalog row.
-    const last = sql`SELECT DISTINCT ON (coalesce(aq.canonical_id,aq.id)) coalesce(aq.canonical_id,aq.id) canonical,
-      CASE WHEN a.selected_key IS NULL THEN false ELSE a.correct END correct
+export const many = <T>(plural: readonly T[] | undefined, single?: T): T[] => [...new Set([...(plural ?? []), ...(single === undefined ? [] : [single])])];
+/** F34 FR-7: OR inside a group, AND across groups. The singular field ORs into its plural group. */
+export type FilterGroup = 'area' | 'topic' | 'institution' | 'year' | 'difficulty';
+/** Occurrence (paper) conditions of the year/institution/exam filters; they must hold on the same paper row. */
+export function paperFilters(query: QuestionListQuery, omit?: FilterGroup): SQL[] {
+  const f: SQL[] = [], years = omit === 'year' ? [] : many(query.years, query.year), insts = omit === 'institution' ? [] : many(query.institutions, query.institution);
+  if (query.examId) f.push(sql`p.id=${query.examId}`);
+  if (years.length) f.push(sql`p.year::text=ANY(${pgArray(years.map(String), 'text')})`);
+  if (insts.length) f.push(sql`lower(btrim(p.institution))=ANY(ARRAY(SELECT lower(btrim(x)) FROM unnest(${pgArray(insts, 'text')}) x))`);
+  return f;
+}
+export const paperBase = sql`p.status='published' AND ps.rights_status='authorized' AND (ps.rights_expires_at IS NULL OR ps.rights_expires_at>now())`;
+export function stateJoin(userId: string, query: QuestionListQuery): SQL {
+  return ['favorite', 'doubtful'].includes(query.state ?? '') ? sql`LEFT JOIN question_user_state us ON us.question_id=coalesce(q.canonical_id,q.id) AND us.user_id=${userId}` : sql``;
+}
+/** The owner's latest counted attempt per canonical question (same rule for the `state` filter, `progress` and the drawer's last attempt). */
+export function lastAttemptsSQL(userId: string, canonicalIds?: readonly string[] | SQL, detail = false): SQL {
+  return sql`SELECT DISTINCT ON (coalesce(aq.canonical_id,aq.id)) coalesce(aq.canonical_id,aq.id) canonical,
+      CASE WHEN a.selected_key IS NULL THEN false ELSE a.correct END correct${detail ? sql`,a.selected_key,a.submitted_at,i.question_id,i.reference_snapshot` : sql``}
       FROM question_answers a JOIN question_session_items i ON i.id=a.item_id JOIN question_bank aq ON aq.id=i.question_id
       JOIN question_sessions sess ON sess.id=i.session_id AND sess.user_id=a.user_id
       WHERE (sess.mode='study' OR sess.status<>'active') AND aq.availability='active'
       AND coalesce((i.reference_snapshot->>'annulled')::boolean,false)=false AND a.user_id=${userId}
+      ${!canonicalIds ? sql`` : Array.isArray(canonicalIds) ? sql`AND coalesce(aq.canonical_id,aq.id)=ANY(${pgArray(canonicalIds, 'uuid')})` : sql`AND coalesce(aq.canonical_id,aq.id) IN (${canonicalIds})`}
       ORDER BY coalesce(aq.canonical_id,aq.id),a.submitted_at DESC,a.id DESC`;
+}
+/** `omit` drops one facet group's own filter (disjunctive facet counts, FR-8). */
+export function catalogWhere(userId: string, query: QuestionListQuery, activeOnly = false, omit?: FilterGroup): SQL {
+  const parts: SQL[] = [readable(userId), latest];
+  if (query.scope === 'mine') parts.push(sql`q.visibility='private' AND q.user_id=${userId}`);
+  if (query.scope === 'catalog') parts.push(sql`q.visibility='public'`);
+  if (activeOnly) parts.push(sql`q.availability='active' AND q.type='objective'`);
+  const fields = [['origin', query.origin], ['board_id', query.boardId], ['type', query.type], ['source_id', query.sourceId]] as const;
+  for (const [name, value] of fields) if (value) parts.push(sql`${sql.raw('q.' + name)}=${value}`);
+  const areas = omit === 'area' ? [] : many(query.areaIds, query.areaId), topics = omit === 'topic' ? [] : many(query.topicIds, query.topicId), diffs = omit === 'difficulty' ? [] : many(query.difficulties, query.difficulty);
+  if (areas.length) parts.push(sql`q.enamed_area_id=ANY(${pgArray(areas, 'uuid')})`);
+  if (topics.length) parts.push(sql`q.enamed_topic_id=ANY(${pgArray(topics, 'uuid')})`);
+  if (diffs.length) parts.push(sql`q.difficulty::text=ANY(${pgArray(diffs, 'text')})`);
+  if (query.search) parts.push(sql`q.stem ILIKE ${'%' + query.search.replace(/[\\%_]/g, '\\$&') + '%'}`);
+  const pf = paperFilters(query, omit);
+  if (pf.length) parts.push(sql`EXISTS(SELECT 1 FROM exam_question_occurrences o JOIN exam_papers p ON p.id=o.paper_id JOIN question_sources ps ON ps.id=p.source_id WHERE o.question_id=q.id AND ${paperBase} AND ${sql.join(pf, sql` AND `)})`);
+  if (query.state === 'favorite') parts.push(sql`us.favorite=true`);
+  if (query.state === 'doubtful') parts.push(sql`us.doubtful=true`);
+  if (query.state && ['unseen','answered','wrong'].includes(query.state)) {
+    // Batch the owner's latest eligible attempts once; never rescan thousands of answers for each catalog row.
+    const last = lastAttemptsSQL(userId);
     if (query.state === 'unseen') parts.push(sql`coalesce(q.canonical_id,q.id) NOT IN (SELECT attempt.canonical FROM (${last}) attempt)`);
     if (query.state === 'answered') parts.push(sql`coalesce(q.canonical_id,q.id) IN (SELECT attempt.canonical FROM (${last}) attempt)`);
     if (query.state === 'wrong') parts.push(sql`coalesce(q.canonical_id,q.id) IN (SELECT attempt.canonical FROM (${last}) attempt WHERE attempt.correct=false)`);
@@ -142,24 +164,36 @@ export function catalogCountSQL(userId:string,query:QuestionListQuery):SQL{
   const stateJoin=['favorite','doubtful'].includes(query.state??'')?sql`LEFT JOIN question_user_state us ON us.question_id=coalesce(q.canonical_id,q.id) AND us.user_id=${userId}`:sql``;
   return sql`SELECT count(DISTINCT coalesce(q.canonical_id,q.id))::int total FROM question_bank q ${stateJoin} WHERE ${catalogWhere(userId,query)}`;
 }
+/** F34 FR-11: keyset by (sort key asc, created_at desc, id desc). `recent` has a constant key, so it is the old (created_at,id) order. */
+const sortKey = (sort: QuestionListQuery['sort']) => sort === 'difficulty' ? { expr: sql`CASE q.difficulty::text WHEN 'easy' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`, join: sql``, cast: sql.raw('int') }
+  : sort === 'topic' ? { expr: sql`coalesce(tp.name,chr(1114111))`, join: sql`LEFT JOIN enamed_taxonomy tp ON tp.id=q.enamed_topic_id`, cast: sql.raw('text') }
+  : { expr: sql`0`, join: sql``, cast: sql.raw('int') };
 /** Reuse the exact authorized ID set for pagination and the global total, including empty pages. */
-export function catalogPageSQL(userId:string,query:QuestionListQuery,cur:{at:string;id:string}|null=null):SQL{
-  const stateJoin=['favorite','doubtful'].includes(query.state??'')?sql`LEFT JOIN question_user_state us ON us.question_id=coalesce(q.canonical_id,q.id) AND us.user_id=${userId}`:sql``;
-  return sql`WITH eligible AS MATERIALIZED (SELECT q.id,coalesce(q.canonical_id,q.id) canonical_id,q.created_at FROM question_bank q ${stateJoin} WHERE ${catalogWhere(userId,query)}),
+export function catalogPageSQL(userId:string,query:QuestionListQuery,cur:{at:string;id:string;s?:string|number}|null=null,withProgress=false):SQL{
+  const k = sortKey(query.sort), keyset = !cur ? sql`` : query.sort === 'difficulty' || query.sort === 'topic'
+    ? sql`WHERE sort_key>${cur.s}::${k.cast} OR (sort_key=${cur.s}::${k.cast} AND (created_at,id)<(${cur.at}::timestamptz,${cur.id}::uuid))`
+    : sql`WHERE (created_at,id)<(${cur.at}::timestamptz,${cur.id}::uuid)`;
+  return sql`WITH eligible AS MATERIALIZED (SELECT q.id,coalesce(q.canonical_id,q.id) canonical_id,q.created_at,${k.expr} sort_key FROM question_bank q ${stateJoin(userId,query)} ${k.join} WHERE ${catalogWhere(userId,query)}),
     counted AS (SELECT count(DISTINCT canonical_id)::int total FROM eligible),
-    selected AS (SELECT id FROM eligible ${cur?sql`WHERE (created_at,id)<(${cur.at}::timestamptz,${cur.id}::uuid)`:sql``} ORDER BY created_at DESC,id DESC LIMIT ${query.limit+1})
-    SELECT counted.total,${publicColumns} FROM counted LEFT JOIN selected ON true LEFT JOIN question_bank q ON q.id=selected.id ${catalogJoins(userId)} ORDER BY q.created_at DESC,q.id DESC`;
+    selected AS (SELECT id,canonical_id,sort_key FROM eligible ${keyset} ORDER BY sort_key,created_at DESC,id DESC LIMIT ${query.limit+1})${withProgress?sql`,
+    prog AS (SELECT l.canonical,l.correct FROM (${lastAttemptsSQL(userId,sql`SELECT canonical_id FROM selected`)}) l)`:sql``}
+    SELECT counted.total,selected.sort_key,${withProgress?sql`prog.canonical IS NOT NULL attempted,prog.correct attempt_correct,`:sql``}${publicColumns} FROM counted LEFT JOIN selected ON true ${withProgress?sql`LEFT JOIN prog ON prog.canonical=selected.canonical_id`:sql``} LEFT JOIN question_bank q ON q.id=selected.id ${catalogJoins(userId)} ORDER BY selected.sort_key,q.created_at DESC,q.id DESC`;
 }
 export const questionCatalog = {
-  async list(userId: string, query: QuestionListQuery) {
+  /** `bank` = bankStudent flag. Off: the legacy list, bit for bit; the F34 filters/sort are refused (404) and no progress is computed. */
+  async list(userId: string, query: QuestionListQuery, opts: { bank?: boolean } = {}) {
+    const bank = opts.bank === true;
+    if (!bank && (query.areaIds || query.topicIds || query.institutions || query.years || query.difficulties || query.sort)) throw new Abort({ code: 'not_found', message: 'route not found' });
     const cur = query.cursor ? decodeQuestionCursor(query.cursor, userId, query) : null;
     const { rows, total } = await run(userId, async (tx) => {
-      const page = await asServer<Row>(tx,catalogPageSQL(userId,query,cur));
-      return { rows:page.filter(row=>row.id!==null), total: Number(page[0]?.total ?? 0) };
+      const page = await asServer<Row>(tx,catalogPageSQL(userId,query,cur,bank));
+      return { rows: page.filter(row=>row.id!==null), total: Number(page[0]?.total ?? 0) };
     });
     const more = rows.length > query.limit, selected = rows.slice(0, query.limit), last = selected.at(-1);
-    const nextCursor = more && last && process.env.SHARE_SECRET ? encodeQuestionCursor(String(last.cursor_at),String(last.id),userId,query) : null;
-    return questionListResultSchema.parse({ items: await Promise.all(selected.map(toQuestion)), total, nextCursor });
+    const keyed = query.sort === 'difficulty' || query.sort === 'topic';
+    const nextCursor = more && last && process.env.SHARE_SECRET ? encodeQuestionCursor(String(last.cursor_at),String(last.id),userId,query,keyed?(last.sort_key as string|number):undefined) : null;
+    const items = await Promise.all(selected.map(async row => { const q = await toQuestion(row); return bank ? { ...q, progress: row.attempted !== true ? 'unseen' as const : row.attempt_correct === true ? 'correct' as const : 'wrong' as const } : q; }));
+    return questionListResultSchema.parse({ items, total, nextCursor });
   },
   async get(userId: string, id: string) { return toQuestion(await run(userId, (tx) => getQuestionRow(tx,userId,id))); },
   async state(userId: string, id: string): Promise<QuestionUserState> {

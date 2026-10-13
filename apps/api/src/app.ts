@@ -30,6 +30,8 @@ import { questionFeatureGate, questionFeatureResponse, questionUserAdmission } f
 import { questionImport, questionImportReconcile } from './inngest/question-import';
 import { questionsRoutes, examsRoutes, questionInstitutionsRoutes } from './routes/questions';
 import { questionSessionsRoutes } from './routes/question-sessions';
+import { examBuilderRoutes } from './routes/exam-builder';
+import { examTemplatesRoutes } from './routes/exam-templates';
 import { questionEditorialRoutes } from './routes/question-editorial';
 import { coverageRoutes } from './routes/coverage';
 import { homeRoutes } from './routes/home';
@@ -177,6 +179,8 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.use('/v1/question-institutions/*', requireUser, questionFeatureGate('catalog')).route('/v1/question-institutions', questionInstitutionsRoutes());
   app.use('/v1/exams/*', requireUser, questionFeatureGate('catalog')).route('/v1/exams', examsRoutes());
   app.use('/v1/question-sessions/*', requireUser, questionFeatureGate('sessions'), questionUserAdmission).route('/v1/question-sessions', questionSessionsRoutes());
+  app.use('/v1/exam-builder/*', requireUser, questionFeatureGate('catalog'), questionFeatureGate('bankStudent')).route('/v1/exam-builder', examBuilderRoutes()); // F34 G27
+  app.use('/v1/exam-templates/*', requireUser, questionFeatureGate('catalog'), questionFeatureGate('bankStudent')).route('/v1/exam-templates', examTemplatesRoutes()); // F34 G27
   app.use('/v1/challenge-ai/*', requireUser).route('/v1/challenge-ai', challengeAiRoutes()); // G25 F32
   app.use('/v1/uploads/*', requireUser).route('/v1/uploads', uploadsRoutes);
   app.use('/v1/imports/*', requireUser).route('/v1/imports', importsRoutes(createImports({ anki: anki ?? ankiPort }))); // F06 Anki import

@@ -14,7 +14,7 @@ export function readHistoryCursor(value:string,userId:string,query:QuestionSessi
  }catch{return null;}
 }
 export function sessionHistorySQL(userId:string,query:QuestionSessionsPageQuery,position:{at:string;id:string}|null){
- const where:SQL[]=[sql`s.user_id=${userId}::uuid`];if(query.mode)where.push(sql`s.mode=${query.mode}`);
+ const where:SQL[]=[sql`s.user_id=${userId}::uuid`,sql`s.config->'drawer' IS NULL`];if(query.mode)where.push(sql`s.mode=${query.mode}`);
  if(query.status)where.push(sql`CASE WHEN s.status='active' AND s.deadline IS NOT NULL AND s.deadline<=clock.at THEN 'expired' ELSE s.status END=${query.status}`);
  if(position)where.push(sql`(s.created_at,s.id)<(${position.at}::timestamptz,${position.id}::uuid)`);
  return sql`WITH clock AS MATERIALIZED(SELECT statement_timestamp() at), selected AS MATERIALIZED(SELECT s.id FROM question_sessions s CROSS JOIN clock WHERE ${sql.join(where,sql` AND `)} ORDER BY s.created_at DESC,s.id DESC LIMIT ${query.limit+1}),
@@ -24,12 +24,14 @@ export function sessionHistorySQL(userId:string,query:QuestionSessionsPageQuery,
  FROM selected x JOIN question_sessions s ON s.id=x.id CROSS JOIN clock LEFT JOIN counts c ON c.session_id=s.id
  WHERE s.user_id=${userId}::uuid ORDER BY s.created_at DESC,s.id DESC FOR UPDATE OF s`;
 }
+/** Raw rows carry Postgres text timestamps ('2026-10-13 10:11:04.09+00'), which the strict ISO schema rejects. */
+const at=(v:unknown)=>v==null?null:v instanceof Date?v:new Date(String(v));
 /** Recheck time after waiting for locks. An active filter can legitimately settle during that wait. */
 export async function sessionHistory(userId:string,query:QuestionSessionsPageQuery,route='/v1/question-sessions/history'){
  const position=query.cursor?readHistoryCursor(query.cursor,userId,query,route):null;if(query.cursor&&!position)throw validation('invalid_cursor');
  return run(userId,async tx=>{
   const rows=await asServer<Row>(tx,sessionHistorySQL(userId,query,position)),page=rows.slice(0,query.limit),last=page.at(-1);
   if(page.length){const [clock]=await asServer<Row>(tx,sql`SELECT clock_timestamp() server_time`);for(const row of page)row.server_time=clock!.server_time;await settleSessionSummaries(tx,userId,page);}
-  return questionSessionsPageResultSchema.parse({items:page.map(s=>({id:s.id,mode:s.mode,status:s.status,revision:s.revision,startedAt:s.started_at,deadline:s.deadline??null,finishedAt:s.finished_at??null,serverTime:s.server_time,count:s.count,answeredCount:s.answered_count})),nextCursor:rows.length>query.limit&&last?historyCursor(String(last.cursor_at),String(last.id),userId,query,route):null});
+  return questionSessionsPageResultSchema.parse({items:page.map(s=>({id:s.id,mode:s.mode,status:s.status,revision:s.revision,startedAt:at(s.started_at),deadline:at(s.deadline),finishedAt:at(s.finished_at),serverTime:at(s.server_time),count:s.count,answeredCount:s.answered_count})),nextCursor:rows.length>query.limit&&last?historyCursor(String(last.cursor_at),String(last.id),userId,query,route):null});
  });
 }

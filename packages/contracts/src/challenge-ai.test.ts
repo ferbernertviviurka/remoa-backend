@@ -136,7 +136,7 @@ describe('F30 events carry no study text', () => {
     expect(eventSchemas.manipulation_detected.safeParse({ gradedBy: 'prefilter' }).success).toBe(true);
     expect(eventSchemas.verdict_disputed.safeParse({ reason: 'x' }).success).toBe(false);
     expect(eventSchemas.summary_generated.safeParse({ size: 'quick', focus: 'high_yield', cards: 40 }).success).toBe(true);
-    expect(eventSchemas.bank_opened.safeParse({}).success).toBe(true);
+    expect("bank_opened" in eventSchemas).toBe(false);
   });
 });
 

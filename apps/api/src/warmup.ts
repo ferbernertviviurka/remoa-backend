@@ -18,24 +18,48 @@ export const WARM_CAP_MS = 60_000; // Railway healthcheckTimeout is 120 s (railw
  * session check of a real GET (first statement with the session join), `n` = no session (the route runs to its end).
  * Returns `ready()`: true when done, failed, or after `capMs` (a slow database never keeps the API down).
  * ponytail: statements behind data-dependent branches (a user with boards, a stale map_stats) stay cold for their first user.
- * ponytail: the cap only flips readiness; it does not cancel `work`. With a database slow enough to pass the cap, warmStatements still
- * holds every connection until its prepares return, and early traffic queues behind them (releasing early would not help: the queued
- * prepares stay on those connections). Upgrade if that ever shows up: a per-statement timeout in shareStatements.
+ * The cap stops new warm requests and cancels pool/prepare work cooperatively. Readiness after a cap or failure means degraded
+ * startup (ordinary requests can still fail), not successful warming. At most one synthetic request is active at a time.
  */
 export function warmUp(deps: Omit<Parameters<typeof createApp>[0], 'verifyToken' | 'ready'>, capMs = WARM_CAP_MS): () => boolean {
   let ready = false;
   const log = createLogger({ requestId: 'boot' });
   const t0 = Date.now();
   const app = createApp({ ...deps, verifyToken: async (t) => (t === 's' ? { userId: NIL, sessionId: NIL, pending: true } : { userId: NIL, sessionId: null, account: null }) });
-  const hit = (path: string, t: 's' | 'n') => Promise.resolve(app.request(path, { headers: { authorization: `Bearer ${t}`, 'x-request-id': 'warm-up' } })).then((r) => r.arrayBuffer()).catch(() => undefined);
+  const controller = new AbortController();
+  const { signal } = controller;
+  const cap = setTimeout(() => {
+    controller.abort();
+    ready = true;
+    log.warn('warm-up cap reached', { ms: capMs, degraded: true });
+  }, capMs);
+  cap.unref();
+  const hit = async (path: string, t: 's' | 'n') => {
+    signal.throwIfAborted();
+    try {
+      const r = await app.request(path, { signal, headers: { authorization: `Bearer ${t}`, 'x-request-id': 'warm-up' } });
+      await r.arrayBuffer();
+    } catch (e) {
+      if (signal.aborted) throw e;
+      // A route unavailable to the synthetic account must not prevent warming the next one.
+    }
+    signal.throwIfAborted();
+  };
   const work = (async () => {
-    await warmPool();
-    await Promise.all([...HOT_PATHS.map((p) => hit(p, 'n')), hit('/v1/home', 's')]);
-    await warmStatements();
+    await warmPool(signal);
+    signal.throwIfAborted();
+    for (const path of HOT_PATHS) await hit(path, 'n');
+    await hit('/v1/home', 's');
+    signal.throwIfAborted();
+    await warmStatements(signal);
   })();
-  const cap = new Promise<void>((resolve) => setTimeout(resolve, capMs).unref());
-  Promise.race([work.then(() => log.info('warm-up done', { ms: Date.now() - t0 })), cap.then(() => log.warn('warm-up cap reached', { ms: capMs }))])
-    .catch((e: unknown) => log.error('warm-up failed', { error: e instanceof Error ? e.message : String(e) }))
-    .finally(() => (ready = true));
+  void work.then(() => {
+    if (!signal.aborted) log.info('warm-up done', { ms: Date.now() - t0 });
+  }).catch((e: unknown) => {
+    if (!signal.aborted) log.error('warm-up failed', { error: e instanceof Error ? e.message : String(e), degraded: true });
+  }).finally(() => {
+    clearTimeout(cap);
+    ready = true;
+  });
   return () => ready;
 }

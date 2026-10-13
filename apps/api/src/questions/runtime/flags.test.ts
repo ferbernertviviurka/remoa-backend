@@ -48,6 +48,7 @@ describe("F33 HTTP switches preserve F32", () => {
       import: false,
       catalog: true,
       sessions: true,
+      bankStudent: true,
     });
   });
   it("disabled catalog and exams return404 while legacy and independent sessions continue", async () => {
