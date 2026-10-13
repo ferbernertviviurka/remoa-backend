@@ -19,6 +19,9 @@ export function questionFeatures(env: NodeJS.ProcessEnv = process.env) {
     }),
   ) as Record<QuestionFeature, boolean>;
 }
+/** D-1838: QUESTIONS_STUDENT_EMAILS (comma list) limits the student bank, sessions and exam builder to these accounts. Empty = everyone. */
+export const questionStudentEmails = (env: NodeJS.ProcessEnv = process.env) =>
+  (env.QUESTIONS_STUDENT_EMAILS ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
 export type AdmissionKind = "upload" | "import" | "session" | "report";
 export function questionAdmissionLimits(env: NodeJS.ProcessEnv = process.env) {
   const defaults = { upload: 5, import: 3, session: 20, report: 5 };
