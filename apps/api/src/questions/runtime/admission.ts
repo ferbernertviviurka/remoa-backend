@@ -9,8 +9,10 @@ import { eq, and, isNull, inArray } from "drizzle-orm";
 import { send } from "../../admin/core";
 import type { Env } from "../../app";
 import { dbm } from "../../db";
+import { accountState } from "../../admin/core/require-admin";
 import {
   questionFeatures,
+  questionStudentEmails,
   questionAdmissionLimits,
   type AdmissionKind,
   type QuestionFeature,
@@ -49,8 +51,27 @@ export const questionFeatureGate = (feature: QuestionFeature) =>
       ? next()
       : send(err("not_found", "route not found")),
   );
-export const questionFeatureResponse = () =>
-  send(ok(questionFeatureFlagsSchema.parse(questionFeatures())));
+// ponytail: per-instance email cache, never expires; a changed e-mail needs an API restart to re-check.
+const emails = new Map<string, string | null>();
+/** D-1838: student-facing flags for this user; outside the allowlist the bank, sessions and builder read as closed. */
+async function studentAllowed(userId: string) {
+  const allow = questionStudentEmails();
+  if (!allow.length) return true;
+  if (!emails.has(userId)) emails.set(userId, (await accountState(userId))?.email?.toLowerCase() ?? null);
+  const e = emails.get(userId);
+  return !!e && allow.includes(e);
+}
+/** D-1838: student-facing flags for this user; outside the allowlist the bank, sessions and builder read as closed. */
+export async function questionFeaturesFor(userId: string) {
+  const f = questionFeatures();
+  return (await studentAllowed(userId)) ? f : { ...f, catalog: false, sessions: false, bankStudent: false };
+}
+/** Student routes only; admin/editorial routes keep the env-only questionFeatureGate. */
+export const questionStudentGate = createMiddleware<Env>(async (c, next) =>
+  (await studentAllowed(c.get("userId"))) ? next() : send(err("not_found", "route not found")),
+);
+export const questionFeatureResponse = async (userId: string) =>
+  send(ok(questionFeatureFlagsSchema.parse(await questionFeaturesFor(userId))));
 export const questionImportAdmission = createMiddleware<Env>(
   async (c, next) => {
     const path = c.req.path;
