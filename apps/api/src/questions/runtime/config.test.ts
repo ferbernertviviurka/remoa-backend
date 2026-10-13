@@ -9,12 +9,14 @@ describe("independent rollout and abuse admission", () => {
         import: false,
         catalog: true,
         sessions: false,
+        bankStudent: false,
       });
     for (const NODE_ENV of ["test", "development"])
       expect(questionFeatures({ NODE_ENV })).toEqual({
         import: true,
         catalog: true,
         sessions: true,
+        bankStudent: true,
       });
   });
   it("each flag is independent and malformed values fail closed at boot", () => {
@@ -25,7 +27,7 @@ describe("independent rollout and abuse admission", () => {
         QUESTIONS_CATALOG_ENABLED: "false",
         QUESTIONS_SESSIONS_ENABLED: "true",
       }),
-    ).toEqual({ import: true, catalog: false, sessions: true });
+    ).toEqual({ import: true, catalog: false, sessions: true, bankStudent: false });
     expect(() => questionFeatures({ QUESTIONS_IMPORT_ENABLED: "yes" })).toThrow(
       "invalid QUESTIONS_IMPORT_ENABLED",
     );

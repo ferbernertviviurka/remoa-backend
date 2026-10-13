@@ -1,3 +1,5 @@
+import { examAvailabilitySchema, examPreviewSchema, examTemplateSchema, questionFacetsSchema } from '../question-student';
+import { allocateExam } from '../exam-builder';
 import { questionPublicSchema, questionSessionPublicSchema, questionSessionSummaryPublicSchema, examPaperPublicSchema,questionImportContextSchema,questionImportProgressSchema } from '../question-catalog';
 const id = '33000000-0000-4000-8000-000000000001';
 /** Synthetic content, no medical claim or real editorial attribution. */
@@ -17,3 +19,10 @@ export const mockQuestionImportContextNonQuestion=questionImportContextSchema.pa
 const importBase={id,revision:0,status:'review',totalPages:88,completedPages:88,candidates:100,accepted:0,rejected:0,duplicate:0,costCents:0,errorCode:null,updatedAt:'2026-10-09T12:00:00.000Z'};
 export const mockQuestionImportProgress=questionImportProgressSchema.parse(importBase);
 export const mockQuestionImportSelectedPages=questionImportProgressSchema.parse({...importBase,answerKeyPages:[3]});
+
+/** F34 (CCR-147) synthetic builder fixtures: counts are fictional, no medical content. */
+const areaA='34000000-0000-4000-8000-00000000000a',areaB='34000000-0000-4000-8000-00000000000b';
+export const mockQuestionFacets=questionFacetsSchema.parse({total:12,areas:[{id:areaA,count:9},{id:areaB,count:3}],topics:[{id,name:'Tópico sintético',count:12}],institutions:[{name:'Demonstração',count:12}],years:[{year:2026,count:12}],difficulties:[{value:'medium',count:12}]});
+export const mockExamAvailability=examAvailabilitySchema.parse({total:12,areas:[{areaId:areaA,available:9},{areaId:areaB,available:3}]});
+export const mockExamPreview=examPreviewSchema.parse({seed:'0'.repeat(32),allocation:allocateExam(mockExamAvailability.areas,1,'balanced'),items:[{questionId:id,canonicalId:id,version:1,areaId:areaA,topicId:null,origin:'remoa_authored',difficulty:'medium',stemPreview:'Questão sintética de demonstração: escolha a alternativa E.',sourceLabel:null,validation:{kind:'remoa_institutional',label:'Remoa'},pinned:false}]});
+export const mockExamTemplate=examTemplateSchema.parse({id,name:'Modelo sintético',params:{count:20,mode:'study'},createdAt:'2026-10-13T12:00:00.000Z',updatedAt:'2026-10-13T12:00:00.000Z'});
