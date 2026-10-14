@@ -46,7 +46,12 @@ export async function acceptCandidates(tx: Tx, importId: string, input: Question
         if (!review.success) return skip('invalid', review.error.issues[0]?.message ?? 'invalid_candidate');
         const r = await updateCandidate(sp, importId, item.id, review.data);
         if (!r.ok) return skip(r.error.code === 'conflict' ? 'conflict' : 'invalid', r.error.message);
-        return r.data;
+        // Require the actual bumped revision even with the typed service result;
+        // never synthesize it or lose the next item's CAS.
+        if (!('importRevision' in r.data) || typeof r.data.importRevision !== 'number'
+          || !Number.isSafeInteger(r.data.importRevision) || r.data.importRevision !== revision + 1)
+          return skip('conflict', 'import_revision_changed');
+        return { questionId: r.data.questionId, importRevision: r.data.importRevision };
       });
       revision = saved.importRevision;
       results.push({ id: item.id, outcome: 'accepted', questionId: saved.questionId });

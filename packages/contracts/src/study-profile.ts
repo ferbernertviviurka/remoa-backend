@@ -7,7 +7,7 @@ import { MAX_GOALS } from './constants';
 import { idSchema as uuidSchema, timestampSchema } from './common';
 
 export { healthCourseCodes, healthCourseCodeSchema } from './health-course-codes';
-import { healthCourseCodes, healthCourseCodeSchema } from './health-course-codes';
+import { healthCourseCodeSchema } from './health-course-codes';
 export type HealthCourseCode = z.infer<typeof healthCourseCodeSchema>;
 /** `other_health` = "Outro curso da saúde" (free text), `not_health` = "Não é da área da saúde" (topic free text). */
 export const healthCourseKinds = ['course', 'other_health', 'not_health'] as const;
