@@ -165,15 +165,15 @@ describe.skipIf(!url)('F33 institutional approval (D-1819)', () => {
     expect((await pg`SELECT count(*)::int n FROM question_editorial_reviews WHERE question_id IN ${pg(items.map((i) => i.id))}`)[0]!.n).toBe(3);
   });
 
-  it('auth gates: non-admin 404, stale sign-in 403 with a denied audit row, short reason 422', async () => {
+  it('auth gates: non-admin 404, short reason 422 with a denied audit row; a sign-in older than 30 min still passes (D-1841)', async () => {
     const item = await question();
     const body = { items: [item], attestation, idempotencyKey: randomUUID(), reason };
     expect((await req(body, student)).status).toBe(404);
     const before = Number((await pg`SELECT count(*)::int n FROM admin_audit_log WHERE actor_id=${admin} AND action='question.institutional_approve' AND result='denied'`)[0]!.n);
-    expect((await req(body, admin, 2 * 60 * 60_000)).status).toBe(403);
     expect((await req({ ...body, reason: 'curto' })).status).toBe(422);
-    expect(Number((await pg`SELECT count(*)::int n FROM admin_audit_log WHERE actor_id=${admin} AND action='question.institutional_approve' AND result='denied'`)[0]!.n)).toBe(before + 2);
+    expect(Number((await pg`SELECT count(*)::int n FROM admin_audit_log WHERE actor_id=${admin} AND action='question.institutional_approve' AND result='denied'`)[0]!.n)).toBe(before + 1);
     expect((await pg`SELECT catalog_status FROM question_bank WHERE id=${item.id}`)[0]!.catalog_status).toBe('in_review');
+    expect((await req(body, admin, 2 * 60 * 60_000)).status).toBe(200);
   });
 
   it('triggers and publish_chk refuse an institutional seal outside its scope', async () => {

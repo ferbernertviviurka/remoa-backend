@@ -13,6 +13,7 @@ import { loadPreferences } from './preferences';
 import { recordEvent } from './events';
 import { replanUserReminders } from '../calendar/reminders/schedule';
 import { invalidate } from '../cache';
+import { readStudyProfile } from '../study-profile/profile';
 
 const DAY = 86_400_000;
 const DEFAULT_TZ = 'America/Sao_Paulo';
@@ -74,9 +75,9 @@ export async function getAccount(userId: string, authIn: AuthData | PromiseLike<
   const { profiles } = await dbm();
   // G21 D-1094: every read in parallel (was 6 in sequence, ~8 round trips). P-541 (D-1114): all in one run(), one connection and one
   // flight with the fused session check (was ~7 server connections + the check: the page's first wave queued on the pool)
-  const [[row], ent, prefsFor, streakDays, pwdAt] = await run(userId, (tx) => Promise.all([
+  const [[row], ent, prefsFor, streakDays, pwdAt, study] = await run(userId, (tx) => Promise.all([
     tx.select(pick(profiles, ...PROFILE_COLS)).from(profiles).where(eq(profiles.userId, userId)),
-    getEntitlements(userId, now, tx), loadPreferences(userId, tx), streakOf(userId, now, tx), passwordChangedAt(userId, tx),
+    getEntitlements(userId, now, tx), loadPreferences(userId, tx), streakOf(userId, now, tx), passwordChangedAt(userId, tx), readStudyProfile(tx, userId),
   ]));
   if (!ent.ok) throw new Error(ent.error.message);
   const auth = await authIn;
@@ -91,7 +92,9 @@ export async function getAccount(userId: string, authIn: AuthData | PromiseLike<
     identities: auth.identities,
     preferences,
     entitlements: ent.data,
-    completeness: computeCompleteness(profile, preferences, { emailConfirmed: auth.emailConfirmed, emailPending: !!auth.pendingEmail }),
+    completeness: computeCompleteness(profile, preferences, { emailConfirmed: auth.emailConfirmed, emailPending: !!auth.pendingEmail }, study.profile),
+    studyProfile: study.profile,
+    capabilities: study.capabilities,
     streakDays,
     joinedAt: auth.joinedAt,
     deletionScheduledFor: row?.deletedAt ? new Date(row.deletedAt.getTime() + RETENTION.deletionGraceDays * DAY) : null,

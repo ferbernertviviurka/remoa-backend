@@ -4,6 +4,7 @@ import { idSchema, timestampSchema } from './common';
 import { auditEntrySchema, reasonSchema } from './admin';
 import { catalogAlternativeKeys } from './constants';
 import { questionSessionBuilderSchema } from './exam-builder';
+import { healthCourseCodeSchema } from './health-course-codes';
 export {
   QUESTION_PDF_PARSER_VERSION, QUESTION_PDF_OCR_MODEL_ID, QUESTION_PDF_OCR_MODEL_COMMIT,
   QUESTION_PDF_OCR_MODEL_SHA256, QUESTION_PDF_OCR_DPI, QUESTION_PDF_OCR_VERSION, catalogAlternativeKeys,
@@ -40,7 +41,7 @@ export type QuestionProvenance = z.infer<typeof questionProvenanceSchema>;
 export const questionAssetSchema = z.object({ id: idSchema, alt: z.string().max(2000), url: httpUrl, provenance: questionProvenanceSchema.nullable() }).strict();
 /** Query-string list: one value or repeated params → array (max 50, no duplicates). */
 const listParam=<T extends z.ZodTypeAny>(item:T)=>z.preprocess(v=>v===undefined||Array.isArray(v)?v:[v],z.array(item).min(1).max(50).refine(a=>new Set(a.map(String)).size===a.length,'duplicate_values')).optional();
-export const questionListQuerySchema = z.object({ scope: z.enum(['catalog', 'mine', 'all']).default('all'), search: z.string().max(200).optional(), origin: z.enum(questionOrigins).optional(), boardId: idSchema.optional(), type: z.enum(['objective', 'discursive']).optional(), topicId: idSchema.optional(), areaId: idSchema.optional(), sourceId: idSchema.optional(), examId: idSchema.optional(), institution: z.string().trim().min(1).max(300).optional(), year: z.coerce.number().int().min(1900).max(2200).optional(), difficulty: z.enum(['easy', 'medium', 'hard']).optional(), state: z.enum(['unseen', 'answered', 'wrong', 'favorite', 'doubtful']).optional(), /* F34 FR-7 (CCR-147): OR inside a group, AND across groups; a repeated query param or one value both parse; the singular field ORs in. */ areaIds: listParam(idSchema), topicIds: listParam(idSchema), institutions: listParam(z.string().trim().min(1).max(300)), years: listParam(z.coerce.number().int().min(1900).max(2200)), difficulties: listParam(z.enum(['easy', 'medium', 'hard'])), /* FR-11; absent = recent (created_at desc, id desc). The cursor carries the sort key. */ sort: z.enum(['recent', 'difficulty', 'topic']).optional(), cursor: z.string().max(2000).optional(), limit: z.coerce.number().int().min(1).max(50).default(25) }).strict();
+export const questionListQuerySchema = z.object({ scope: z.enum(['catalog', 'mine', 'all']).default('all'), search: z.string().max(200).optional(), origin: z.enum(questionOrigins).optional(), boardId: idSchema.optional(), type: z.enum(['objective', 'discursive']).optional(), topicId: idSchema.optional(), areaId: idSchema.optional(), sourceId: idSchema.optional(), examId: idSchema.optional(), institution: z.string().trim().min(1).max(300).optional(), year: z.coerce.number().int().min(1900).max(2200).optional(), difficulty: z.enum(['easy', 'medium', 'hard']).optional(), state: z.enum(['unseen', 'answered', 'wrong', 'favorite', 'doubtful']).optional(), /* F34 FR-7 (CCR-147): OR inside a group, AND across groups; a repeated query param or one value both parse; the singular field ORs in. */ areaIds: listParam(idSchema), topicIds: listParam(idSchema), institutions: listParam(z.string().trim().min(1).max(300)), years: listParam(z.coerce.number().int().min(1900).max(2200)), difficulties: listParam(z.enum(['easy', 'medium', 'hard'])), /* FR-11; absent = recent (created_at desc, id desc). The cursor carries the sort key. */ sort: z.enum(['recent', 'difficulty', 'topic']).optional(), /* F35 FR-35/36 (D-1861): catalog course; non-medicine courses have no published catalog yet */ course: healthCourseCodeSchema.optional(), cursor: z.string().max(2000).optional(), limit: z.coerce.number().int().min(1).max(50).default(25) }).strict();
 export type QuestionListQuery = z.infer<typeof questionListQuerySchema>;
 export const questionUserStateSchema = z.object({ favorite: z.boolean(), doubtful: z.boolean(), annotation: z.string().max(10000) }).strict();
 export type QuestionUserState = z.infer<typeof questionUserStateSchema>;
@@ -174,8 +175,8 @@ export const questionImportDetailSchema=z.object({import:questionImportProgressS
 export const questionCandidateSavedSchema=z.object({candidate:questionCandidateSchema,questionId:idSchema.nullable(),importRevision:importRevisionSchema.default(0),affectedCandidates:z.array(questionCandidateSchema).default([]),audit:auditEntrySchema}).strict();
 export const questionCandidatePageImageResultSchema=questionCandidateSavedSchema;
 /**
- * D-1838: POST /v1/admin/questions/imports/:id/candidates/accept — "Aceitar selecionadas". withAdmin 'question.candidate_update',
- * target question_import, ONE audit row per call (after = per-item {id, outcome, code, questionId}), no 30-min reauth (D-1838).
+ * D-1841: POST /v1/admin/questions/imports/:id/candidates/accept — "Aceitar selecionadas". withAdmin 'question.candidate_update',
+ * target question_import, ONE audit row per call (after = per-item {id, outcome, code, questionId}), no 30-min reauth (D-1841).
  * Each item runs the same updateCandidate path as the single PATCH (state accepted, payload as saved) in its own savepoint;
  * `confirmsChecks` is the admin's one attestation for every item (integrity, final key, figures), as the per-item checkboxes.
  * Accepted = draft in_review for medical review; never publishes. Whole call 409 when the import revision changed or the paper is

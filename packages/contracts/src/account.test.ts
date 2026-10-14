@@ -16,17 +16,23 @@ import {
 } from './index';
 
 describe('computeCompleteness', () => {
-  const full = { avatarKey: 'avatars/u/1.webp', name: 'Ana', goal: 'enamed_2027_1' as const };
+  const full = { avatarKey: 'avatars/u/1.webp', name: 'Ana' };
   const ok = { emailConfirmed: true, emailPending: false };
+  const study = { source: 'profile', course: 'medicine', goals: ['enamed'], customGoals: [], institution: null, institutionText: 'USP' };
   it.each([
-    ['all done', full, true, ok, 100, []],
-    ['nothing', { avatarKey: null, name: null, goal: null }, false, { emailConfirmed: false, emailPending: false }, 0, ['photo', 'name', 'email', 'goal', 'reminder']],
-    ['name of 1 char after trim', { ...full, name: '  A ' }, true, ok, 80, ['name']],
-    ['email pending change', full, true, { emailConfirmed: true, emailPending: true }, 80, ['email']],
-    ['email unconfirmed', full, true, { emailConfirmed: false, emailPending: false }, 80, ['email']],
-    ['no photo, no reminder', { ...full, avatarKey: null }, false, ok, 60, ['photo', 'reminder']],
-  ] as const)('%s', (_, profile, reminderEnabled, email, percent, missing) => {
-    expect(computeCompleteness(profile, { reminderEnabled }, email)).toEqual({ percent, missing });
+    ['all done', full, true, ok, study, 100, []],
+    ['nothing', { avatarKey: null, name: null }, false, { emailConfirmed: false, emailPending: false }, null, 0, ['photo', 'name', 'email', 'study_focus', 'course_institution', 'reminder']],
+    ['no study profile', full, true, ok, null, 67, ['study_focus', 'course_institution']],
+    ['migration row: not confirmed', full, true, ok, { ...study, source: 'migration', course: null, goals: ['enamed'] }, 67, ['study_focus', 'course_institution']],
+    ['custom goal only counts as focus', full, true, ok, { ...study, goals: [], customGoals: ['x'] }, 100, []],
+    ['course without institution', full, true, ok, { ...study, institutionText: null }, 83, ['course_institution']],
+    ['institution chosen', full, true, ok, { ...study, institutionText: null, institution: { id: 'x' } }, 100, []],
+    ['name of 1 char after trim', { ...full, name: '  A ' }, true, ok, study, 83, ['name']],
+    ['email pending change', full, true, { emailConfirmed: true, emailPending: true }, study, 83, ['email']],
+    ['email unconfirmed', full, true, { emailConfirmed: false, emailPending: false }, study, 83, ['email']],
+    ['no photo, no reminder', { ...full, avatarKey: null }, false, ok, study, 67, ['photo', 'reminder']],
+  ] as const)('%s', (_, profile, reminderEnabled, email, st, percent, missing) => {
+    expect(computeCompleteness(profile, { reminderEnabled }, email, st)).toEqual({ percent, missing });
   });
 });
 
@@ -123,7 +129,7 @@ describe('account mocks', async () => {
   const { accountSnapshotSchema } = await import('./index');
   it.each([accountFreeFixture, accountProFixture, accountDeletionFixture])('fixture is a valid snapshot with consistent completeness', (f) => {
     expect(accountSnapshotSchema.parse(f)).toEqual(f);
-    expect(computeCompleteness(f.profile, f.preferences, { emailConfirmed: f.emailConfirmed, emailPending: !!f.pendingEmail })).toEqual(f.completeness);
+    expect(computeCompleteness(f.profile, f.preferences, { emailConfirmed: f.emailConfirmed, emailPending: !!f.pendingEmail }, f.studyProfile ?? null)).toEqual(f.completeness);
   });
   it('free cap, sessions, last identity', async () => {
     resetAccountMocks();
@@ -134,6 +140,6 @@ describe('account mocks', async () => {
     expect(await m.unlinkIdentity('u', 'email')).toMatchObject({ ok: false, error: { code: 'conflict' } });
     await m.updatePreferences('u', { reminderEnabled: true });
     const snap = await m.getAccount('u');
-    expect(snap.ok && snap.data.completeness.percent).toBe(80);
+    expect(snap.ok && snap.data.completeness.percent).toBe(50);
   });
 });

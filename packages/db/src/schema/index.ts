@@ -13,3 +13,4 @@ export * from './calendar';
 export * from './blog';
 
 export * from './question-catalog';
+export * from './study-profile';

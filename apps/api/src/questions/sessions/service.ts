@@ -108,7 +108,7 @@ async function startBuilder(tx:Tx,userId:string,config:QuestionSessionConfig){
   // Two tabs / double click with different keys: serialized per owner here; the partial unique index is the backstop.
   await asServer(tx,sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId+':exam-builder'},33))`);
   await activeBuilder(tx,userId);
-  if(!(await recheck(tx,userId,p.source,ids)).ok)throw conflict('exam_changed');
+  if(!(await recheck(tx,userId,p.source,ids,p.boardId,p.course)).ok)throw conflict('exam_changed');
 }
 /** Settles an expired builder session; a still-active one is resumable, never replaced: 409 active_session_exists:<id>. */
 async function activeBuilder(tx:Tx,userId:string){

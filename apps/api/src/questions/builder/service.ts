@@ -17,16 +17,18 @@ type Source = ExamBuilderFilter['source'];
 const ids = (xs: readonly string[]) => pgArray(xs, 'uuid');
 const canon = sql`coalesce(q.canonical_id,q.id)`;
 /** D-1823: the catalog is public only; "ai" is the caller's own private ai_generated questions; both only by explicit choice. */
-export function sourceWhere(userId: string, source: Source): SQL {
-  const ai = sql`(q.visibility='private' AND q.user_id=${userId} AND q.origin='ai_generated')`;
+export function sourceWhere(userId: string, source: Source, boardId: string | null = null): SQL {
+  // D-1846: a map restricts only the private AI pool (question_bank.board_id); the public catalog is unaffected.
+  const ai = sql`(q.visibility='private' AND q.user_id=${userId} AND q.origin='ai_generated'${boardId ? sql` AND q.board_id=${boardId}` : sql``})`;
   return source === 'catalog' ? sql`q.visibility='public'` : source === 'ai' ? ai : sql`(q.visibility='public' OR ${ai})`;
 }
 /** Readable now, latest version, active, objective, inside the source (+ the owner's progress filter). */
-export function eligibleWhere(userId: string, source: Source, progress: ExamBuilderFilter['progress'] = 'all'): SQL {
-  return sql`${catalogWhere(userId, questionListQuerySchema.parse(progress === 'all' ? {} : { state: progress }), true)} AND ${sourceWhere(userId, source)}`;
+export function eligibleWhere(userId: string, source: Source, progress: ExamBuilderFilter['progress'] = 'all', boardId: string | null = null, course: ExamBuilderFilter['course'] = null): SQL {
+  // D-1861: course applies to the public catalog only (catalogWhere drops it for a course other than medicine); the private AI pool is never filtered.
+  return sql`${catalogWhere(userId, questionListQuerySchema.parse({ ...(progress === 'all' ? {} : { state: progress }), ...(course ? { course } : {}) }), true)} AND ${sourceWhere(userId, source, boardId)}`;
 }
 function filterWhere(userId: string, f: ExamBuilderFilter): SQL {
-  const parts = [eligibleWhere(userId, f.source, f.progress)];
+  const parts = [eligibleWhere(userId, f.source, f.progress, f.boardId, f.course)];
   if (f.areaIds.length) parts.push(sql`q.enamed_area_id=ANY(${ids(f.areaIds)})`);
   // FR-37: topics and map matrix items both resolve to taxonomy nodes and their descendants (one OR group).
   if (f.topicIds.length || f.matrixItemIds.length) parts.push(sql`q.enamed_topic_id IN (WITH RECURSIVE t AS (
@@ -62,9 +64,9 @@ function toAreas(f: ExamBuilderFilter, rows: Row[]) {
     ({ areaId, available: Number(by.get(areaId)?.available ?? 0), pinned: Number(by.get(areaId)?.pinned ?? 0) }));
 }
 /** Per-request revalidation (also used by the session start): ok / newer published version / gone. */
-export async function recheck(tx: Tx, userId: string, source: Source, questionIds: readonly string[]): Promise<ExamRevalidateResult> {
+export async function recheck(tx: Tx, userId: string, source: Source, questionIds: readonly string[], boardId: string | null = null, course: ExamBuilderFilter['course'] = null): Promise<ExamRevalidateResult> {
   const rows = await asServer<Row>(tx, sql`SELECT o.id,l.id latest_id FROM question_bank o LEFT JOIN LATERAL (SELECT q.id FROM question_bank q
-    WHERE coalesce(q.canonical_id,q.id)=coalesce(o.canonical_id,o.id) AND ${eligibleWhere(userId, source)} ORDER BY q.version DESC,q.id LIMIT 1) l ON true
+    WHERE coalesce(q.canonical_id,q.id)=coalesce(o.canonical_id,o.id) AND ${eligibleWhere(userId, source, 'all', boardId, course)} ORDER BY q.version DESC,q.id LIMIT 1) l ON true
     WHERE o.id=ANY(${ids(questionIds)})`);
   const latest = new Map(rows.map((r) => [String(r.id), r.latest_id == null ? null : String(r.latest_id)]));
   const unavailable: string[] = [], updated: { id: string; latestId: string }[] = [];
@@ -122,6 +124,6 @@ export const examBuilder = {
     });
   },
   async revalidate(userId: string, input: { params: ExamBuilderParams; questionIds: string[] }) {
-    return run(userId, (tx) => recheck(tx, userId, input.params.source, input.questionIds));
+    return run(userId, (tx) => recheck(tx, userId, input.params.source, input.questionIds, input.params.boardId, input.params.course));
   },
 };

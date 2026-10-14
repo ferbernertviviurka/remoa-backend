@@ -141,17 +141,17 @@ describe.skipIf(!url)('F33 operations: content-hash prepare + outbox recovery (D
     expect(rs.sort()).toEqual([false, true]);
   });
 
-  it('non-admin gets 404; stale sign-in is refused with one denied audit row; invalid body denied', async () => {
+  it('non-admin gets 404; invalid body denied; a sign-in older than 30 min still passes with one audit row (D-1841)', async () => {
     const item = await question();
     const body = { items: [item], sourceId: null, idempotencyKey: randomUUID(), reason };
     expect((await req('/content-hash/prepare', 'POST', body, student)).status).toBe(404);
-    const before = await auditCount('question.content_hash_prepare');
-    const stale = await req('/content-hash/prepare', 'POST', body, admin, 60 * 60_000);
-    expect(stale.status).toBe(403);
-    expect(await auditCount('question.content_hash_prepare')).toBe(before + 1);
     expect((await req('/content-hash/prepare', 'POST', { ...body, extra: true })).status).toBe(422);
     const [row] = await pg`SELECT content_hash FROM question_bank WHERE id=${item.id}`;
     expect(row!.content_hash).toBeNull();
+    const before = await auditCount('question.content_hash_prepare');
+    const stale = await req('/content-hash/prepare', 'POST', body, admin, 60 * 60_000);
+    expect(stale.status).toBe(200);
+    expect(await auditCount('question.content_hash_prepare')).toBe(before + 1);
   });
 
   it('catalog hashState filter lists only missing hashes and binds the cursor to it', async () => {
@@ -220,7 +220,7 @@ describe.skipIf(!url)('F33 operations: content-hash prepare + outbox recovery (D
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('recovery: replay, 409 on changed payload, stale sign-in accepted (D-1838), tampered object rejected', async () => {
+  it('recovery: replay, 409 on changed payload, stale sign-in accepted (D-1841), tampered object rejected', async () => {
     const id = await outbox(student);
     const body = { items: [{ outboxId: id, expectedAttempts: 20, expectedAttemptLimit: 20 }], extraAttempts: 2, idempotencyKey: randomUUID(), reason };
     const before = await auditCount('question.generation_recover');

@@ -19,7 +19,7 @@ const errorCode = z.string().regex(/^[a-z_]{3,100}$/);
 export const QUESTION_CONTENT_HASH_VERSION = 'f33-content-v2-jsonb-assets' as const;
 export const QUESTION_HASH_PREPARE_MAX = 500;
 /**
- * POST /v1/admin/questions/content-hash/prepare (withAdmin 'question.content_hash_prepare', reauth, one audit row per call).
+ * POST /v1/admin/questions/content-hash/prepare (withAdmin 'question.content_hash_prepare', no reauth since D-1841, one audit row per call).
  * CAS per item: content_hash IS NULL, version = revision, updated_at (ms) = expectedUpdatedAt. Optional `sourceId` is linked
  * only where source_id IS NULL; the source's rights are never read as authorization nor changed.
  */
@@ -95,7 +95,7 @@ export const questionAdminOutboxItemSchema = questionOutboxItemSchema.extend({ o
 export const questionAdminOutboxPageSchema = z.object({ items: z.array(questionAdminOutboxItemSchema).max(50), nextCursor: outboxCursor.nullable(), audit: auditEntrySchema }).strict();
 
 /**
- * POST /v1/admin/questions/generation/recover — withAdmin 'question.generation_recover', reauth, one audit row per call.
+ * POST /v1/admin/questions/generation/recover — withAdmin 'question.generation_recover', no reauth since D-1841, one audit row per call.
  * Per item, in one transaction: lock row, CAS (attempts, attempt_limit), require delivered_at IS NULL, lease expired, attempts >=
  * attempt_limit; validate the durable object (owner prefix, size, hash = run payload_hash, receipt/promotion metadata) without a
  * provider call, quota reservation or charge; then attempt_limit += min(extraAttempts, 25 - attempt_limit). attempts is untouched.
@@ -139,7 +139,7 @@ export type QuestionGenerationMetrics = z.infer<typeof questionGenerationMetrics
 // ── D-1819: institutional approval (rule 6 exception, extends D-1522 to remoa_authored questions) ─────────────────
 export const QUESTION_INSTITUTIONAL_APPROVE_MAX = 500;
 /**
- * POST /v1/admin/questions/institutional-approval (withAdmin 'question.institutional_approve', reauth, ONE audit row per call:
+ * POST /v1/admin/questions/institutional-approval (withAdmin 'question.institutional_approve', no reauth since D-1841, ONE audit row per call:
  * target question_batch; after = idempotencyKey, requestHash, approverRole, approverName, rightsBasis, sourceId and per-item
  * {id, outcome, version, contentHash}; never stem/alternatives/explanation). Agents never call it on their own (CLAUDE.md rule 6).
  * Per item (own savepoint, lock order as publishQuestion), all must hold or the item is skipped with an outcome:

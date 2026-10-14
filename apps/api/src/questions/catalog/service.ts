@@ -128,6 +128,9 @@ export function catalogWhere(userId: string, query: QuestionListQuery, activeOnl
   const parts: SQL[] = [readable(userId), latest];
   if (query.scope === 'mine') parts.push(sql`q.visibility='private' AND q.user_id=${userId}`);
   if (query.scope === 'catalog') parts.push(sql`q.visibility='public'`);
+  // F35 D-1861: only 'medicine' has a published catalog today; any other course empties the public part (own private questions stay).
+  // ponytail: replace with the CCR-150 profession column once it lands.
+  if (query.course && query.course !== 'medicine') parts.push(sql`q.visibility<>'public'`);
   if (activeOnly) parts.push(sql`q.availability='active' AND q.type='objective'`);
   const fields = [['origin', query.origin], ['board_id', query.boardId], ['type', query.type], ['source_id', query.sourceId]] as const;
   for (const [name, value] of fields) if (value) parts.push(sql`${sql.raw('q.' + name)}=${value}`);

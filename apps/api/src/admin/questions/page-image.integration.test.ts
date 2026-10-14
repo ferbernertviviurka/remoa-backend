@@ -209,7 +209,7 @@ describe.skipIf(!url)("CCR118 manual private page image", () => {
     objects.clear();
     await db.end({ timeout: 1 });
   });
-  it("denies student/reviewer, missing reason and disabled flag before expensive IO (no 30-min reauth, D-1838)", async () => {
+  it("denies student/reviewer, missing reason and disabled flag before expensive IO (no 30-min reauth, D-1841)", async () => {
     const input = { page: 1, revision: 0, reason };
     expect((await call(current, input, student)).status).toBe(404);
     expect((await call(current, input, reviewer)).status).toBe(404);

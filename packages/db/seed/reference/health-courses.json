@@ -1,0 +1,333 @@
+[
+ {
+  "code": "medicine",
+  "name": "Medicina",
+  "aliases": [
+   "medicina",
+   "med"
+  ],
+  "councilCode": "CRM",
+  "suggestedGoals": [
+   "enamed",
+   "residencia_medica",
+   "provas_faculdade"
+  ],
+  "kind": "course",
+  "sort": 1
+ },
+ {
+  "code": "nursing",
+  "name": "Enfermagem",
+  "aliases": [
+   "enfermagem",
+   "enf",
+   "enfermeiro",
+   "enfermeira"
+  ],
+  "councilCode": "COREN",
+  "suggestedGoals": [
+   "residencia_enfermagem",
+   "provas_faculdade",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 2
+ },
+ {
+  "code": "nursing_technician",
+  "name": "Técnico(a) em Enfermagem",
+  "aliases": [
+   "tecnico em enfermagem",
+   "tecnico enfermagem",
+   "tec enfermagem",
+   "tec em enfermagem",
+   "tecnica em enfermagem"
+  ],
+  "councilCode": "COREN",
+  "suggestedGoals": [
+   "provas_curso",
+   "concursos_saude",
+   "atualizacao_profissional"
+  ],
+  "kind": "course",
+  "sort": 3
+ },
+ {
+  "code": "dentistry",
+  "name": "Odontologia",
+  "aliases": [
+   "odontologia",
+   "odonto",
+   "dentista"
+  ],
+  "councilCode": "CRO",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_especializacao",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 4
+ },
+ {
+  "code": "pharmacy",
+  "name": "Farmácia",
+  "aliases": [
+   "farmacia",
+   "farmaceutico",
+   "farmaceutica"
+  ],
+  "councilCode": "CRF",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 5
+ },
+ {
+  "code": "physiotherapy",
+  "name": "Fisioterapia",
+  "aliases": [
+   "fisioterapia",
+   "fisio",
+   "fisioterapeuta"
+  ],
+  "councilCode": "CREFITO",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 6
+ },
+ {
+  "code": "occupational_therapy",
+  "name": "Terapia Ocupacional",
+  "aliases": [
+   "terapia ocupacional",
+   "to",
+   "t.o."
+  ],
+  "councilCode": "CREFITO",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 7
+ },
+ {
+  "code": "nutrition",
+  "name": "Nutrição",
+  "aliases": [
+   "nutricao",
+   "nutri",
+   "nutricionista"
+  ],
+  "councilCode": "CRN",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 8
+ },
+ {
+  "code": "psychology",
+  "name": "Psicologia",
+  "aliases": [
+   "psicologia",
+   "psico",
+   "psicologo",
+   "psicologa"
+  ],
+  "councilCode": "CRP",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 9
+ },
+ {
+  "code": "biomedicine",
+  "name": "Biomedicina",
+  "aliases": [
+   "biomedicina",
+   "biomed",
+   "biomedico"
+  ],
+  "councilCode": "CRBM",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_especializacao",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 10
+ },
+ {
+  "code": "speech_therapy",
+  "name": "Fonoaudiologia",
+  "aliases": [
+   "fonoaudiologia",
+   "fono",
+   "fonoaudiologo"
+  ],
+  "councilCode": "CREFONO",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 11
+ },
+ {
+  "code": "physical_education",
+  "name": "Educação Física",
+  "aliases": [
+   "educacao fisica",
+   "ed fisica",
+   "ed. fisica",
+   "edu fisica"
+  ],
+  "councilCode": "CREF",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "concursos_saude",
+   "atualizacao_profissional"
+  ],
+  "kind": "course",
+  "sort": 12
+ },
+ {
+  "code": "social_work",
+  "name": "Serviço Social",
+  "aliases": [
+   "servico social",
+   "assistente social",
+   "ss"
+  ],
+  "councilCode": "CRESS",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 13
+ },
+ {
+  "code": "veterinary_medicine",
+  "name": "Medicina Veterinária",
+  "aliases": [
+   "medicina veterinaria",
+   "veterinaria",
+   "vet",
+   "veterinario",
+   "med vet"
+  ],
+  "councilCode": "CRMV",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "residencia_multiprofissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 14
+ },
+ {
+  "code": "biological_sciences",
+  "name": "Ciências Biológicas",
+  "aliases": [
+   "ciencias biologicas",
+   "biologia",
+   "biologo",
+   "cien biologicas"
+  ],
+  "councilCode": "CRBio",
+  "suggestedGoals": [
+   "provas_faculdade",
+   "atualizacao_profissional",
+   "concursos_saude"
+  ],
+  "kind": "course",
+  "sort": 15
+ },
+ {
+  "code": "public_health",
+  "name": "Saúde Coletiva",
+  "aliases": [
+   "saude coletiva",
+   "saude publica",
+   "sc"
+  ],
+  "councilCode": null,
+  "suggestedGoals": [
+   "provas_faculdade",
+   "concursos_saude",
+   "residencia_multiprofissional"
+  ],
+  "kind": "course",
+  "sort": 16
+ },
+ {
+  "code": "radiology",
+  "name": "Radiologia e Diagnóstico por Imagem",
+  "aliases": [
+   "radiologia",
+   "diagnostico por imagem",
+   "tecnologo em radiologia",
+   "tecnico em radiologia",
+   "radiologia e diagnostico por imagem"
+  ],
+  "councilCode": "CRTR",
+  "suggestedGoals": [
+   "provas_curso",
+   "concursos_saude",
+   "atualizacao_profissional"
+  ],
+  "kind": "course",
+  "sort": 17
+ },
+ {
+  "code": "other_health",
+  "name": "Outro curso da saúde",
+  "aliases": [
+   "outro",
+   "outro curso da saude",
+   "outra area da saude"
+  ],
+  "councilCode": null,
+  "suggestedGoals": [
+   "provas_faculdade",
+   "concursos_saude",
+   "aprender_por_conta"
+  ],
+  "kind": "other_health",
+  "sort": 18
+ },
+ {
+  "code": "not_health",
+  "name": "Não é da área da saúde",
+  "aliases": [
+   "nao e da saude",
+   "nao sou da saude"
+  ],
+  "councilCode": null,
+  "suggestedGoals": [
+   "provas_faculdade",
+   "idiomas",
+   "aprender_por_conta"
+  ],
+  "kind": "not_health",
+  "sort": 19
+ }
+]

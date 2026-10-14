@@ -51,6 +51,17 @@ describe.skipIf(!process.env.DATABASE_URL)('/v1/public/waitlist, /v1/public/pric
     expect(mails(email)).toHaveLength(1);
   });
 
+  it('F35 FR-37: stores the chosen course; none stays null; unknown course is 422', async () => {
+    const a = ip();
+    const withCourse = `${uuid()}@wl.test`;
+    expect((await join(withCourse, a, { course: 'nursing' })).status).toBe(200);
+    expect((await rows(withCourse))[0]?.course).toBe('nursing');
+    const without = `${uuid()}@wl.test`;
+    expect((await join(without, a)).status).toBe(200);
+    expect((await rows(without))[0]?.course).toBeNull();
+    expect((await join(`${uuid()}@wl.test`, a, { course: 'astrology' })).status).toBe(422);
+  });
+
   it('honeypot: 200 and nothing stored or sent', async () => {
     const email = `${uuid()}@wl.test`;
     expect((await join(email, ip(), { website: 'http://spam' })).status).toBe(200);

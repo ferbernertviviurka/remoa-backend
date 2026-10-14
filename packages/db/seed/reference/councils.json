@@ -1,0 +1,58 @@
+[
+ {
+  "code": "CRM",
+  "name": "Conselho Regional de Medicina"
+ },
+ {
+  "code": "COREN",
+  "name": "Conselho Regional de Enfermagem"
+ },
+ {
+  "code": "CRO",
+  "name": "Conselho Regional de Odontologia"
+ },
+ {
+  "code": "CRF",
+  "name": "Conselho Regional de Farmácia"
+ },
+ {
+  "code": "CREFITO",
+  "name": "Conselho Regional de Fisioterapia e Terapia Ocupacional"
+ },
+ {
+  "code": "CRN",
+  "name": "Conselho Regional de Nutricionistas"
+ },
+ {
+  "code": "CRP",
+  "name": "Conselho Regional de Psicologia"
+ },
+ {
+  "code": "CRBM",
+  "name": "Conselho Regional de Biomedicina"
+ },
+ {
+  "code": "CREFONO",
+  "name": "Conselho Regional de Fonoaudiologia"
+ },
+ {
+  "code": "CREF",
+  "name": "Conselho Regional de Educação Física"
+ },
+ {
+  "code": "CRESS",
+  "name": "Conselho Regional de Serviço Social"
+ },
+ {
+  "code": "CRMV",
+  "name": "Conselho Regional de Medicina Veterinária"
+ },
+ {
+  "code": "CRBio",
+  "name": "Conselho Regional de Biologia"
+ },
+ {
+  "code": "CRTR",
+  "name": "Conselho Regional de Técnicos em Radiologia"
+ }
+]

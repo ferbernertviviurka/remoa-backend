@@ -1,4 +1,4 @@
-// D-1838: "Aceitar selecionadas" — the single-candidate accept (updateCandidate, state accepted) applied to many candidates of one
+// D-1841: "Aceitar selecionadas" — the single-candidate accept (updateCandidate, state accepted) applied to many candidates of one
 // import, each in its own savepoint, inside withAdmin's single transaction (one audit row). Never publishes: accepted = draft in_review.
 import {
   err, ok, importCandidateReviewInputSchema, questionCandidatePayloadSchema,
@@ -46,8 +46,8 @@ export async function acceptCandidates(tx: Tx, importId: string, input: Question
         if (!review.success) return skip('invalid', review.error.issues[0]?.message ?? 'invalid_candidate');
         const r = await updateCandidate(sp, importId, item.id, review.data);
         if (!r.ok) return skip(r.error.code === 'conflict' ? 'conflict' : 'invalid', r.error.message);
-        // updateCandidate's declared return omits this runtime field. Require the
-        // actual bumped revision; never synthesize it or lose the next item's CAS.
+        // Require the actual bumped revision even with the typed service result;
+        // never synthesize it or lose the next item's CAS.
         if (!('importRevision' in r.data) || typeof r.data.importRevision !== 'number'
           || !Number.isSafeInteger(r.data.importRevision) || r.data.importRevision !== revision + 1)
           return skip('conflict', 'import_revision_changed');

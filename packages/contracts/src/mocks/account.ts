@@ -11,6 +11,7 @@ import {
   type LinkedIdentity,
   type SessionInfo,
 } from '../account';
+import type { StudyProfile } from '../study-profile';
 import type * as Api from '../api';
 import { FIXTURE_NOW, fixtureUserId } from './fixtures';
 
@@ -39,7 +40,12 @@ const proEntitlements: Entitlements = {
   renewsAt: at(18), cancelAtPeriodEnd: false, graceUntil: null,
 };
 
-/** Free, 60% complete (no photo, reminder off). */
+const studyProfileFixture: StudyProfile = {
+  situation: 'graduacao', course: 'medicine', courseOtherText: null, institution: null, institutionText: 'USP', city: null, uf: null, institutionType: null,
+  period: 9, goals: ['enamed'], customGoals: [], councilNumber: null, nonHealthTopic: null, source: 'profile', updatedAt: at(-10),
+};
+
+/** Free, 33% complete (no photo, reminder off, no study profile). */
 export const accountFreeFixture: AccountSnapshot = {
   profile: { userId: fixtureUserId, name: 'Ana Souza', avatarKey: null, avatarColor: 2, goal: 'enamed_2027_1', goals: ['enamed_2027_1'], stage: 'y5_6', timezone: 'America/Sao_Paulo', userType: 'aluno', sex: null, phone: '+5511912345678', address: null, school: null, schoolId: null },
   email: 'ana@remoa.test',
@@ -48,7 +54,8 @@ export const accountFreeFixture: AccountSnapshot = {
   identities: identitiesFixture.slice(0, 1),
   preferences: { ...DEFAULT_PREFERENCES, newCardsPerDay: PLAN_LIMITS.free.newCardsPerDay },
   entitlements: freeEntitlements,
-  completeness: { percent: 60, missing: ['photo', 'reminder'] },
+  completeness: { percent: 33, missing: ['photo', 'study_focus', 'course_institution', 'reminder'] },
+  studyProfile: null,
   streakDays: 4,
   joinedAt: at(-40),
   deletionScheduledFor: null,
@@ -65,6 +72,7 @@ export const accountProFixture: AccountSnapshot = {
   preferences: { ...DEFAULT_PREFERENCES, reminderEnabled: true, reminderHour: 20, newCardsPerDay: null },
   entitlements: proEntitlements,
   completeness: { percent: 100, missing: [] },
+  studyProfile: studyProfileFixture,
   avatarUrls: { large: 'https://storage.remoa.test/avatars/512.webp?sig=x', small: 'https://storage.remoa.test/avatars/96.webp?sig=x' },
 };
 
@@ -85,7 +93,7 @@ export function resetAccountMocks(base: AccountSnapshot = accountFreeFixture) {
   sessions = structuredClone(sessionsFixture);
 }
 const recompute = () => {
-  account.completeness = computeCompleteness(account.profile, account.preferences, { emailConfirmed: account.emailConfirmed, emailPending: !!account.pendingEmail });
+  account.completeness = computeCompleteness(account.profile, account.preferences, { emailConfirmed: account.emailConfirmed, emailPending: !!account.pendingEmail }, account.studyProfile);
 };
 
 export const getAccount: Api.GetAccount = async () => ok(structuredClone(account));

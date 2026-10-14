@@ -33,7 +33,7 @@ export async function withAdmin<T extends object>(
     await deny('missing_reason');
     return err('validation', `reason: at least ${ADMIN_LIMITS.reasonMin} characters`);
   }
-  // D-1838: /v1/admin/questions/* (every `question.*` action) keeps role, reason and audit but no 30-min reauth.
+  // D-1841: /v1/admin/questions/* (every `question.*` action) keeps role, reason and audit but no 30-min reauth.
   if ((opts.sensitive ?? !action.startsWith('question.')) && !isFresh(c.get('authAt'), ADMIN_LIMITS.reauthMinutes * 60_000)) {
     await deny('reauth_required');
     return err('forbidden', adminErrors.reauth);

@@ -1,0 +1,88 @@
+[
+ {
+  "code": "enamed",
+  "name": "ENAMED",
+  "courseCodes": [
+   "medicine"
+  ]
+ },
+ {
+  "code": "residencia_medica",
+  "name": "Residência médica",
+  "courseCodes": [
+   "medicine"
+  ]
+ },
+ {
+  "code": "revalida",
+  "name": "Revalida",
+  "courseCodes": [
+   "medicine"
+  ]
+ },
+ {
+  "code": "provas_faculdade",
+  "name": "Provas da faculdade",
+  "courseCodes": null
+ },
+ {
+  "code": "provas_curso",
+  "name": "Provas do curso",
+  "courseCodes": null
+ },
+ {
+  "code": "concursos_saude",
+  "name": "Concursos públicos da saúde",
+  "courseCodes": null
+ },
+ {
+  "code": "residencia_multiprofissional",
+  "name": "Residência multiprofissional em saúde",
+  "courseCodes": [
+   "psychology",
+   "dentistry",
+   "nursing",
+   "physiotherapy",
+   "pharmacy",
+   "biomedicine",
+   "nutrition",
+   "speech_therapy",
+   "veterinary_medicine",
+   "occupational_therapy",
+   "social_work",
+   "other_health"
+  ]
+ },
+ {
+  "code": "residencia_enfermagem",
+  "name": "Residência em enfermagem ou multiprofissional",
+  "courseCodes": [
+   "nursing"
+  ]
+ },
+ {
+  "code": "residencia_especializacao",
+  "name": "Residência ou especialização",
+  "courseCodes": null
+ },
+ {
+  "code": "enade",
+  "name": "ENADE",
+  "courseCodes": null
+ },
+ {
+  "code": "atualizacao_profissional",
+  "name": "Atualização profissional",
+  "courseCodes": null
+ },
+ {
+  "code": "idiomas",
+  "name": "Idiomas",
+  "courseCodes": null
+ },
+ {
+  "code": "aprender_por_conta",
+  "name": "Aprender por conta própria",
+  "courseCodes": null
+ }
+]

@@ -45,7 +45,7 @@ async function legacyFacets(userId: string, query: QuestionFacetQuery) {
 const ids = (xs: readonly string[]) => pgArray(xs, 'uuid');
 const canon = sql`coalesce(q.canonical_id,q.id)`;
 function filterWhere(userId: string, f: ExamBuilderFilter): SQL {
-  const parts = [eligibleWhere(userId, f.source, f.progress)];
+  const parts = [eligibleWhere(userId, f.source, f.progress, f.boardId ?? null)];
   if (f.areaIds.length) parts.push(sql`q.enamed_area_id=ANY(${ids(f.areaIds)})`);
   if (f.topicIds.length || f.matrixItemIds.length) parts.push(sql`q.enamed_topic_id IN (WITH RECURSIVE t AS (
     SELECT id FROM enamed_taxonomy WHERE id=ANY(${ids(f.topicIds)}) OR matrix_ref=ANY(${ids(f.matrixItemIds)})
