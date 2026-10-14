@@ -70,12 +70,18 @@ async function save(userId: string, i: StudyProfileInputParsed, source: StudyPro
   });
 }
 
-/** Sign-up step 2 rides in auth metadata (D-1859). Invalid or absent = ignored. Idempotent: the first writer wins. */
+/**
+ * Sign-up step 2 rides in auth metadata (D-1859). Invalid or absent = ignored. Idempotent: the first writer wins.
+ * D-1862: metadata is copied into the user's JWT, so the council number is never taken from it, and the key is removed once
+ * adopted (same direct auth.users write as identities.ts); later tokens no longer carry the study profile.
+ */
 async function adoptSignupMetadata(userId: string): Promise<void> {
   const { db } = await dbm();
   const rows = await db.execute<{ sp: unknown }>(sql`select raw_user_meta_data -> 'study_profile' as sp from auth.users where id = ${userId}`);
-  const parsed = studyProfileInputSchema.safeParse(rows[0]?.sp);
-  if (parsed.success && (await save(userId, parsed.data, 'signup', true)).ok) await invalidate('profile.changed', { userId });
+  if (rows[0]?.sp == null) return;
+  const parsed = studyProfileInputSchema.safeParse(rows[0].sp);
+  if (parsed.success && (await save(userId, { ...parsed.data, councilNumber: null }, 'signup', true)).ok) await invalidate('profile.changed', { userId });
+  await db.execute(sql`update auth.users set raw_user_meta_data = raw_user_meta_data - 'study_profile' where id = ${userId}`);
 }
 
 export async function getStudyProfile(userId: string): Promise<Result<StudyProfileView>> {

@@ -113,6 +113,15 @@ describe.skipIf(!process.env.DATABASE_URL)('F35 study profile and reference rout
       const n = await dbm.db.execute<{ n: number }>(sql`select count(*)::int as n from study_profiles where user_id = ${u}`);
       expect(n[0]!.n).toBe(1);
     });
+    it('D-1862: the council number never comes from metadata and the metadata key is removed after adoption', async () => {
+      const u = await newUser({ study_profile: input({ context: 'signup', situation: 'profissional', period: undefined, councilNumber: 'SP-123456' }), full_name: 'Keep me' });
+      const r = await call(u, 'GET', '/account/study-profile');
+      expect(r.json.data.profile).toMatchObject({ source: 'signup', situation: 'profissional', councilNumber: null });
+      const meta = await dbm.db.execute<{ m: Record<string, unknown> }>(sql`select raw_user_meta_data as m from auth.users where id = ${u}`);
+      expect(meta[0]!.m).not.toHaveProperty('study_profile');
+      expect(meta[0]!.m).toMatchObject({ full_name: 'Keep me' });
+      expect(JSON.stringify(meta[0]!.m)).not.toContain('SP-123456');
+    });
     it('invalid metadata is ignored (no 500)', async () => {
       for (const meta of [{ study_profile: { course: 'medicine' } }, { study_profile: 'x' }, { study_profile: input({ goals: [] }) }]) {
         const u = await newUser(meta);

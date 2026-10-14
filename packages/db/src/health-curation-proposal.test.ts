@@ -15,7 +15,8 @@ describe('G28 external-curation proposal, before0057 integration', () => {
     const names = [...proposal.matchAll(/CREATE TABLE public\.(\w+)/g)].map(m => m[1]);
     expect(names).toEqual(['health_taxonomy', 'question_source_revisions']);
     expect(proposal).not.toMatch(/CREATE TABLE.*(?:question_bank|question_versions)/);
-    expect(journal).not.toContain('0057');
+    // 0057 is F35 (study profile, D-1850..D-1860); this proposal is not a migration yet and takes the next free number (0058).
+    expect(journal).not.toMatch(/health_curation|external_curation|source_revisions/);
   });
   it('uses the same12 approved professions without replacing ENAMED enums', () => {
     const cfg = getTableConfig(healthTaxonomy);
