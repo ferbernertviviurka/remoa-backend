@@ -84,7 +84,7 @@ export function screenTopicItems(items: readonly Item[], topics: readonly TopicR
   return { kept: passed.filter((_, i) => keep.has(i)), discarded };
 }
 
-export function topicRow(k: Kept, meta: { id: string; userId: string; difficulty: QuestionDifficulty | 'mixed'; promptId: string; promptVersion: string; model: string; now: Date }): TopicRow {
+export function topicRow(k: Kept, meta: { id: string; userId: string; difficulty: QuestionDifficulty | 'mixed'; promptId: string; promptVersion: string; model: string; now: Date; confirmed: boolean }): TopicRow {
   const { item, topic } = k;
   const s = shuffleAlternatives(item.alternativas, item.correta, meta.id);
   const notes = Object.fromEntries(Object.entries(item.explicacao_distratores ?? {}).map(([l, v]) => [l.trim().toUpperCase(), v.trim()] as const)
@@ -98,8 +98,9 @@ export function topicRow(k: Kept, meta: { id: string; userId: string; difficulty
     expectedAnswer: answer, keyPoints: [answer], explanation: item.explicacao_correta.trim() || null,
     distractorNotes: Object.keys(notes).length ? remapLetters(notes as Partial<Record<Letter, string>>, s.from) : null,
     enamedAreaId: topic.areaId, enamedDomainId: topic.domainId, enamedCompetencyId: topic.competencyId, enamedTopicId: topic.id,
-    // the student chose the topic list; the model only picked one of them
-    enamedConfirmed: true, source: 'ai', promptId: meta.promptId, promptVersion: meta.promptVersion, model: meta.model, status: 'draft', createdAt: meta.now,
+    // D-1882 / rule 6: confirmed only when the student chose the topics (topicIds) and the model picked one of them; by area or
+    // theme only, the topic is inferred by the model and stays unconfirmed
+    enamedConfirmed: meta.confirmed, source: 'ai', promptId: meta.promptId, promptVersion: meta.promptVersion, model: meta.model, status: 'draft', createdAt: meta.now,
   };
 }
 
@@ -140,6 +141,8 @@ export async function generateFromTopics(input: TopicGenerateInput, deps: TopicD
   const topics = await deps.store.topics(input.areaIds, input.topicIds);
   if (!topics.length) return err('validation', 'no_topics');
   const { genBatchSize, dupThreshold } = challengeLimits();
+  // every kept topic comes from this list, so with topicIds the topic is one the student chose
+  const restricted = input.topicIds.length > 0;
   const existing = await deps.store.stems(input.userId, topics.map((t) => t.id));
   const prompt = loadChallengePrompt('gerar-questoes-por-tema');
   const requestId = input.requestId ?? 'exam-generate';
@@ -194,7 +197,7 @@ export async function generateFromTopics(input: TopicGenerateInput, deps: TopicD
       kept.push(...screened.kept.slice(0, want));
     }
     const now = deps.now();
-    const rows = kept.map((k) => topicRow(k, { id: deps.newId(), userId: input.userId, difficulty: input.difficulty, promptId: prompt.meta.id, promptVersion: prompt.promptVersion, model, now }));
+    const rows = kept.map((k) => topicRow(k, { id: deps.newId(), userId: input.userId, difficulty: input.difficulty, promptId: prompt.meta.id, promptVersion: prompt.promptVersion, model, now, confirmed: restricted }));
     try {
       await deps.store.save(input.userId, rows);
     } catch (e) {

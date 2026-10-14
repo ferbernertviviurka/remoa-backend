@@ -71,6 +71,17 @@ describe('generateFromTopics (D-1882)', () => {
     expect(saved.every((q) => q.alternatives.length === 4 && q.correctKey)).toBe(true);
   });
 
+  it('enamedConfirmed: true only for topics the student chose; by area or theme only it stays unconfirmed', async () => {
+    vi.stubEnv('AI', 'mock');
+    const byTopic = memStore(), byArea = memStore(), byTheme = memStore();
+    await generateFromTopics(input({ n: 2 }), deps(byTopic.store));
+    await generateFromTopics(input({ n: 2, topicIds: [], areaIds: [AREA] }), deps(byArea.store));
+    await generateFromTopics(input({ n: 2, topicIds: [], areaIds: [], theme: 'síndrome sintética' }), deps(byTheme.store));
+    expect(byTopic.saved.map((q) => q.enamedConfirmed)).toEqual([true, true]);
+    expect(byArea.saved.map((q) => q.enamedConfirmed)).toEqual([false, false]);
+    expect(byTheme.saved.map((q) => q.enamedConfirmed)).toEqual([false, false]);
+  });
+
   it('a topic outside the list is dropped and topped up; with a single topic it takes that topic', async () => {
     const { store, saved } = memStore();
     ask.mockResolvedValueOnce(reply(item(), item({ tema: 'Outra coisa' }))).mockResolvedValueOnce(reply(item()));
