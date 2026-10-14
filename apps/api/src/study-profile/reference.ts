@@ -15,16 +15,20 @@ export async function listGoals(course?: string): Promise<Result<StudyGoal[]>> {
   return ok(rows.map((r) => ({ code: r.code, name: r.name, courseCodes: r.courseCodes }) as StudyGoal));
 }
 
-/** Matches on `search` (GIN trigram). Order: exact acronym, then prefix of the name, then the rest by name. */
+/**
+ * Matches on `search` (GIN trigram). Order: exact acronym, then prefix of the name, then public before private, universities first, then by name.
+ * Empty `q` = the first ones in that order (public universities), so the field opens with a list.
+ */
 export async function searchInstitutions({ q, uf, limit }: InstitutionsQuery): Promise<Result<Institution[]>> {
   const { db, institutions: i } = await dbm();
   const n = normalizeSearch(q);
   const esc = n.replace(/[\\%_]/g, '\\$&');
   const rows = await db.select({ id: i.id, name: i.name, acronym: i.acronym, city: i.city, uf: i.uf, type: i.type }).from(i)
-    .where(and(sql`${i.search} like ${`%${esc}%`}`, uf ? eq(i.uf, uf) : undefined))
+    .where(and(n ? sql`${i.search} like ${`%${esc}%`}` : undefined, uf ? eq(i.uf, uf) : undefined))
     .orderBy(
-      sql`(lower(coalesce(${i.acronym}, '')) = ${n}) desc`,
-      sql`(${i.search} like ${`${esc}%`}) desc`,
+      ...(n ? [sql`(lower(coalesce(${i.acronym}, '')) = ${n}) desc`, sql`(${i.search} like ${`${esc}%`}) desc`] : []),
+      sql`(${i.type} = 'public') desc`,
+      sql`(${i.search} like 'universidade%') desc`,
       asc(i.name), asc(i.id),
     )
     .limit(limit);

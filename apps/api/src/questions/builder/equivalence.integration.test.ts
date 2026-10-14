@@ -61,12 +61,16 @@ const toItem = (r: Row, pinned: boolean) => ({
   questionId: r.id, canonicalId: r.canonical_id, version: r.version, areaId: r.enamed_area_id ?? null, topicId: r.enamed_topic_id ?? null, origin: r.origin,
   difficulty: r.difficulty, stemPreview: stemPreview(r.stem), sourceLabel: r.source_label ?? null, validation: validationOf(r), pinned,
 });
+// D-1882 (applied to the oracle too): a pinned question bypasses the content filters, staying eligible in its source.
+const withPinned = (userId: string, f: ExamBuilderFilter, pinned: readonly string[]) =>
+  pinned.length ? sql`(${filterWhere(userId, f)} OR (q.id=ANY(${ids(pinned)}) AND ${eligibleWhere(userId, f.source, 'all', f.boardId, f.course)}))` : filterWhere(userId, f);
 async function legacyAreaCounts(tx: Parameters<Parameters<typeof run>[1]>[0], userId: string, f: ExamBuilderFilter, excluded: readonly string[] = [], pinned: readonly string[] = []) {
   const rows = await asServer<Row>(tx, sql`SELECT q.enamed_area_id area_id,count(DISTINCT ${canon})::int available,
     count(DISTINCT ${canon}) FILTER (WHERE q.id=ANY(${ids(pinned)}))::int pinned FROM question_bank q
-    WHERE ${filterWhere(userId, f)} AND ${notIn(excluded)} GROUP BY 1 ORDER BY 1 NULLS LAST LIMIT 51`);
+    WHERE ${withPinned(userId, f, pinned)} AND ${notIn(excluded)} GROUP BY 1 ORDER BY 1 NULLS LAST LIMIT 51`);
   const by = new Map(rows.map((r) => [(r.area_id as string | null) ?? null, r]));
-  return (f.areaIds.length ? f.areaIds : [...by.keys()]).map((areaId): AllocationArea & { pinned: number } =>
+  const pinnedAreas = rows.filter((r) => Number(r.pinned ?? 0) > 0).map((r) => (r.area_id as string | null) ?? null);
+  return (f.areaIds.length ? [...new Set([...f.areaIds, ...pinnedAreas])] : [...by.keys()]).map((areaId): AllocationArea & { pinned: number } =>
     ({ areaId, available: Number(by.get(areaId)?.available ?? 0), pinned: Number(by.get(areaId)?.pinned ?? 0) }));
 }
 async function legacyAvailability(userId: string, f: ExamBuilderFilter) {
@@ -81,7 +85,7 @@ async function legacyPreview(userId: string, input: { params: ExamBuilderParams;
     try { allocation = allocateExam(areas, params.count, params.distribution); } catch { return 'pinned_exceeds_count'; }
     const needs = allocation.rows.map((r) => ({ area: r.areaId, need: r.allocated - (areas.find((a) => a.areaId === r.areaId)?.pinned ?? 0) }));
     const rows = await asServer<Row>(tx, sql`WITH e AS (SELECT DISTINCT ON (${canon}) q.id,${canon} canon,q.enamed_area_id area,q.id=ANY(${ids(pinnedIds)}) pinned
-      FROM question_bank q WHERE ${filterWhere(userId, params)} AND ${notIn(excludedIds)} ORDER BY ${canon},(q.id=ANY(${ids(pinnedIds)})) DESC,q.version DESC),
+      FROM question_bank q WHERE ${withPinned(userId, params, pinnedIds)} AND ${notIn(excludedIds)} ORDER BY ${canon},(q.id=ANY(${ids(pinnedIds)})) DESC,q.version DESC),
       r AS (SELECT e.*,md5(${seed}||':'||e.canon::text) AS rnk,row_number() OVER (PARTITION BY e.area,e.pinned ORDER BY md5(${seed}||':'||e.canon::text),e.canon) rn FROM e)
       SELECT ${itemColumns},r.pinned FROM r JOIN jsonb_to_recordset(${JSON.stringify(needs)}::jsonb) n(area uuid,need int) ON n.area IS NOT DISTINCT FROM r.area
       JOIN question_bank q ON q.id=r.id LEFT JOIN question_sources src ON src.id=q.source_id

@@ -431,3 +431,59 @@ it('saved bank-question scope refuses generation before quota, context or provid
  const {store}=memStore();const r=await generateQuestions(input({scope:{kind:'bankQuestion',questionId:C1},charge:'once'}),deps(store));
  expect(r).toMatchObject({ok:false,error:{code:'validation',message:'saved_question_requires_start_endpoint'}});expect(reserve).not.toHaveBeenCalled();expect(ask).not.toHaveBeenCalled();expect(scopeCardIds({kind:'bankQuestion',questionId:C1},CARDS,[])).toEqual([]);
 });
+
+describe('D-1882: "pedi 10 e vieram 9" (exam builder)', () => {
+  // Ten distinct stems (Dice < 0.8 between any two), all answered by card c3; no number outside the cards.
+  const STEMS = [
+    'Mulher idosa em choque após infecção abdominal recebe vasopressor. Qual meta de pressão orientar?',
+    'Durante a reanimação de um homem jovem febril e hipotenso, que alvo pressórico adotar com noradrenalina?',
+    'No pronto-socorro, um paciente séptico segue hipotenso apesar de volume. Qual o objetivo hemodinâmico?',
+    'Qual valor de pressão arterial média buscar quando a amina vasoativa já foi iniciada?',
+    'Residente pergunta ao preceptor sobre a meta tensional do choque distributivo. O que responder?',
+    'Gestante não, adulto sim: em terapia intensiva, com droga vasoconstritora, qual a PAM desejada?',
+    'Após cateter central e início de vasopressor, a equipe discute o alvo. Qual opção é correta?',
+    'Idoso com pneumonia evolui com choque; enfermagem pergunta até onde titular a noradrenalina.',
+    'Em sala de emergência, qual parâmetro de PAM guia a titulação do vasopressor alfa?',
+    'Plantonista revisa a prescrição de um choque séptico refratário a cristaloide: qual a meta?',
+  ];
+  const good = (i: number) => obj({ enunciado: STEMS[i] });
+  const bad = obj({ enunciado: 'Pergunta sem evidência literal no card sobre dose?', evidencias: [{ card: 'c3', trecho: 'texto que não está no card' }] });
+
+  it('reproduces the cause: one item fails a guard, the single retry fails again, the batch ends short (9 of 10)', async () => {
+    const { store, saved } = memStore();
+    ask.mockResolvedValueOnce(objReply(...[0, 1, 2, 3, 4, 5, 6, 7, 8].map(good), bad)).mockResolvedValueOnce(objReply(bad));
+    const r = await generateQuestions(input({ n: 10, questionType: 'objective' }), deps(store));
+    expect(r.ok && r.data).toMatchObject({ generated: 9, shortfall: 1, calls: 2, discarded: { evidence: 2 } });
+    expect(saved).toHaveLength(9);
+  });
+
+  it('fixed for the builder: smaller batches with a bounded top-up deliver 10, charge one unit and report progress', async () => {
+    const { store, saved } = memStore();
+    ask.mockResolvedValueOnce(objReply(good(0), good(1), good(2), good(3), bad)).mockResolvedValueOnce(objReply(bad)) // batch 1: 4 of 5
+      .mockResolvedValueOnce(objReply(good(4), good(5), good(6), good(7), good(8))) // batch 2: 5
+      .mockResolvedValueOnce(objReply(good(9))); // batch 3 (top-up): 1
+    const progress: number[] = [];
+    const r = await generateQuestions(input({ n: 10, questionType: 'objective', batchSize: 5, extraBatches: 2, onProgress: (n) => void progress.push(n) }), deps(store));
+    expect(r.ok && r.data).toMatchObject({ generated: 10, shortfall: 0, calls: 4 });
+    expect(saved).toHaveLength(10);
+    expect(progress).toEqual([0, 4, 9, 10]);
+    expect(reserve).toHaveBeenCalledTimes(1); // 10 new questions = one GEN_BATCH_SIZE unit, however many batches
+  });
+
+  it('the top-up is bounded: a model that keeps failing stops after extraBatches short batches, and 20 questions cost two units', async () => {
+    const { store } = memStore();
+    ask.mockResolvedValue(objReply(bad));
+    const r = await generateQuestions(input({ n: 10, questionType: 'objective', batchSize: 5, extraBatches: 2 }), deps(store));
+    expect(r.ok && r.data).toMatchObject({ generated: 0, shortfall: 10 });
+    expect(ask).toHaveBeenCalledTimes(6); // 3 batches × (call + retry)
+    expect(reserve).toHaveBeenCalledTimes(1);
+    ask.mockReset();
+    reserve.mockClear();
+    // letters only (no number to ground), random enough that no two stems are near-duplicates
+    const word = () => Array.from({ length: 30 }, () => 'abcdefghijlmnopqrstuvxz'[Math.floor(Math.random() * 23)]).join('');
+    ask.mockImplementation(async () => objReply(...Array.from({ length: 5 }, () => obj({ enunciado: `Caso ${word()} ${word()}: qual o alvo pressórico?` }))));
+    const twenty = await generateQuestions(input({ n: 20, questionType: 'objective', batchSize: 5, extraBatches: 2 }), deps(memStore().store));
+    expect(twenty.ok && twenty.data.generated).toBe(20);
+    expect(reserve).toHaveBeenCalledTimes(2);
+  });
+});

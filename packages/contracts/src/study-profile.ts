@@ -53,7 +53,8 @@ export const referenceSeedSchemas = {
 export type ReferenceSeed = { [K in keyof typeof referenceSeedSchemas]: z.infer<(typeof referenceSeedSchemas)[K]> };
 
 export const institutionsQuerySchema = z.object({
-  q: z.string().transform((s) => s.trim()).pipe(z.string().min(2).max(80)),
+  /** Empty = the first institutions (the field opens with a list before anything is typed). */
+  q: z.string().default('').transform((s) => s.trim()).pipe(z.string().max(80)),
   uf: brUfSchema.optional(),
   limit: z.coerce.number().int().min(1).max(20).default(10),
 });

@@ -147,6 +147,77 @@ describe.skipIf(!url)('F34 exam builder', () => {
     }
   });
 
+  it('D-1882: board-content prefills from the map (matrix topic + saved AI question topic), 404 for another user', async () => {
+    const board = randomUUID(), matrix = randomUUID(), q = randomUUID();
+    await db`INSERT INTO matrix_items(id,area,code,title) VALUES(${matrix},'CM',${'SYN-' + matrix.slice(0, 8)},'Synthetic matrix item')`;
+    await db`UPDATE enamed_taxonomy SET matrix_ref=${matrix} WHERE id=${topic}`;
+    await db`INSERT INTO boards(id,user_id,title,matrix_item_id) VALUES(${board},${owner},'Synthetic map',${matrix})`;
+    await db`INSERT INTO cards(board_id,title) VALUES(${board},'Synthetic card alpha'),(${board},'Synthetic card beta')`;
+    await db`INSERT INTO question_bank(id,user_id,board_id,type,difficulty,stem,alternatives,correct_key,expected_answer,source,origin,enamed_area_id,enamed_topic_id)
+      VALUES(${q},${owner},${board},'objective','easy','Synthetic map question',${JSON.stringify(alternatives.slice(0, 4))}::text::jsonb,'A','Synthetic A','ai','ai_generated',${a2},${topicC})`;
+    try {
+      const r = await request('/exam-builder/board-content?boardId=' + board, 'GET');
+      expect(r.status).toBe(200);
+      expect(r.body.data).toEqual({ boardId: board, cardCount: 2, matrixItemIds: [matrix], areaIds: [a1, a2].sort(), topicIds: [topic, topicC].sort() });
+      expect((await request('/exam-builder/board-content?boardId=' + board, 'GET', undefined, other)).status).toBe(404);
+      expect((await request('/exam-builder/board-content?boardId=x', 'GET')).status).toBe(422);
+    } finally {
+      await db`DELETE FROM question_bank WHERE id=${q}`;
+      await db`DELETE FROM boards WHERE id=${board}`;
+      await db`UPDATE enamed_taxonomy SET matrix_ref=null WHERE id=${topic}`;
+      await db`DELETE FROM matrix_items WHERE id=${matrix}`;
+    }
+  });
+
+  it('D-1882: theme mode (no map, AI=mock) saves every question with area + topic, visible in Minhas perguntas and in the builder', async () => {
+    vi.stubEnv('AI', 'mock');
+    try {
+      const g = await request('/exam-builder/generate', 'POST', { topicIds: [topicC], theme: 'síndrome sintética', count: 7, difficulty: 'hard' });
+      expect(g.status).toBe(200);
+      const data = g.body.data as unknown as { questionIds: string[]; generated: number; shortfall: number; shortfallReason: string | null };
+      expect(data).toMatchObject({ generated: 7, shortfall: 0, shortfallReason: null });
+      extra.push(...data.questionIds);
+      expect(g.text).not.toMatch(/correct|stem/i);
+      const rows = await db`SELECT board_id,enamed_area_id,enamed_topic_id,status,origin,visibility,difficulty,jsonb_array_length(alternatives) n FROM question_bank WHERE id=ANY(${data.questionIds})`;
+      expect(rows).toHaveLength(7);
+      for (const r of rows) expect(r).toMatchObject({ board_id: null, enamed_area_id: a2, enamed_topic_id: topicC, status: 'draft', origin: 'ai_generated', visibility: 'private', difficulty: 'hard', n: 4 });
+      const mine = await request('/questions?scope=mine&topicIds=' + topicC + '&limit=50', 'GET');
+      const listed = (mine.body.data as unknown as { items: { id: string }[] }).items.map((i) => i.id);
+      for (const id of data.questionIds) expect(listed).toContain(id);
+      const av = examAvailabilitySchema.parse((await request('/exam-builder/availability', 'POST', filter({ source: 'ai', areaIds: [], topicIds: [topicC] }))).body.data);
+      expect(av.total).toBe(7);
+      // progress stream: area mode resolves the area's topics (a1 → topic, topicB)
+      const res = await app.request('/v1/exam-builder/generate', { method: 'POST', headers: { authorization: 'Bearer ' + owner, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify({ areaIds: [a1], count: 6 }) });
+      const events = (await res.text()).split('\n\n').filter(Boolean).map((b) => JSON.parse(b.slice(6)) as { progress?: { generated: number }; result?: { questionIds: string[] } });
+      expect(events.filter((e) => e.progress).map((e) => e.progress!.generated)).toEqual([0, 5, 6]);
+      const ids = events.at(-1)!.result!.questionIds;
+      extra.push(...ids);
+      const topics = await db`SELECT DISTINCT enamed_topic_id t FROM question_bank WHERE id=ANY(${ids})`;
+      expect(topics.map((t) => t.t).sort()).toEqual([topic, topicB].sort());
+      expect((await request('/exam-builder/generate', 'POST', { count: 3 })).status).toBe(422);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('D-1882: a pinned question always enters the preview and the start, whatever the area/topic/difficulty/progress filter', async () => {
+    // aiA1: owner's AI question, area a1, no topic, medium. The filter asks area a2, topic C, easy, unseen: it matches none of that.
+    const over = { source: 'catalog_and_ai', areaIds: [a2], topicIds: [topicC], difficulties: ['easy'], progress: 'unseen' };
+    const r = await preview({ params: params({ ...over, count: 3 }), pinnedIds: [aiA1] });
+    expect(r.status).toBe(200);
+    const p = examPreviewSchema.parse(r.body.data);
+    expect(p.items.find((i) => i.questionId === aiA1)).toMatchObject({ pinned: true, areaId: a1 });
+    expect(p.allocation.rows.map((x) => x.areaId)).toContain(a1);
+    // another user's question is never pinnable
+    const foreign = examPreviewSchema.parse((await preview({ params: params({ ...over, count: 3 }), pinnedIds: [otherAi] })).body.data);
+    expect(foreign.items.map((i) => i.questionId)).not.toContain(otherAi);
+    await finishActive();
+    const ids = p.items.map((i) => i.questionId);
+    const start = await request('/question-sessions', 'POST', await startBody(ids, p.seed, { ...over, count: ids.length }), owner, randomUUID());
+    expect(start.status).toBe(200);
+    await finishActive();
+  });
+
   it('preview is deterministic by seed, distinct, balanced, keeps pinned, honors excluded, never completes and never leaks the key', async () => {
     const first = await preview({ params: params() });
     expect(first.status).toBe(200);

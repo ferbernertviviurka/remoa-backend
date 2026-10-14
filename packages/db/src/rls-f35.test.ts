@@ -114,13 +114,13 @@ describe.skipIf(!sql)('F35 study profile (SQL real)', () => {
     expect(bf[c]).toMatchObject({ source: 'migration', course_code: null, goals: ['enamed'] });
     expect(bf[d]).toBeUndefined();
     expect(o.audit0).toBe(0);
-    expect(o.refRows).toEqual({ c: 19, i: o.counts.institutions, g: 13, k: 14 });
+    expect(o.refRows).toEqual({ c: 11, i: o.counts.institutions, g: 13, k: 14 });
     expect(o.confirmA).toBe(1);
     expect(o.insertD).toBe(1);
     expect([o.bSeesA, o.bUpdatesA]).toEqual([0, 0]);
     expect([o.bInsertsForA, o.anonReads, o.backToMigration, o.incomplete, o.periodForPro, o.auditRead, o.suggestRead, o.refWrite])
       .toEqual([true, true, true, true, true, true, true, true]);
-    expect(o.refRead).toBe(19);
+    expect(o.refRead).toBe(11);
     expect(o.audit.find((r) => r.user_id === a)).toEqual({ user_id: a, actor_id: a,
       fields: ['council_number', 'course_code', 'goals', 'institution_id', 'situation', 'source'] });
     expect(o.audit.find((r) => r.user_id === d)).toEqual({ user_id: d, actor_id: d, fields: ['course_code', 'goals', 'period', 'situation', 'source'] });

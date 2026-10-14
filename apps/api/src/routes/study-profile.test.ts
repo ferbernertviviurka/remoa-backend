@@ -55,7 +55,10 @@ describe.skipIf(!process.env.DATABASE_URL)('F35 study profile and reference rout
       const r = await call(null, 'GET', '/public/reference/courses');
       expect(r.status).toBe(200);
       expect(r.res.headers.get('cache-control')).toContain('max-age');
-      expect(r.json.data.length).toBeGreaterThanOrEqual(19);
+      expect(r.json.data.map((c: { name: string }) => c.name)).toEqual([
+        'Medicina', 'Enfermagem', 'Odontologia', 'Farmácia', 'Fisioterapia', 'Nutrição', 'Psicologia', 'Educação Física', 'Biomedicina', 'Medicina Veterinária',
+        'Outra área não relacionada à área da saúde',
+      ]);
       expect(r.json.data[0].code).toBe('medicine');
       expect(r.json.data.find((c: { code: string }) => c.code === 'nursing').councilCode).toBe('COREN');
     });
@@ -79,7 +82,12 @@ describe.skipIf(!process.env.DATABASE_URL)('F35 study profile and reference rout
       const sp = (await call(null, 'GET', '/public/reference/institutions?q=universidade&uf=SP&limit=20')).json.data as { uf: string }[];
       expect(sp.length).toBeGreaterThan(0);
       expect(sp.every((x) => x.uf === 'SP')).toBe(true);
-      expect((await call(null, 'GET', '/public/reference/institutions?q=a')).status).toBe(422);
+      // G29: empty q opens the field with a list (public first); one letter already searches.
+      const first = (await call(null, 'GET', '/public/reference/institutions?limit=8')).json.data as { type: string }[];
+      expect(first).toHaveLength(8);
+      expect(first[0]!.type).toBe('public');
+      expect((await call(null, 'GET', '/public/reference/institutions?q=')).json.data).toHaveLength(10);
+      expect((await call(null, 'GET', '/public/reference/institutions?q=a')).status).toBe(200);
       expect((await call(null, 'GET', '/public/reference/institutions?q=usp&limit=99')).status).toBe(422);
       expect((await call(null, 'GET', '/public/reference/institutions?q=100%25')).status).toBe(200); // % is literal, not a wildcard
     });

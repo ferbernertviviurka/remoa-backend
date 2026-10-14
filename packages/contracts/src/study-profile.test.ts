@@ -84,7 +84,9 @@ describe('studyProfileInputSchema', () => {
 describe('institutionsQuerySchema', () => {
   it('q ≥ 2 chars, limit ≤ 20', () => {
     expect(institutionsQuerySchema.parse({ q: ' uf ' })).toEqual({ q: 'uf', limit: 10 });
-    expect(institutionsQuerySchema.safeParse({ q: 'u' }).success).toBe(false);
+    expect(institutionsQuerySchema.parse({ q: 'u' })).toEqual({ q: 'u', limit: 10 });
+    expect(institutionsQuerySchema.parse({})).toEqual({ q: '', limit: 10 });
+    expect(institutionsQuerySchema.safeParse({ q: 'x'.repeat(81) }).success).toBe(false);
     expect(institutionsQuerySchema.safeParse({ q: 'ufpr', limit: '21' }).success).toBe(false);
   });
 });
