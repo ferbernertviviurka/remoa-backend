@@ -20,6 +20,7 @@ import { withAdmin, reasonOf, send, type AdminEnv, type AuditCapture } from '../
 import { lockAssociatedQuestionGraphs } from './recovery';
 import { publishQuestion } from './service';
 import { contentHash } from '../../questions/imports/domain';
+import { prepareUnlinkedHashes, type HashPrepareResult } from './hash-prepare-bulk';
 import { catalogQueryValues } from '../../questions/editorial/catalog';
 import { outboxPage } from '../../questions/generation/outbox';
 import { RECEIPT_MAX_BYTES, receiptHash, type ReceiptRecord } from '../../questions/generation/receipts';
@@ -49,7 +50,7 @@ export async function idempotentReplay(tx: Tx, action: string, actorId: string, 
 }
 
 // ── D-1804: content-hash preparation ───────────────────────────────────────────────────────────────────────────────
-type PrepareResult = { id: string; outcome: (typeof import('@remoa/contracts').questionHashPrepareOutcomes)[number]; version: number | null; contentHash: string | null; sourceId: string | null };
+type PrepareResult = HashPrepareResult;
 export async function prepareContentHashes(tx: Tx, actorId: string, input: QuestionHashPrepareInput, audit: AuditCapture) {
   const items = [...input.items].sort(byId((i) => i.id)); // lock order
   const hash = requestHash({ items: items.map((i) => ({ id: i.id, revision: i.revision, expectedUpdatedAt: new Date(i.expectedUpdatedAt).toISOString() })), sourceId: input.sourceId });
@@ -61,6 +62,12 @@ export async function prepareContentHashes(tx: Tx, actorId: string, input: Quest
   }
   // Existence only: the source's rights are never read as authorization here, nor changed.
   if (input.sourceId && !(await tx.execute(sql`SELECT 1 FROM question_sources WHERE id = ${input.sourceId}::uuid`)).length) return err('not_found', 'source not found');
+  const bulk = await prepareUnlinkedHashes(tx, input);
+  if (bulk) {
+    audit.before({ items: bulk.before });
+    audit.after({ idempotencyKey: input.idempotencyKey, requestHash: hash, hashVersion: QUESTION_CONTENT_HASH_VERSION, sourceId: input.sourceId, results: bulk.results });
+    return ok({ hashVersion: QUESTION_CONTENT_HASH_VERSION, replayed: false, results: bulk.results.map(r => questionHashPrepareItemResultSchema.parse(r)) });
+  }
   const results: PrepareResult[] = [], before: Row[] = [];
   for (const item of items) {
     const none = (outcome: PrepareResult['outcome']) => results.push({ id: item.id, outcome, version: null, contentHash: null, sourceId: null });
