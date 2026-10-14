@@ -8,7 +8,8 @@ export type CatalogActor={id:string;role:'admin'|'reviewer'};
 /** role is only part of the binding; the generation outbox lists (D-1805) bind owner/admin cursors with the same HMAC. */
 export type CatalogCursorScope={actor:{id:string;role:string};route:string;query:Record<string,unknown>};
 const secret=()=>{const key=process.env.SHARE_SECRET;if(!key)throw Error('missing SHARE_SECRET for catalog discovery');return key;};
-const binding=(scope:CatalogCursorScope)=>{const {cursor: _cursor,...filters}=scope.query;void _cursor;return createHash('sha256').update(JSON.stringify({user:scope.actor.id,role:scope.actor.role,route:scope.route,order:'timestamp_desc_uuid_desc',filters:Object.fromEntries(Object.entries(filters).sort(([a],[b])=>a.localeCompare(b)))})).digest('hex');};
+/** Page size is not a filter: the keyset position is valid at any limit, so a walk may grow pages (D-1840 select-all uses 50 after a 25 page). */
+const binding=(scope:CatalogCursorScope)=>{const {cursor: _cursor,limit: _limit,...filters}=scope.query;void _cursor;void _limit;return createHash('sha256').update(JSON.stringify({user:scope.actor.id,role:scope.actor.role,route:scope.route,order:'timestamp_desc_uuid_desc',filters:Object.fromEntries(Object.entries(filters).sort(([a],[b])=>a.localeCompare(b)))})).digest('hex');};
 export function encodeCatalogCursor(at:string,id:string,scope:CatalogCursorScope){const data=Buffer.from(JSON.stringify({at,id,binding:binding(scope)})).toString('base64url');return data+'.'+createHmac('sha256',secret()).update('f33-staff-discovery-v1:'+data).digest('base64url');}
 export function decodeCatalogCursor(value:string,scope:CatalogCursorScope):{at:string;id:string}|null{
  const key=secret();try{if(value.length>2048)return null;const [data,mac,extra]=value.split('.');if(!data||!mac||extra||!/^[-\w]+$/.test(data)||!/^[-\w]+$/.test(mac))return null;
