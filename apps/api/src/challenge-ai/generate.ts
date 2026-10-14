@@ -179,7 +179,8 @@ function offlineItems(type: QuestionType, refs: ReadonlyMap<string, ScopeCard>, 
 // --- Server guards -------------------------------------------------------------------------------------------------
 
 export type DiscardReason = 'evidence' | 'numbers' | 'format' | 'duplicate';
-export type Discarded = Record<DiscardReason, number>;
+/** `untagged` (D-1882): rows dropped by keepTagged (no ENAMED topic), counted apart from the guards. */
+export type Discarded = Record<DiscardReason, number> & { untagged?: number };
 const noDiscards = (): Discarded => ({ evidence: 0, numbers: 0, format: 0, duplicate: 0 });
 const addDiscards = (a: Discarded, b: Discarded) => {
   for (const k of Object.keys(a) as DiscardReason[]) a[k] += b[k];
@@ -462,6 +463,12 @@ export type GenerateInput = {
   charge?: 'once' | 'none';
   /** D-1566: the question must cite this card: the scope's card, else the `index`-th of the scope in a `seed` order (one card per step). */
   focus?: { seed: string; index: number };
+  /** D-1882: questions per model batch (default GEN_BATCH_SIZE). A unit still covers GEN_BATCH_SIZE new questions, so smaller batches cost no more. */
+  batchSize?: number;
+  /** D-1882: batches allowed to come back short (after their retry) before the type stops; default 0 (F32). Covered slots are not charged again. */
+  extraBatches?: number;
+  /** D-1882: delivered so far (reused + saved), after the reuse and after each saved batch. */
+  onProgress?: (delivered: number) => void | Promise<void>;
 };
 
 export type GenerateOutput = {
@@ -487,8 +494,8 @@ export const PROMPT_FOR: Record<QuestionType, 'gerar-perguntas-discursivas' | 'g
 };
 /** FR-7. */
 export const RECENT_STEMS = 30;
-const PUBLICO = 'estudantes de medicina do 5º e 6º ano e recém-formados que estudam para o ENAMED e a residência';
-const NIVEL: Record<QuestionDifficulty | 'mixed', string> = { easy: 'fácil', medium: 'médio', hard: 'difícil', mixed: 'misto (fácil, médio e difícil)' };
+export const PUBLICO = 'estudantes de medicina do 5º e 6º ano e recém-formados que estudam para o ENAMED e a residência';
+export const NIVEL: Record<QuestionDifficulty | 'mixed', string> = { easy: 'fácil', medium: 'médio', hard: 'difícil', mixed: 'misto (fácil, médio e difícil)' };
 
 function scopeLabel(scope: ChallengeScope, ctx: MapContext): string {
   const title = (id: string) => ctx.cards.find((c) => c.id === id)?.title ?? 'card';
@@ -551,6 +558,10 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
   const scopeIds = ctx.cards.map((c) => c.id);
   const difficulty = input.difficulty === 'mixed' ? null : input.difficulty;
   const { genBatchSize, dupThreshold } = challengeLimits();
+  const batchSize = Math.max(1, Math.min(input.batchSize ?? genBatchSize, genBatchSize));
+  // D-1882: one unit pays for genBatchSize new questions; a batch reserves only when it asks beyond what is already paid.
+  let paidFor = 0;
+  let shortBatches = 0;
   const { text: mapa, refs } = serializeMap(ctx);
   const focus = input.focus ? focusRef(input.scope, refs, input.focus) : null;
   const log = createLogger({ requestId: input.requestId ?? 'challenge-generate' });
@@ -568,6 +579,11 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
     const reused = await store.unseen(input.userId, ctx.boardId, scopeIds, type, difficulty, count);
     reusedAll.push(...reused);
     let missing = count - reused.length;
+    // per type, as before D-1882: a mixed request still pays each type's own batches
+    paidFor = 0;
+    shortBatches = 0;
+    const typeStart = fresh.length;
+    await input.onProgress?.(reusedAll.length + fresh.length);
     if (missing <= 0 || out.stoppedBy) continue;
     mapStems ??= await store.stems(input.userId, ctx.boardId);
     recent ??= await store.recentStems(input.userId, ctx.boardId, scopeIds, RECENT_STEMS);
@@ -581,21 +597,23 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
     };
 
     while (missing > 0 && !out.stoppedBy) {
-      const size = Math.min(genBatchSize, missing);
+      const size = Math.min(batchSize, missing);
       const receiptBatch=batchNo++;
       const ledgers:GenerationReceipts[]=[];
-      const held = input.charge ? null : await reserveAi(input.userId, 'ai_question_batches', deps.now());
+      const held = input.charge || fresh.length - typeStart + size <= paidFor ? null : await reserveAi(input.userId, 'ai_question_batches', deps.now());
       if (held && !held.ok) {
         out.stoppedBy = 'quota';
         failure = held.error;
         break;
       }
+      if (held) paidFor += genBatchSize;
       const period = held?.quota.period;
       let refunded = !period;
       const refund = async () => {
         if (refunded) return;
         refunded = true;
         await refundAt(input.userId, 'ai_question_batches', period!).catch(() => undefined);
+        paidFor -= genBatchSize;
       };
       const kept: Candidate[] = [];
       const offFocus: Candidate[] = [];
@@ -646,6 +664,7 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
       // the focus card is a preference: a grounded question on another card of the map beats an empty step
       kept.push(...offFocus.slice(0, size - kept.length));
 
+      let stored: QuestionBankServer[] = [];
       try {
         const now = deps.now();
         const classified = await classifyTopics(kept, ctx, input.requestId ?? 'challenge-generate');
@@ -653,7 +672,8 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
           const id = deps.newId();
           return toRow(c, { id, userId: input.userId, ctx, prompt, model, seed: input.seed ? `${input.seed}:${c.question.enunciado}` : id, now, classified: classified.get(i) ?? null });
         });
-        const stored = keepTagged(rows);
+        stored = keepTagged(rows);
+        out.discarded.untagged = (out.discarded.untagged ?? 0) + rows.length - stored.length;
         if(ledgers.length){const first=ledgers[0]!;first.runs.push(...ledgers.slice(1).flatMap(l=>l.runs));await first.saveRows(stored);}else await store.save(input.userId, stored);
         fresh.push(...stored);
         mapStems.push(...stored.map((r) => r.stem));
@@ -662,10 +682,11 @@ async function generateBatches(input: GenerateInput, deps: GenerateDeps): Promis
         await refund();
         throw e;
       }
+      await input.onProgress?.(reusedAll.length + fresh.length);
       if (out.stoppedBy) break;
-      missing -= size;
-      // a batch left short after its retry ends this type: another batch would ask the same map again (FR-8, one retry)
-      if (kept.length < size) break;
+      missing -= stored.length;
+      // a batch left short after its retry ends this type (FR-8, one retry), unless the caller allows a few more (D-1882, bounded)
+      if (stored.length < size && ++shortBatches > (input.extraBatches ?? 0)) break;
     }
   }
 

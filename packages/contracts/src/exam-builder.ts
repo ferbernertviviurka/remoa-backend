@@ -95,15 +95,33 @@ export function allocateExam(areas: readonly AllocationArea[], count: number, di
 /** Stored inside question_sessions.config (snapshot of how the exam was built). Start = POST /v1/question-sessions with questionIds + builder. */
 export const questionSessionBuilderSchema = z.object({ seed: examSeedSchema, params: examBuilderParamsSchema, templateId: idSchema.nullable().default(null) }).strict();
 
-// --- D-1846: AI questions generated on the fly from a map, before the preview -------------------------------------
-/** Objective only (sessions take objective). Reuses the map's unseen saved questions first, then the model; charges ai_question_batches like F32. */
+// --- D-1846 / D-1882: AI questions generated on the fly (from a map, or from a theme without a map), before the preview ------
+/** Objective only (sessions take objective). Charges ai_question_batches like F32: one unit per started block of GEN_BATCH_SIZE (10) new questions. */
 export const EXAM_GENERATE_MAX = 20;
+/** D-1882: the model is asked in chunks of this size, so the stream reports real progress after each saved chunk. */
+export const EXAM_GENERATE_CHUNK = 5;
+export const EXAM_GENERATE_THEME_MAX = 200;
+/**
+ * D-1882 (CCR-170). `boardId` set = map mode (D-1846: the map's unseen AI questions first, then the model, grounded on the map; the
+ * content fields are ignored). `boardId` null = theme mode: the model writes every question for the chosen taxonomy (topicIds win;
+ * else every topic of areaIds; else every topic) and/or the free `theme`; each saved question carries its taxonomy area and topic.
+ * At least one of boardId, areaIds, topicIds or theme is required.
+ */
 export const examGenerateInputSchema = z.object({
-  boardId: idSchema,
+  boardId: idSchema.nullable().default(null),
+  areaIds: uniqueIds(EXAM_BUILDER_LIMITS.maxAreas),
+  topicIds: uniqueIds(EXAM_BUILDER_LIMITS.maxTopics),
+  theme: z.string().trim().max(EXAM_GENERATE_THEME_MAX).nullable().default(null).transform((s) => s || null),
   count: z.number().int().min(1).max(EXAM_GENERATE_MAX),
   difficulty: z.enum([...difficulties, 'mixed']).default('mixed'),
-}).strict();
+}).strict().refine((i) => i.boardId !== null || i.areaIds.length > 0 || i.topicIds.length > 0 || i.theme !== null, { message: 'missing_scope' });
 export type ExamGenerateInput = z.input<typeof examGenerateInputSchema>;
+/**
+ * Why `shortfall` > 0 (null when the request was filled): quota = plan limit reached mid-way; ai_error = the model failed;
+ * rejected = the model's questions kept failing the quality checks (format, evidence, duplicate) after the bounded retries;
+ * unclassified = questions without a taxonomy topic were dropped (a saved question always has area and topic).
+ */
+export const examGenerateShortfallReasons = ['quota', 'ai_error', 'rejected', 'unclassified'] as const;
 export const examGenerateResultSchema = z.object({
   /** Delivered ids (reused first): pin them in the preview. Never a stem or an answer key here. */
   questionIds: z.array(idSchema).max(EXAM_GENERATE_MAX),
@@ -112,5 +130,25 @@ export const examGenerateResultSchema = z.object({
   generated: z.number().int().min(0),
   shortfall: z.number().int().min(0),
   stoppedBy: z.enum(['quota', 'ai_error']).nullable(),
+  shortfallReason: z.enum(examGenerateShortfallReasons).nullable(),
 }).strict();
 export type ExamGenerateResult = z.infer<typeof examGenerateResultSchema>;
+/** D-1882: with `Accept: text/event-stream` the generate answers SSE: `data: {"progress":…}` after reuse and after each saved chunk
+ * (monotonic, `generated` = delivered so far incl. reused), then one `data: {"result": ExamGenerateResult}` or `data: {"error":{code,message}}`. */
+export const examGenerateProgressSchema = z.object({ generated: z.number().int().min(0), requested: z.number().int().min(0) }).strict();
+export type ExamGenerateProgress = z.infer<typeof examGenerateProgressSchema>;
+
+/** D-1882: GET /v1/exam-builder/board-content?boardId= — the "Conteúdo" step prefilled from a map (404 for a map that is not the user's). */
+export const examBoardContentQuerySchema = z.object({ boardId: idSchema }).strict();
+export const examBoardContentSchema = z.object({
+  boardId: idSchema,
+  /** Live (not deleted, not suspended) cards; 0 = nothing to prefill from. */
+  cardCount: z.number().int().min(0),
+  /** The map's matrix items (boards.matrix_item_id + board_matrix_items); usable as examBuilderFilter.matrixItemIds. */
+  matrixItemIds: z.array(idSchema),
+  /** Taxonomy areas above those topics; with no topic, the area of the map (boards.area). */
+  areaIds: z.array(idSchema),
+  /** Taxonomy topics (kind 'topic'): those under the map's matrix items, plus the topics of the AI questions already saved from the map. */
+  topicIds: z.array(idSchema),
+}).strict();
+export type ExamBoardContent = z.infer<typeof examBoardContentSchema>;

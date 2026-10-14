@@ -34,25 +34,6 @@
   "sort": 2
  },
  {
-  "code": "nursing_technician",
-  "name": "Técnico(a) em Enfermagem",
-  "aliases": [
-   "tecnico em enfermagem",
-   "tecnico enfermagem",
-   "tec enfermagem",
-   "tec em enfermagem",
-   "tecnica em enfermagem"
-  ],
-  "councilCode": "COREN",
-  "suggestedGoals": [
-   "provas_curso",
-   "concursos_saude",
-   "atualizacao_profissional"
-  ],
-  "kind": "course",
-  "sort": 3
- },
- {
   "code": "dentistry",
   "name": "Odontologia",
   "aliases": [
@@ -67,7 +48,7 @@
    "concursos_saude"
   ],
   "kind": "course",
-  "sort": 4
+  "sort": 3
  },
  {
   "code": "pharmacy",
@@ -84,7 +65,7 @@
    "concursos_saude"
   ],
   "kind": "course",
-  "sort": 5
+  "sort": 4
  },
  {
   "code": "physiotherapy",
@@ -101,24 +82,7 @@
    "concursos_saude"
   ],
   "kind": "course",
-  "sort": 6
- },
- {
-  "code": "occupational_therapy",
-  "name": "Terapia Ocupacional",
-  "aliases": [
-   "terapia ocupacional",
-   "to",
-   "t.o."
-  ],
-  "councilCode": "CREFITO",
-  "suggestedGoals": [
-   "provas_faculdade",
-   "residencia_multiprofissional",
-   "concursos_saude"
-  ],
-  "kind": "course",
-  "sort": 7
+  "sort": 5
  },
  {
   "code": "nutrition",
@@ -135,7 +99,7 @@
    "concursos_saude"
   ],
   "kind": "course",
-  "sort": 8
+  "sort": 6
  },
  {
   "code": "psychology",
@@ -153,41 +117,7 @@
    "concursos_saude"
   ],
   "kind": "course",
-  "sort": 9
- },
- {
-  "code": "biomedicine",
-  "name": "Biomedicina",
-  "aliases": [
-   "biomedicina",
-   "biomed",
-   "biomedico"
-  ],
-  "councilCode": "CRBM",
-  "suggestedGoals": [
-   "provas_faculdade",
-   "residencia_especializacao",
-   "concursos_saude"
-  ],
-  "kind": "course",
-  "sort": 10
- },
- {
-  "code": "speech_therapy",
-  "name": "Fonoaudiologia",
-  "aliases": [
-   "fonoaudiologia",
-   "fono",
-   "fonoaudiologo"
-  ],
-  "councilCode": "CREFONO",
-  "suggestedGoals": [
-   "provas_faculdade",
-   "residencia_multiprofissional",
-   "concursos_saude"
-  ],
-  "kind": "course",
-  "sort": 11
+  "sort": 7
  },
  {
   "code": "physical_education",
@@ -205,24 +135,24 @@
    "atualizacao_profissional"
   ],
   "kind": "course",
-  "sort": 12
+  "sort": 8
  },
  {
-  "code": "social_work",
-  "name": "Serviço Social",
+  "code": "biomedicine",
+  "name": "Biomedicina",
   "aliases": [
-   "servico social",
-   "assistente social",
-   "ss"
+   "biomedicina",
+   "biomed",
+   "biomedico"
   ],
-  "councilCode": "CRESS",
+  "councilCode": "CRBM",
   "suggestedGoals": [
    "provas_faculdade",
-   "residencia_multiprofissional",
+   "residencia_especializacao",
    "concursos_saude"
   ],
   "kind": "course",
-  "sort": 13
+  "sort": 9
  },
  {
   "code": "veterinary_medicine",
@@ -241,85 +171,16 @@
    "concursos_saude"
   ],
   "kind": "course",
-  "sort": 14
- },
- {
-  "code": "biological_sciences",
-  "name": "Ciências Biológicas",
-  "aliases": [
-   "ciencias biologicas",
-   "biologia",
-   "biologo",
-   "cien biologicas"
-  ],
-  "councilCode": "CRBio",
-  "suggestedGoals": [
-   "provas_faculdade",
-   "atualizacao_profissional",
-   "concursos_saude"
-  ],
-  "kind": "course",
-  "sort": 15
- },
- {
-  "code": "public_health",
-  "name": "Saúde Coletiva",
-  "aliases": [
-   "saude coletiva",
-   "saude publica",
-   "sc"
-  ],
-  "councilCode": null,
-  "suggestedGoals": [
-   "provas_faculdade",
-   "concursos_saude",
-   "residencia_multiprofissional"
-  ],
-  "kind": "course",
-  "sort": 16
- },
- {
-  "code": "radiology",
-  "name": "Radiologia e Diagnóstico por Imagem",
-  "aliases": [
-   "radiologia",
-   "diagnostico por imagem",
-   "tecnologo em radiologia",
-   "tecnico em radiologia",
-   "radiologia e diagnostico por imagem"
-  ],
-  "councilCode": "CRTR",
-  "suggestedGoals": [
-   "provas_curso",
-   "concursos_saude",
-   "atualizacao_profissional"
-  ],
-  "kind": "course",
-  "sort": 17
- },
- {
-  "code": "other_health",
-  "name": "Outro curso da saúde",
-  "aliases": [
-   "outro",
-   "outro curso da saude",
-   "outra area da saude"
-  ],
-  "councilCode": null,
-  "suggestedGoals": [
-   "provas_faculdade",
-   "concursos_saude",
-   "aprender_por_conta"
-  ],
-  "kind": "other_health",
-  "sort": 18
+  "sort": 10
  },
  {
   "code": "not_health",
-  "name": "Não é da área da saúde",
+  "name": "Outra área não relacionada à área da saúde",
   "aliases": [
    "nao e da saude",
-   "nao sou da saude"
+   "nao sou da saude",
+   "outra area",
+   "outro assunto"
   ],
   "councilCode": null,
   "suggestedGoals": [
@@ -328,6 +189,6 @@
    "aprender_por_conta"
   ],
   "kind": "not_health",
-  "sort": 19
+  "sort": 11
  }
 ]
