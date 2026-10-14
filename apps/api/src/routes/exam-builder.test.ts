@@ -6,7 +6,7 @@ import { createLogger } from '@remoa/log';
 import { err, ok } from '@remoa/contracts';
 import type { Env } from '../app';
 import type { generateQuestions } from '../challenge-ai/generate';
-import { sourceWhere } from '../questions/builder/service';
+import { eligibleWhere, sourceWhere } from '../questions/builder/service';
 import { examBuilderRoutes } from './exam-builder';
 
 type Gen = typeof generateQuestions;
@@ -66,5 +66,14 @@ describe('builder pool predicate (D-1846)', () => {
     expect(q('catalog_and_ai', BOARD).sql).toContain('q.board_id=');
     expect(q('catalog', BOARD).sql).not.toContain('board_id');
     expect(q('ai', null).sql).not.toContain('board_id');
+  });
+});
+
+describe('builder course predicate (D-1861)', () => {
+  const sqlOf = (course: 'medicine' | 'nursing' | null) => new PgDialect().sqlToQuery(eligibleWhere('u1', 'catalog_and_ai', 'all', null, course)).sql;
+  it('only a course other than medicine empties the public part', () => {
+    expect(sqlOf('nursing')).toContain("q.visibility<>'public'");
+    expect(sqlOf('medicine')).not.toContain("q.visibility<>'public'");
+    expect(sqlOf(null)).not.toContain("q.visibility<>'public'");
   });
 });

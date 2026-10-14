@@ -1,0 +1,13 @@
+# Fontes dos dados de referência (F35, Q-114)
+
+## institutions.json
+- Fonte: INEP, Microdados do Censo da Educação Superior 2024, arquivo `MICRODADOS_ED_SUP_IES_2024.CSV` (dentro de `microdados_censo_da_educacao_superior_2024.zip`).
+- URL: https://download.inep.gov.br/microdados/microdados_censo_da_educacao_superior_2024.zip (página: https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/censo-da-educacao-superior). O certificado do servidor não valida com a cadeia padrão (ICP-Brasil); o download usou `curl -k` e o arquivo foi tratado como dado não confiável (diretório isolado, parse com `python -I`).
+- Data do download: 2026-10-13. Linhas: 2.561 IES (2.561 códigos únicos): 317 públicas e 2.244 privadas.
+- Por que não o e-MEC direto: `dadosabertos.mec.gov.br` e `emec.mec.gov.br` retornam 403 (desafio Cloudflare) para download automatizado, e a API do dados.gov.br exige token. O `CO_IES` do INEP é o mesmo código do e-MEC, mas o Censo traz as IES que responderam ao censo (ano-base 2024), não o cadastro e-MEC "ativas" do dia. Pode faltar IES recém-credenciada e sobrar IES em extinção. Trocar pelo CSV do e-MEC quando houver acesso manual (Q-240).
+- Licença/termos: dados abertos do governo federal (Lei 12.527/2011, Decreto 8.777/2016, Política de Dados Abertos); uso e redistribuição permitidos com citação da fonte (INEP/MEC). Os microdados do Censo da Educação Superior são de IES (pessoa jurídica), sem dado pessoal. Confirmar a licença exata (CC-BY ou equivalente) no portal antes de publicar (Q-241).
+- Transformação: `emecCode`=CO_IES; `name`=NO_IES convertido de MAIÚSCULAS para caixa de título (conectivos da/de/do/e/em em minúsculas; palavras sem vogal e numerais romanos em maiúsculas; siglas internas como "FGV" podem ficar em caixa de título, ex.: "FGV Eaesp"); `acronym`=SG_IES (null quando vazio, 459 casos); `city`=NO_MUNICIPIO_IES (município da sede); `uf`=SG_UF_IES; `type`=`public` se TP_REDE=1 (federal, estadual, municipal e especial), senão `private`. Ordenado por `emecCode`. Lista de escolas técnicas de saúde: fora de escopo.
+
+## councils.json, study-goals.json, health-courses.json
+- Nomes dos conselhos escritos de memória a partir dos nomes oficiais dos conselhos federais; NÃO verificados no site de cada conselho (sem acesso web interativo nesta sessão). Revisar (Q-242). Nota: CRBio é "Conselho Regional de Biologia" e CRN é "Conselho Regional de Nutricionistas" na denominação oficial.
+- Cursos, objetivos, aliases e objetivos sugeridos: definidos por FR-2, FR-3, FR-5 do F35; `suggestedGoals[0]` é o sugerido automaticamente (FR-18). Decisão editorial, não médica.

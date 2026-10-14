@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { idSchema } from './common';
+import { healthCourseCodeSchema } from './health-course-codes';
 
 const uniqueIds = (max: number) => z.array(idSchema).max(max).default([]).refine((a) => new Set(a).size === a.length, 'duplicate_ids');
 const difficulties = ['easy', 'medium', 'hard'] as const;
@@ -27,6 +28,10 @@ export const examBuilderFilterSchema = z.object({
   progress: z.enum(examBuilderProgress).default('all'),
   /** D-1846: map as base. Restricts the private ai_generated pool to questions generated from this map (the catalog part is unaffected). null = any map. */
   boardId: idSchema.nullable().default(null),
+  /** F35 FR-31..36 (D-1861): course of the CATALOG part. 'medicine' = the ENAMED catalog of today; other courses have no published
+   * catalog yet (classification by profession is CCR-150), so their catalog availability is 0. null = medicine (legacy). The private
+   * AI part (source 'ai' / boardId) is never filtered by course. */
+  course: healthCourseCodeSchema.nullable().default(null),
 }).strict();
 export type ExamBuilderFilter = z.infer<typeof examBuilderFilterSchema>;
 export const examBuilderParamsSchema = examBuilderFilterSchema.extend({

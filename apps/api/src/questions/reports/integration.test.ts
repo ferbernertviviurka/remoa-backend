@@ -51,7 +51,7 @@ describe.skipIf(!url)('FR23 report triage HTTP/DB',()=>{
   expect((await call('/admin/questions/reports/'+pubReports[0]+'/resolve','POST',{status:'published',reason:'Synthetic invalid action',expectedUpdatedAt:d.report.updatedAt})).status).toBe(422);
   expect((await call('/admin/questions/reports/'+pubReports[0]+'/resolve','POST',{status:'resolved',reason:'Synthetic valid reason',expectedUpdatedAt:'not a date'})).status).toBe(422);
   const [after]=await db`SELECT count(*)::int n FROM admin_audit_log WHERE target_id=${pubReports[0]!} AND action='question.report_resolve'`;expect(after!.n-before!.n).toBe(3);
-  expect((await call('/admin/questions/reports/'+pubReports[0]+'/resolve','POST',{status:'resolved',reason:'Synthetic valid reason',expectedUpdatedAt:d.report.updatedAt},admin,40*60_000)).status).toBe(403);
+  expect((await call('/admin/questions/reports/'+pubReports[0]+'/resolve','POST',{status:'resolved',reason:'Synthetic valid reason',expectedUpdatedAt:'not a date'},admin,40*60_000)).status).toBe(422); // D-1841: a 40 min old sign-in reaches validation (no reauth 403)
  });
  it('resolution is idempotent; stale competing status conflicts and no question/version is edited',async()=>{
   const d=await detail(pubReports[0]!),input={status:'resolved',reason:'Synthetic valid resolution',expectedUpdatedAt:d.report.updatedAt};

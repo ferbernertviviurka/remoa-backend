@@ -1,4 +1,4 @@
-// D-1838: "Aceitar selecionadas" — the single-candidate accept (updateCandidate, state accepted) applied to many candidates of one
+// D-1841: "Aceitar selecionadas" — the single-candidate accept (updateCandidate, state accepted) applied to many candidates of one
 // import, each in its own savepoint, inside withAdmin's single transaction (one audit row). Never publishes: accepted = draft in_review.
 import {
   err, ok, importCandidateReviewInputSchema, questionCandidatePayloadSchema,
@@ -46,7 +46,7 @@ export async function acceptCandidates(tx: Tx, importId: string, input: Question
         if (!review.success) return skip('invalid', review.error.issues[0]?.message ?? 'invalid_candidate');
         const r = await updateCandidate(sp, importId, item.id, review.data);
         if (!r.ok) return skip(r.error.code === 'conflict' ? 'conflict' : 'invalid', r.error.message);
-        return r.data as { questionId: string | null; importRevision: number };
+        return r.data;
       });
       revision = saved.importRevision;
       results.push({ id: item.id, outcome: 'accepted', questionId: saved.questionId });

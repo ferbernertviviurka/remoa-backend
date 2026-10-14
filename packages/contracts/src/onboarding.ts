@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { areas, isAreaAvailable } from './enums';
 import { timestampSchema } from './common';
 import { MAX_GOALS } from './constants';
+import { healthCourseCodeSchema } from './health-course-codes';
 
 /** Year / situation. Append-only (rows stored); UI order lives in the frontend. G20 (D-841): `not_med` = "Não estudo medicina". */
 export const segments = ['y3_4', 'y5_6', 'graduated', 'y1_2', 'cursinho', 'resident', 'working', 'not_med'] as const;
@@ -41,6 +42,8 @@ export const waitlistEntrySchema = z.object({
   segment: segmentSchema,
   variant: z.string().regex(/^\d+$/).nullable(), // price variant from ?v=29 / ?v=49
   origin: z.string().max(200).nullable(),
+  /** F35 FR-37, CCR-161: course picked in the landing hero. */
+  course: healthCourseCodeSchema.optional(),
 });
 export type WaitlistEntry = z.infer<typeof waitlistEntrySchema>;
 

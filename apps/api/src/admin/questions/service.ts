@@ -335,7 +335,7 @@ export async function updateCandidate(
   importId: string,
   id: string,
   input: ImportCandidateReviewInput,
-): Promise<Result<{ candidate: unknown; questionId: string | null }>> {
+): Promise<Result<{ candidate: unknown; questionId: string | null; importRevision: number; affectedCandidates: unknown[] }>> {
   const {
     questionImportCandidates: c,
     questionBank: q,

@@ -96,6 +96,31 @@ describe.skipIf(!url)('F34 exam builder', () => {
     }
   });
 
+  it('D-1861: course applies to the catalog part only (availability, preview, start, bank list and facets)', async () => {
+    const total = async (over: Record<string, unknown>) => examAvailabilitySchema.parse((await request('/exam-builder/availability', 'POST', filter(over))).body.data).total;
+    for (const course of [null, 'medicine']) { expect(await total({ course })).toBe(9); expect(await total({ source: 'catalog_and_ai', course })).toBe(10); }
+    expect(await total({ course: 'nursing' })).toBe(0);
+    expect(await total({ source: 'ai', areaIds: [], course: 'nursing' })).toBe(2); // own AI questions (aiA1, aiNone), never filtered
+    expect(await total({ source: 'catalog_and_ai', course: 'nursing' })).toBe(1);
+    expect((await preview({ params: params({ course: 'nursing' }), pinnedIds: [], excludedIds: [] })).body.data).toMatchObject({ items: [] });
+    const med = examPreviewSchema.parse((await preview({ params: params({ course: 'medicine' }), pinnedIds: [], excludedIds: [] })).body.data);
+    expect(med.items).toHaveLength(5);
+    const s = await request('/question-sessions', 'POST', await startBody(med.items.map((i) => i.questionId), med.seed, { course: 'nursing' }), owner, randomUUID());
+    expect([s.status, s.body.error?.message ?? s.body.error?.code]).toEqual([409, expect.stringMatching(/exam_changed/)]);
+    const rv = examRevalidateResultSchema.parse((await request('/exam-builder/revalidate', 'POST', { params: params({ course: 'nursing' }), questionIds: med.items.map((i) => i.questionId) })).body.data);
+    expect(rv.ok).toBe(false);
+    const list = async (qs: string) => (await request('/questions?limit=50&' + qs, 'GET')).body.data as unknown as { total: number; items: { id: string }[] };
+    const facets = async (qs: string) => (await request('/questions/facets?' + qs, 'GET')).body.data as unknown as { total: number; areas: { count: number }[] };
+    expect((await list('scope=catalog&course=nursing')).total).toBe(0);
+    expect((await facets('scope=catalog&course=nursing')).total).toBe(0);
+    expect((await facets('scope=catalog&course=nursing')).areas.every((a) => a.count === 0)).toBe(true);
+    expect((await list('scope=catalog&course=medicine')).total).toBe(9);
+    const mine = await list('scope=mine'), mineN = await list('scope=mine&course=nursing');
+    expect(mineN.total).toBe(mine.total); expect(mine.total).toBeGreaterThanOrEqual(2);
+    const allN = await list('scope=all&course=nursing'); expect(allN.total).toBe(mine.total);
+    expect((await facets('course=nursing')).total).toBe(mine.total);
+  });
+
   it('D-1846: generate (AI=mock, no provider) saves questions of the map that the builder then finds by boardId', async () => {
     const board = randomUUID(), matrix = randomUUID();
     vi.stubEnv('AI', 'mock');

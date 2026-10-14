@@ -1,4 +1,6 @@
-import { boolean, date, index, integer, jsonb, pgTable, text, timestamp, uuid, primaryKey } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { boolean, check, date, index, integer, jsonb, pgTable, text, timestamp, uuid, primaryKey } from 'drizzle-orm/pg-core';
+import { healthCourseCodes } from '@remoa/contracts';
 import { jobStatusEnum, planEnum, subStatusEnum, timestamps, userId } from './common';
 import { boards } from './content';
 
@@ -86,6 +88,8 @@ export const waitlist = pgTable('waitlist', {
   segment: text('segment'),
   variant: text('variant'),
   source: text('source'),
+  /** F35 FR-37, CCR-161: health_courses.code chosen in the landing hero; no FK (closed list in @remoa/contracts), like study_profiles.course_code. */
+  course: text('course'),
   ...timestamps,
-});
+}, () => [check('waitlist_course', sql.raw(`course is null or course in (${healthCourseCodes.map((c) => `'${c}'`).join(', ')})`))]);
 

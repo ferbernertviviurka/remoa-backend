@@ -24,10 +24,10 @@ export function takeWaitlistSlot(ip: string, now = Date.now()): boolean {
 export async function joinWaitlist(input: unknown, requestId: string): Promise<Result<null>> {
   const p = parseWith(waitlistBodySchema, input);
   if (!p.ok) return p;
-  const { website, email, segment, variant, origin } = p.data;
+  const { website, email, segment, variant, origin, course } = p.data;
   if (website) return ok(null);
   const { db, waitlist } = await dbm();
-  const rows = await db.insert(waitlist).values({ email: email.toLowerCase(), segment, variant, source: origin }).onConflictDoNothing().returning({ id: waitlist.id });
+  const rows = await db.insert(waitlist).values({ email: email.toLowerCase(), segment, variant, source: origin, course }).onConflictDoNothing().returning({ id: waitlist.id });
   if (!rows.length) return ok(null);
   createLogger({ requestId }).info('waitlist_joined', { segment, variant });
   await notifyAddress(email, 'landing_waitlist', { reference: emailHash(email), email: {} }); // never throws; signed up anyway

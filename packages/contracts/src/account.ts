@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
 import { entitlementsSchema, quotaKeySchema, type Entitlements } from './billing';
 import { isValidName, isValidPassword, NAME_CHARS, PASSWORD_MAX, normalizeBrPhone, normalizeName, usageTone, usageTones, userTypes } from './constants';
+import type { ProfileCapabilities, StudyProfile } from './study-profile'; // type-only: study-profile.ts imports brUfSchema from here
 import { goalSchema, goalsSchema, segmentSchema, type Goal } from './onboarding';
 import { institutionInputSchema } from './institutions';
 
@@ -233,7 +234,8 @@ export const updatePreferencesInputSchema = preferencesSchema
 export type UpdatePreferencesInput = z.infer<typeof updatePreferencesInputSchema>;
 
 // --- completeness ------------------------------------------------------------
-export const completenessItems = ['photo', 'name', 'email', 'goal', 'reminder'] as const;
+// CCR-160b (F35 FR-24): `goal` -> `study_focus` (study profile goals) and `course_institution` (study profile course + institution).
+export const completenessItems = ['photo', 'name', 'email', 'study_focus', 'course_institution', 'reminder'] as const;
 export type CompletenessItem = (typeof completenessItems)[number];
 export const completenessSchema = z.object({
   percent: z.number().int().min(0).max(100),
@@ -241,17 +243,24 @@ export const completenessSchema = z.object({
 });
 export type Completeness = z.infer<typeof completenessSchema>;
 
-/** FR-3: mean of 5 items; `missing` keeps completenessItems order. */
+/** Structural subset of StudyProfile (study-profile.ts imports this file, so no type import here). */
+export type CompletenessStudyProfile = {
+  source: string; course: string | null; goals: readonly unknown[]; customGoals: readonly unknown[]; institution: unknown | null; institutionText: string | null;
+};
+
+/** FR-3: mean of 6 items; `missing` keeps completenessItems order. No study profile = both study items missing. */
 export function computeCompleteness(
-  profile: Pick<Profile, 'avatarKey' | 'name' | 'goal'>,
+  profile: Pick<Profile, 'avatarKey' | 'name'>,
   prefs: Pick<Preferences, 'reminderEnabled'>,
   { emailConfirmed, emailPending }: { emailConfirmed: boolean; emailPending: boolean },
+  study: CompletenessStudyProfile | null = null,
 ): Completeness {
   const done: Record<CompletenessItem, boolean> = {
     photo: !!profile.avatarKey,
     name: normalizeName(profile.name ?? '').length >= 2,
     email: emailConfirmed && !emailPending,
-    goal: !!profile.goal,
+    study_focus: !!study && study.source !== 'migration' && study.goals.length + study.customGoals.length >= 1,
+    course_institution: !!study?.course && (!!study.institution || !!study.institutionText),
     reminder: prefs.reminderEnabled,
   };
   const missing = completenessItems.filter((i) => !done[i]);
@@ -303,6 +312,9 @@ export const accountSnapshotSchema = z.object({
   preferences: preferencesSchema,
   entitlements: entitlementsSchema,
   completeness: completenessSchema,
+  /** CCR-160b: study profile ("Seu estudo") + its capabilities in the same request; absent only in old mocks. z.custom (no runtime import: it would be circular); the API builds both from validated data. */
+  studyProfile: z.custom<StudyProfile>().nullable().optional(),
+  capabilities: z.custom<ProfileCapabilities>().optional(),
   /** null = no attempts yet (chip hidden). */
   streakDays: z.number().int().nonnegative().nullable(),
   joinedAt: timestampSchema,

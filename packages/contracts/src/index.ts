@@ -30,6 +30,7 @@ export * from './calendar';
 export * from './blog';
 export * from './cache';
 export * from './content';
+export * from './study-profile'; // G28-P F35 CCR-160
 
 export * from './question-catalog';
 export * from './exam-builder';
@@ -41,3 +42,5 @@ export * from './question-parser-warnings';
 
 export * from './question-admin-catalog';
 export * from './question-operations';
+export * from './health-taxonomy';
+export * from './question-curation';

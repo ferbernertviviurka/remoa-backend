@@ -3,6 +3,7 @@ import { db } from './client';
 import { enamedTaxonomy, matrixItems } from './schema';
 import { ENAMED_ITEMS, ENAMED_TEMPORAL_MARK } from './seed/enamed';
 import { parentsFirst, taxonomyFromMatrix } from './seed/enamed-taxonomy';
+import { seedReference } from './seed/reference';
 
 // Groups first (no parentCode) so parent_id resolves; idempotent upsert on code.
 const ids = new Map<string, string>();
@@ -32,5 +33,7 @@ for (const t of parentsFirst(taxonomyFromMatrix(matrix))) {
   }).returning({ id: enamedTaxonomy.id });
   taxIds.set(t.code, r!.id);
 }
-process.stdout.write(`seed ok: ${ENAMED_ITEMS.length} matrix_items, ${taxIds.size} enamed_taxonomy; stale in db: ${stale.map((s) => s.code).join(',') || 'none'}\n`);
+// F35 (CCR-160): health courses, councils, goals, institutions.
+const ref = await seedReference(db);
+process.stdout.write(`seed ok: ${ENAMED_ITEMS.length} matrix_items, ${taxIds.size} enamed_taxonomy, reference ${JSON.stringify(ref)}; stale in db: ${stale.map((s) => s.code).join(',') || 'none'}\n`);
 process.exit(0);

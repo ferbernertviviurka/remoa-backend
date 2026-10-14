@@ -22,6 +22,7 @@ export const exportAccount: ExportAccount = async (userId) => {
   const data = await run(userId, async (tx, s) => {
       const mine = tx.select({ id: s.boards.id }).from(s.boards).where(eq(s.boards.userId, userId));
       const [profile] = await tx.select(getTableColumns(s.profiles)).from(s.profiles).where(eq(s.profiles.userId, userId));
+      const [studyProfile] = await tx.select(getTableColumns(s.studyProfiles)).from(s.studyProfiles).where(eq(s.studyProfiles.userId, userId));
       // F19 FR-9: tickets travel with the export (internal notes and assignee are staff data, not the user's).
       const tickets = await Promise.all(
         (await tx.select(omit(getTableColumns(s.supportTickets), 'assignedTo')).from(s.supportTickets).where(eq(s.supportTickets.userId, userId))).map(async (t) => ({
@@ -37,6 +38,7 @@ export const exportAccount: ExportAccount = async (userId) => {
         exportedAt: new Date(),
         userId,
         profile: profile ?? null,
+        studyProfile: studyProfile ?? null, // F35 (LGPD): incl. council_number
         // F17: the share token and password hash are credentials, not exported data
         boards: (await tx.select(omit(omit(getTableColumns(s.boards), 'shareToken'), 'sharePasswordHash')).from(s.boards).where(eq(s.boards.userId, userId))).map((b) => ({ ...b, shareToken: null, sharePasswordHash: null })),
         cards: await tx.select(getTableColumns(s.cards)).from(s.cards).where(inArray(s.cards.boardId, mine)),

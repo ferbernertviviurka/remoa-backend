@@ -16,6 +16,7 @@ import {
   questionSourceInputSchema,
   questionImportInputSchema,
   importCandidateReviewInputSchema,
+  questionCandidateAcceptInputSchema,
   questionPublishInputSchema,
   questionDraftUpdateInputSchema,
   questionCandidatePageImageInputSchema,
@@ -52,6 +53,7 @@ import { preparePageImage } from "../../questions/imports/manual-page-image";
 import { documentPagePreviewResponse } from './page-preview';
 import { deleteObject } from "../../storage/storage";
 import { dispatchQuestionImport } from "../../inngest/client";
+import { acceptCandidates } from "./accept-batch";
 import { createRecoveredCandidate, recoverCandidateNumber, resolveImportContext } from "./recovery";
 const readJson = async (c: { req: { json: () => Promise<unknown> } }) =>
   c.req.json().catch(() => null);
@@ -719,6 +721,18 @@ export const questionAdminRoutes = new Hono<AdminEnv>()
           return result;
         },
       ),
+    );
+  })
+  // D-1841: batch accept (one reason, one audit row, per-item outcomes). Runs only on an admin's click.
+  .post("/imports/:id/candidates/accept", async (c) => {
+    const id = c.req.param("id");
+    if (!idValid(id)) return send(err("not_found", "import not found"));
+    const json = await readJson(c);
+    return send(
+      await withAdmin(c, "question.candidate_update", { reason: reasonOf(json), target: { type: "question_import", id } }, async (tx, audit) => {
+        const input = parseWith(questionCandidateAcceptInputSchema, json);
+        return input.ok ? acceptCandidates(tx, id, input.data, audit) : input;
+      }),
     );
   })
   .patch("/:id", async (c) => {

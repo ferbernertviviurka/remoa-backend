@@ -10,6 +10,7 @@ import { accountRoutes } from './routes/account';
 import { accountSecurityRoutes } from './routes/account-security';
 import { accountProfileRoutes } from './routes/account-profile';
 import { publicRoutes } from './routes/public';
+import { publicReferenceRoutes, studyProfileRoutes } from './routes/study-profile';
 import { publicBlogRoutes } from './blog/public';
 import { publicSeedRoutes } from './editorial/public';
 import { accountLegalRoutes, publicLegalRoutes } from './account/legal';
@@ -145,6 +146,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
 
   app.use('/v1/account/*', requireUser).route('/v1/account', accountRoutes({ stripe })).route('/v1/account', accountSecurityRoutes).route('/v1/account', accountAvatarRoutes);
   app.route('/v1/account', accountLegalRoutes); // G19 F27 P-401
+  app.route('/v1/account', studyProfileRoutes()); // G28-P F35 (requireUser applied above)
   app.route('/v1/account', accountProfileRoutes()); // F13 profile/email/identities/preferences (requireUser applied above)
   const viewer = async (authorization: string | undefined) => {
     const token = authorization?.replace(/^Bearer /, '');
@@ -161,6 +163,7 @@ export function createApp({ verifyToken, webOrigin, grade, stream, stripe, mockS
   app.route('/v1/public/legal', publicLegalRoutes); // G19 P-416: current legal versions, single source for the web sign-up
   app.route('/v1/public/blog', publicBlogRoutes); // G19 F27: no auth, published posts only
   app.route('/v1/public/mapas-prontos', publicSeedRoutes); // G23 F31: no auth, seed_approved only, first 10 cards
+  app.route('/v1/public/reference', publicReferenceRoutes()); // G28-P F35: no auth, rate limited per IP
   app.route('/v1/public', publicRoutes({ stripe, viewer })); // F13 unsubscribe: no auth, signed token; F17 shared links: optional session
   app.use('/v1/boards/*', requireUser).route('/v1/boards', boardsRoutes);
 

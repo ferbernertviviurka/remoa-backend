@@ -1,0 +1,285 @@
+{
+  "scope": "Agent visual structural gold for25text-onlymedicine2023items; not clinical review",
+  "sourceExamSha": "3fbe4a6151698669b667f830ddefcb80b28800b05f0de85c4c46c5f899dd2641",
+  "sourceKeySha": "b75fefac9643c2622f28785b1849b1aaad1077724123f084a4d74d7a9cf31d6d",
+  "basis": "OriginalPDFpages14–27 and definitive keypage1 visually inspected. Labels/keys transcribed independently of research output. No visible dependent figure/table in selected regions.",
+  "questions": [
+    {
+      "number": 11,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 14
+    },
+    {
+      "number": 12,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "D",
+      "page": 14
+    },
+    {
+      "number": 13,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "D",
+      "page": 15
+    },
+    {
+      "number": 14,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "D",
+      "page": 16
+    },
+    {
+      "number": 15,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 16
+    },
+    {
+      "number": 16,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "A",
+      "page": 17
+    },
+    {
+      "number": 17,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 17
+    },
+    {
+      "number": 18,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 18
+    },
+    {
+      "number": 19,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "A",
+      "page": 18
+    },
+    {
+      "number": 20,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 19
+    },
+    {
+      "number": 21,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "B",
+      "page": 19
+    },
+    {
+      "number": 22,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 20
+    },
+    {
+      "number": 23,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "B",
+      "page": 20
+    },
+    {
+      "number": 24,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "B",
+      "page": 21
+    },
+    {
+      "number": 25,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "D",
+      "page": 21
+    },
+    {
+      "number": 26,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 22
+    },
+    {
+      "number": 27,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 22
+    },
+    {
+      "number": 28,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 23
+    },
+    {
+      "number": 29,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "A",
+      "page": 24
+    },
+    {
+      "number": 30,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "B",
+      "page": 24
+    },
+    {
+      "number": 31,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "D",
+      "page": 25
+    },
+    {
+      "number": 32,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "A",
+      "page": 25
+    },
+    {
+      "number": 33,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "D",
+      "page": 26
+    },
+    {
+      "number": 34,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "C",
+      "page": 27
+    },
+    {
+      "number": 35,
+      "keys": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "answer": "B",
+      "page": 27
+    }
+  ],
+  "correction_note": "Gold v2 manualtranscriptioncorrectedagainstoriginalMEDICINAcode18keyPNG, after12mismatchesexposedwrongveterinarytablecontamination. Rejected v1 retained in sample-gold-rejected.json; no question text or parser adapted to gold.",
+  "visual_key_evidence": "/private/tmp/remoa-g28-official-visual/enade_2023_medicina_answer_key.png"
+}

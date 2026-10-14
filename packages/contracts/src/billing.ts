@@ -89,6 +89,8 @@ export const accountExportSchema = z.object({
   exportedAt: timestampSchema,
   userId: idSchema,
   profile: z.record(z.string(), z.unknown()).nullable(),
+  /** CCR-160b (F35, LGPD): study_profiles row incl. council_number; null = none. */
+  studyProfile: z.record(z.string(), z.unknown()).nullable().default(null),
   /** Missing in historical v1 exports; current server populates all F33 personal sections. */
   questions: accountQuestionsExportSchema.default({ownedQuestions:[],generationReceipts:[],sessions:[],answers:[],userStates:[],reports:[]}),
   boards: rows,
