@@ -1,21 +1,30 @@
 /** CCR150 proposal tests: Drizzle metadata and SQL source invariants only. NOT SQL execution/RLS/transaction proof. */
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { getTableConfig, pgTable } from 'drizzle-orm/pg-core';
 import { healthProfessionCodes } from '@remoa/contracts';
 import { healthCurationQuestionColumns, healthCurationReviewColumns, healthTaxonomy, questionSourceRevisions } from './schema/health-curation';
 
-const proposal = readFileSync(new URL('../../../../docs/content/questions/acquisition-20261013/schema-proposal.sql', import.meta.url), 'utf8');
+// Package-local frozen proposal: CI has this backend checkout, not the parent docs repository.
+const proposal = readFileSync(new URL('./fixtures/health-curation-proposal.sql', import.meta.url), 'utf8');
 const legacy = readFileSync(new URL('../migrations/0053_f33_institutional_validation.sql', import.meta.url), 'utf8');
-const journal = readFileSync(new URL('../migrations/meta/_journal.json', import.meta.url), 'utf8');
+const journal = JSON.parse(readFileSync(new URL('../migrations/meta/_journal.json', import.meta.url), 'utf8')) as { entries: { tag: string }[] };
+const curationDDL = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|FUNCTION)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"?public"?\.)?"?(?:health_taxonomy|question_source_revisions|f33_curation_\w+|f33_health_metadata_guard)\b/i;
 const body = (name: string) => proposal.slice(proposal.indexOf(`FUNCTION public.${name}(`), proposal.indexOf('END $$;', proposal.indexOf(`FUNCTION public.${name}(`)));
 
-describe('G28 external-curation proposal, before0057 integration', () => {
+describe('G28 external-curation proposal, before curatorial migration integration', () => {
   it('only models new tables; a single existing question chain is retained', () => {
     const names = [...proposal.matchAll(/CREATE TABLE public\.(\w+)/g)].map(m => m[1]);
     expect(names).toEqual(['health_taxonomy', 'question_source_revisions']);
     expect(proposal).not.toMatch(/CREATE TABLE.*(?:question_bank|question_versions)/);
-    expect(journal).not.toContain('0057');
+    expect(createHash('sha256').update(proposal).digest('hex')).toBe('589ef058532f5ad2395dd020b864b1836cdc0761310de2a079a71a014b583cb0');
+    // F35 and future unrelated migration numbers are valid. Reject actual journaled CCR150 DDL.
+    for (const entry of journal.entries) {
+      const migration = readFileSync(new URL(`../migrations/${entry.tag}.sql`, import.meta.url), 'utf8');
+      expect(migration, entry.tag).not.toMatch(curationDDL);
+    }
+    expect(proposal).toMatch(curationDDL);
   });
   it('uses the same12 approved professions without replacing ENAMED enums', () => {
     const cfg = getTableConfig(healthTaxonomy);
