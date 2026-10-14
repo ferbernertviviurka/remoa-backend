@@ -166,7 +166,7 @@ export const emails = {
     title: 'Você está na lista.',
     body: 'Olá, {name}. Registramos o seu interesse na Loja de mapas.',
     bodyNoName: 'Olá. Registramos o seu interesse na Loja de mapas.',
-    roles: { teacher: 'Professor', student_resident: 'Aluno ou residente', physician: 'Médico formado' },
+    roles: { teacher: 'Professor', student_resident: 'Aluno ou residente', physician: 'Profissional formado(a)' },
     chipBuy: 'Quero comprar',
     chipSell: 'Quero vender · {profile}',
     chipSellNoProfile: 'Quero vender',
