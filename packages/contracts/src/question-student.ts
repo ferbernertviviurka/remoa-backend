@@ -56,7 +56,7 @@ export type ExamPreviewInput = z.input<typeof examPreviewInputSchema>;
 /** Safe projection only (no alternatives, key, explanation or verdict). stemPreview ≤ 280 chars. */
 export const examPreviewItemSchema = z.object({
   questionId: idSchema, canonicalId: idSchema, version: z.number().int().positive(), areaId: idSchema.nullable(), topicId: idSchema.nullable(),
-  origin: z.enum(questionOrigins), difficulty: z.enum(difficulties), stemPreview: z.string().min(1).max(280), sourceLabel: z.string().max(300).nullable(),
+  origin: z.enum(questionOrigins), difficulty: z.enum(difficulties), difficultyAssessment: z.literal('unassessed').optional(), stemPreview: z.string().min(1).max(280), sourceLabel: z.string().max(300).nullable(),
   validation: questionValidationSchema.nullable(), pinned: z.boolean(),
 }).strict();
 export type ExamPreviewItem = z.infer<typeof examPreviewItemSchema>;

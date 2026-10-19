@@ -13,7 +13,7 @@ const withoutGroups = (q: QuestionListQuery): QuestionListQuery => ({ ...q, area
  * difficulty) with its published paper rows (institution, year; examId already applied); each group then filters the other four groups
  * over that base. Same semantics as one catalogWhere(omit) per group: institution and year must hold on the same paper row.
  */
-export async function questionFacets(userId: string, query: QuestionFacetQuery) {
+export function questionFacetSQL(userId: string, query: QuestionFacetQuery): SQL {
   const list = toListQuery(query), groups = new Set(query.groups ?? questionFacetGroups);
   const areas = many(list.areaIds, list.areaId), topics = many(list.topicIds, list.topicId), diffs = many(list.difficulties, list.difficulty);
   const years = many(list.years, list.year).map(String), insts = many(list.institutions, list.institution);
@@ -48,8 +48,11 @@ export async function questionFacets(userId: string, query: QuestionFacetQuery) 
     papers AS MATERIALIZED (SELECT o.question_id id,btrim(p.institution) inst,lower(btrim(p.institution)) inst_key,p.year FROM base JOIN exam_question_occurrences o ON o.question_id=base.id
       JOIN exam_papers p ON p.id=o.paper_id JOIN question_sources ps ON ps.id=p.source_id WHERE ${sql.join([paperBase, ...paperFilters(base)], sql` AND `)})
     SELECT jsonb_build_object(${sql.join(parts, sql`,`)}) facets`;
+  return statement;
+}
+export async function questionFacets(userId: string, query: QuestionFacetQuery) {
   return run(userId, async (tx) => {
-    const [row] = await asServer<{ facets: unknown }>(tx, statement);
+    const [row] = await asServer<{ facets: unknown }>(tx, questionFacetSQL(userId,query));
     return questionFacetsSchema.parse(row!.facets);
   });
 }

@@ -11,7 +11,7 @@ import { recheck } from '../builder/service';
 import { questionFeatures } from '../runtime/config';
 import { invalidate } from '../../cache';
 import { budgetAs, withTiming } from '../../perf';
-import { applyOccurrence, catalogJoins, catalogWhere, conflict, latest, missing, obsoleteSuccessor, paperAccess, publicAssets, publicColumns, readable, signature, toQuestion, validation, type Row } from '../catalog/service';
+import { applyOccurrence, catalogJoins, catalogWhere, conflict, latest, missing, obsoleteSuccessor, paperAccess, paperScorable, publicAssets, publicColumns, readable, signature, toQuestion, validation, type Row } from '../catalog/service';
 
 import { answerOutcome } from './recalculation';
 const object = (value: unknown): Row => typeof value === 'object' && value !== null ? value as Row : {};
@@ -128,10 +128,10 @@ async function createRow(tx:Tx,userId:string,config:QuestionSessionConfig,key:st
   if(config.builder)await startBuilder(tx,userId,config);
   let rows:Row[];const timer=config.timerSec;
   if(config.examId){
-    const [paper]=await asServer<Row>(tx,sql`SELECT p.duration_sec FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE p.id=${config.examId} AND ${paperAccess}`);if(!paper)throw missing();
-    rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns},o.original_keys,o.original_number,o.annulled occurrence_annulled FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${config.examId} AND ${readable(userId)} AND q.type='objective' AND (q.validation_kind<>'remoa_team_attested' OR q.availability='active') ORDER BY o.ordinal LIMIT ${config.count}`);
+    const [paper]=await asServer<Row>(tx,sql`SELECT p.duration_sec,p.coverage_kind FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE p.id=${config.examId} AND ${paperAccess}`);if(!paper)throw missing();
+    rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns},o.original_keys,o.original_number,o.annulled occurrence_annulled FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${config.examId} AND ${readable(userId)} AND ${paper.coverage_kind==='source_excerpt'?sql`${latest} AND ${paperScorable}`:sql`q.type='objective' AND (q.validation_kind<>'remoa_team_attested' OR q.availability='active')`} ORDER BY o.ordinal LIMIT ${config.count}`);
     const [count]=await asServer<Row>(tx,sql`SELECT count(*)::int n FROM exam_question_occurrences WHERE paper_id=${config.examId}`);
-    if(Number(count?.n??0)!==config.count || rows.length!==config.count)throw conflict('exam_count_must_match_full_paper');
+    if(paper.coverage_kind==='source_excerpt'){if(rows.length!==config.count)throw conflict('exam_scorable_selection_changed');}else if(Number(count?.n??0)!==config.count || rows.length!==config.count)throw conflict('exam_count_must_match_full_paper');
   }else if(config.questionIds){
     if(new Set(config.questionIds).size!==config.questionIds.length || config.questionIds.length!==config.count)throw validation('selection_count_mismatch');
     rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns} FROM question_bank q ${catalogJoins(userId)} WHERE q.id=ANY(${pgArray(config.questionIds,'uuid')}) AND ${catalogWhere(userId,questionListQuerySchema.parse({}),true)} ORDER BY array_position(${pgArray(config.questionIds,'uuid')},q.id)`);

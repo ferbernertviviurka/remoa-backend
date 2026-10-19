@@ -82,5 +82,8 @@
   },
   "admin/questions/team-publication/service.ts": {
     "reason": "Functions use caller withAdmin transaction; team-publication/routes.ts invalidates question.changed after successful COMMIT for item import and batch activation. Asset upload and private batch creation alone expose no catalog items."
+  },
+  "admin/questions/team-publication/papers.ts": {
+    "reason": "Uses the caller withAdmin transaction; team-publication/routes.ts invalidates question.changed after successful COMMIT. Paper and occurrence catalog reads query the database directly; no invalidation is emitted before commit."
   }
 }

@@ -428,6 +428,13 @@
       "when": 1792420837165,
       "tag": "0060_g29_team_source_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792429062000,
+      "tag": "0061_g29_paper_excerpts",
+      "breakpoints": true
     }
   ]
 }

@@ -24,6 +24,8 @@ export const questionTeamDisclosureSchema = z.object({
   kind: z.literal('remoa_team_attested'), rightsStatus: z.literal('pending'),
   medicalReview: z.literal(false), explanationStatus: z.enum(['absent', 'source_provided']),
   professionCode: healthProfessionCodeSchema,
+  /** Stored acquisition level is not a reviewed difficulty assessment. No signed question data is rewritten. */
+  difficultyAssessment: z.literal('unassessed').optional(),
   /** D-1885 / CCR-172: the source's current administrative approval is distinct from immutable question rights.
    * Remoa's own attestation never asserts that a third-party licensing document was verified. */
   sourceRightsStatus: z.enum(['pending', 'authorized', 'restricted', 'revoked']).optional(),

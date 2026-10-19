@@ -5,6 +5,7 @@ import { auditEntrySchema, reasonSchema } from './admin';
 import { catalogAlternativeKeys } from './constants';
 import { questionSessionBuilderSchema } from './exam-builder';
 import { healthCourseCodeSchema } from './health-course-codes';
+import { healthProfessionCodeSchema } from './health-taxonomy';
 import { questionTeamDisclosureSchema } from './question-team-publication';
 export {
   QUESTION_PDF_PARSER_VERSION, QUESTION_PDF_OCR_MODEL_ID, QUESTION_PDF_OCR_MODEL_COMMIT,
@@ -58,8 +59,30 @@ export const questionListResultSchema = z.object({ items: z.array(questionPublic
 export const questionReferenceAfterAnswerSchema = z.object({ questionId: idSchema, version: z.number().int().positive(), correctKey: z.enum(catalogAlternativeKeys).nullable(), explanation: z.string().max(20000).nullable(), distractorNotes: z.record(z.enum(catalogAlternativeKeys), z.string().max(6000)).nullable(), annulled: z.boolean(), reviewed: z.boolean(), reviewerName: z.string().nullable(), reviewerCrm: z.string().nullable(), referenceDate: z.string().nullable(), sourceUrl: httpUrl.nullable(), obsolete: z.boolean(), validation: questionValidationSchema.nullable().optional(), teamDisclosure: questionTeamDisclosureSchema.optional() }).strict()
   .refine((r) => !['remoa_institutional', 'remoa_team_attested'].includes(r.validation?.kind ?? '') || r.reviewerCrm === null, 'institutional_validation_has_no_crm');
 export type QuestionReferenceAfterAnswer = z.infer<typeof questionReferenceAfterAnswerSchema>;
-export const examPaperPublicSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), institution: z.string().min(1).max(300), year: z.number().int(), edition: z.string().max(200), booklet: z.string().max(100), sourceId: idSchema, version: z.number().int().positive(), durationSec: z.number().int().positive().nullable(), questionCount: z.number().int().nonnegative(), status: z.enum(['draft', 'published', 'withdrawn']) }).strict();
+/** Paper completeness is independent from the number of currently readable/scorable questions.
+ * A globally deduplicated acquisition is a source excerpt until completeness is proved from its native document. */
+export const examPaperCoverageKinds = ['unknown', 'source_excerpt', 'complete'] as const;
+export const examPaperCoverageSchema = z.object({
+  kind: z.enum(examPaperCoverageKinds), expectedQuestionCount: z.number().int().positive().nullable(),
+  availableQuestionCount: z.number().int().nonnegative(), scorableQuestionCount: z.number().int().nonnegative(),
+}).strict().refine(v => v.scorableQuestionCount <= v.availableQuestionCount, 'scorable_exceeds_available')
+  .refine(v => v.kind !== 'complete' || v.expectedQuestionCount === v.availableQuestionCount, 'complete_paper_count_mismatch');
+export type ExamPaperCoverage = z.infer<typeof examPaperCoverageSchema>;
+export const examPaperPublicSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), institution: z.string().min(1).max(300), year: z.number().int(), edition: z.string().max(200), booklet: z.string().max(100), sourceId: idSchema, professionCode: healthProfessionCodeSchema.nullable().optional(), version: z.number().int().positive(), durationSec: z.number().int().positive().nullable(), questionCount: z.number().int().nonnegative(), coverage: examPaperCoverageSchema.optional(), status: z.enum(['draft', 'published', 'withdrawn']) }).strict();
 export type ExamPaperPublic = z.infer<typeof examPaperPublicSchema>;
+/** New paginated paper catalog; the legacy /exams array remains compatible. */
+export const examPaperListQuerySchema = z.object({
+  search: z.string().trim().min(1).max(200).optional(),
+  course: healthCourseCodeSchema.optional(), year: z.coerce.number().int().min(1900).max(2200).optional(),
+  institution: z.string().trim().min(1).max(300).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25), cursor: z.string().max(2000).optional(),
+}).strict();
+export type ExamPaperListQuery = z.infer<typeof examPaperListQuerySchema>;
+export const examPaperListResultSchema = z.object({
+  items: z.array(examPaperPublicSchema).max(100), total: z.number().int().nonnegative(), nextCursor: z.string().max(2000).nullable(),
+}).strict();
+export type ExamPaperListResult = z.infer<typeof examPaperListResultSchema>;
+
 export const questionSessionConfigSchema = z.object({ mode: z.enum(['study', 'simulation']), examId: idSchema.optional(), questionIds: z.array(idSchema).min(1).max(200).optional(), filters: questionListQuerySchema.optional(), count: z.number().int().min(1).max(200), timerSec: z.number().int().min(60).max(86400).nullable().default(null), shuffle: z.boolean().default(false), /* F34 (CCR-147): exam-builder snapshot (requires questionIds); drawer = server-internal single answer, rejected on the public route. */ builder: questionSessionBuilderSchema.optional(), drawer: z.literal(true).optional() }).strict().refine((x) => x.builder === undefined || x.questionIds !== undefined, 'builder_requires_question_ids').refine((x) => Number(x.examId !== undefined) + Number(x.questionIds !== undefined) + Number(x.filters !== undefined) === 1, 'one_selection_required');
 export type QuestionSessionConfig = z.infer<typeof questionSessionConfigSchema>;
 export const questionSessionItemPublicSchema = z.object({ id: idSchema, position: z.number().int().nonnegative(), question: questionPublicSchema, originalNumber: z.string().nullable(), selectedKey: z.enum(catalogAlternativeKeys).nullable(), answered: z.boolean(), doubtful: z.boolean(), revision: z.number().int().nonnegative() }).strict();
@@ -83,7 +106,7 @@ export const questionSourceInputSchema = z.object({ name: z.string().min(1).max(
 export const questionAnswerKeyPagesSchema = z.array(z.number().int().min(1).max(500)).min(1).max(500)
   .refine(pages => new Set(pages).size === pages.length, 'duplicate_answer_key_pages')
   .transform(pages => [...pages].sort((a,b) => a-b)).nullable().default(null);
-export const questionImportInputSchema = z.object({ sourceId: idSchema, exam: examPaperPublicSchema.omit({ id: true, sourceId: true, version: true, questionCount: true, status: true }), documentId: idSchema, answerKeyDocumentId: idSchema.nullable(), answerKeyPages: questionAnswerKeyPagesSchema, parserVersion: z.string().min(1).max(100), ocr: z.boolean().default(true), excludedPages: z.array(z.number().int().min(1).max(500)).max(500).refine((pages) => new Set(pages).size === pages.length, 'duplicate_pages').default([]), budgetCents: z.number().int().nonnegative().max(100000), reason: adminReason }).strict().refine(input => input.answerKeyPages === null || input.answerKeyDocumentId !== null, { message:'answer_key_document_required',path:['answerKeyPages'] });
+export const questionImportInputSchema = z.object({ sourceId: idSchema, exam: examPaperPublicSchema.omit({ id: true, sourceId: true, version: true, questionCount: true, status: true, coverage: true, professionCode: true }), documentId: idSchema, answerKeyDocumentId: idSchema.nullable(), answerKeyPages: questionAnswerKeyPagesSchema, parserVersion: z.string().min(1).max(100), ocr: z.boolean().default(true), excludedPages: z.array(z.number().int().min(1).max(500)).max(500).refine((pages) => new Set(pages).size === pages.length, 'duplicate_pages').default([]), budgetCents: z.number().int().nonnegative().max(100000), reason: adminReason }).strict().refine(input => input.answerKeyPages === null || input.answerKeyDocumentId !== null, { message:'answer_key_document_required',path:['answerKeyPages'] });
 export type QuestionImportInput = z.infer<typeof questionImportInputSchema>;
 export const questionImportProgressSchema = z.object({ id: idSchema, answerKeyPages: questionAnswerKeyPagesSchema, revision:z.number().int().nonnegative().default(0), status: z.enum(questionImportStatuses), totalPages: z.number().int().nonnegative(), completedPages: z.number().int().nonnegative(), candidates: z.number().int().nonnegative(), accepted: z.number().int().nonnegative(), rejected: z.number().int().nonnegative(), duplicate: z.number().int().nonnegative(), costCents: z.number().int().nonnegative(), errorCode: z.string().nullable(), updatedAt: timestampSchema }).strict();
 export type QuestionImportProgress = z.infer<typeof questionImportProgressSchema>;
