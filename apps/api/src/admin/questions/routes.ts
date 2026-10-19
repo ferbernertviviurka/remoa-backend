@@ -132,6 +132,9 @@ export const questionAdminRoutes = new Hono<AdminEnv>()
             .where(eq(s.id, id))
             .for("no key update");
           if (!old) return err("not_found", "source not found");
+          // Team approvals use the fixed batch operation; revocation remains available without rewriting signed questions.
+          const [signedTeamSource] = await tx.execute(sql`SELECT 1 FROM question_team_items WHERE source_id=${id}::uuid LIMIT 1`);
+          if(signedTeamSource&&!['revoked','restricted'].includes(input.data.rightsStatus))return err("conflict","team_source_requires_batch_approval");
           const fields = { ...input.data };
           delete (fields as Partial<typeof fields>).reason;
           const [source] = await tx
@@ -139,6 +142,10 @@ export const questionAdminRoutes = new Hono<AdminEnv>()
             .set(fields)
             .where(eq(s.id, id))
             .returning();
+          if(signedTeamSource){
+            audit.before({source:old});audit.after({source:source!,teamSource:true,questionSignaturesPreserved:true});
+            return ok({source:source!});
+          }
           await tx
             .update(q)
             .set(

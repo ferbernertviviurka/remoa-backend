@@ -12,6 +12,7 @@ describe.skipIf(!enabled)('G29 team publication SQL security',()=>{
  const db=postgres(target!,{max:1,onnotice:()=>{}});
  try{await db.begin(async tx=>{
   const admin=randomUUID(),source=randomUUID(),question=randomUUID(),batch=randomUUID(),item=randomUUID();
+  expect(await tx`select kind,kind IS DISTINCT FROM 'remoa_team_attested' as revoked_by_legacy_trigger from (values(NULL::text),('medical_review'),('remoa_institutional'),('remoa_team_attested'))v(kind)`).toEqual([{kind:null,revoked_by_legacy_trigger:true},{kind:'medical_review',revoked_by_legacy_trigger:true},{kind:'remoa_institutional',revoked_by_legacy_trigger:true},{kind:'remoa_team_attested',revoked_by_legacy_trigger:false}]);
   await tx`insert into auth.users(id,email)values(${admin},${admin+'@example.test'})`;
   await tx`update public.profiles set role='admin',name='Synthetic admin' where user_id=${admin}`;
   const denied=(fn:(q:postgres.TransactionSql)=>Promise<unknown>)=>tx.savepoint(fn).then(()=>false,()=>true);
@@ -58,9 +59,29 @@ describe.skipIf(!enabled)('G29 team publication SQL security',()=>{
   expect(await denied(async sp=>{await sp`set local role authenticated`;await sp`update public.question_team_batches set revoked_at=now() where id=${batch}`;})).toBe(true);
   expect(await denied(async sp=>{await sp`set local role authenticated`;await sp`select original_payload from public.question_team_items`;})).toBe(true);
   expect(await denied(async sp=>{await sp`set local role authenticated`;await sp`select correct_key from public.question_bank`;})).toBe(true);
+  const signedBefore=JSON.stringify((await tx`select * from public.question_bank where id=${question}`)[0]);
+  // Source approval is a separate human declaration. It does not rewrite signed question rights/hash.
+  expect(await denied(sp=>sp`update public.question_sources set rights_status='authorized' where id=${source}`)).toBe(true);
+  await tx`update public.question_sources set rights_status='authorized',rights_evidence='Unrelated approval' where id=${source}`;
+  expect(await visible()).toBe(0);
+  await tx`update public.question_sources set rights_scope=${QUESTION_TEAM_NAMESPACE},rights_evidence='Aprovado por Remoa' where id=${source}`;
+  expect(await visible()).toBe(0); // an explicit expiration is mandatory for this administrative approval
+  await tx`update public.question_sources set rights_expires_at='2030-11-19T23:59:59.000Z' where id=${source}`;
+  expect(await visible()).toBe(1);
+  await tx`update public.question_bank set updated_at=updated_at where id=${question}`; // publication trigger accepts the same narrowly approved source
+  expect((await tx`select rights_status,content_hash,reviewed_hash from public.question_bank where id=${question}`)[0]).toEqual({rights_status:'pending',content_hash:contentHash,reviewed_hash:contentHash});
+  await tx`update public.question_sources set rights_evidence='Unrelated approval' where id=${source}`;
+  expect(await visible()).toBe(0);
+  await tx`update public.question_sources set rights_evidence='Aprovado por Remoa',rights_expires_at='2000-01-01T00:00:00Z' where id=${source}`;
+  expect(await visible()).toBe(0);
+  await tx`update public.question_sources set rights_status='restricted',rights_expires_at='2030-11-19T23:59:59.000Z' where id=${source}`;
+  expect(await visible()).toBe(0);
   await tx`update public.question_sources set rights_status='revoked' where id=${source}`;
   expect(await visible()).toBe(0);
-  await tx`update public.question_sources set rights_status='pending' where id=${source}`;
+  expect(JSON.stringify((await tx`select * from public.question_bank where id=${question}`)[0])).toBe(signedBefore);
+  await tx`update public.question_sources set rights_status='pending',rights_expires_at=NULL where id=${source}`;
+  expect(await visible()).toBe(1);
+  expect(JSON.stringify((await tx`select * from public.question_bank where id=${question}`)[0])).toBe(signedBefore);
   await tx`update public.question_team_batches set revoked_at=now() where id=${batch}`;
   expect(await visible()).toBe(0);
   expect(await denied(sp=>sp`update public.question_team_batches set revoked_at=NULL where id=${batch}`)).toBe(true);

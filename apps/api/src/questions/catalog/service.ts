@@ -28,12 +28,22 @@ export function decodeQuestionCursor(value: string, userId: string, query: Quest
     return { at: row.at, id: row.id, ...(sorted ? { s: row.s as string | number } : {}) };
   } catch { throw validation('invalid_cursor'); }
 }
+/** Server-only equivalent of 0059's signed-team visibility guard. Keep every signature/source/batch check.
+ * Expose the membership join to the planner: a non-inlined SQL function per candidate rescans the same graph for the full count.
+ * This predicate is only executed by asServer; authenticated RLS keeps its private UUID-only boolean helper unchanged.
+ */
+export const teamReadable=sql`q.visibility='public' AND q.catalog_status='published' AND q.status='approved'
+ AND q.origin='official_exam' AND q.user_id IS NULL AND q.validation_kind='remoa_team_attested' AND q.rights_status='pending'
+ AND EXISTS(SELECT 1 FROM question_team_items ti JOIN question_team_batches tb ON tb.id=ti.batch_id JOIN question_sources ts ON ts.id=ti.source_id
+ WHERE ti.question_id=q.id AND ti.content_hash=q.content_hash AND ti.content_hash=q.reviewed_hash AND ti.source_id=q.source_id AND ti.profession_code=q.profession_code
+ AND (ts.rights_status='pending' OR (ts.rights_status='authorized' AND ts.rights_scope='g29-cp21-20261019' AND ts.rights_evidence='Aprovado por Remoa' AND ts.rights_expires_at IS NOT NULL)) AND (ts.rights_expires_at IS NULL OR ts.rights_expires_at>now())
+ AND tb.sealed_at IS NOT NULL AND tb.activated_at IS NOT NULL AND tb.revoked_at IS NULL)`;
 /** Every server read carries this access predicate, even when using a server connection. */
 export const readable = (userId: string, historical = false): SQL => sql`(
  (q.visibility = 'private' AND q.user_id = ${userId} AND q.status <> 'archived' AND q.catalog_status NOT IN ('rejected','withdrawn') AND q.availability IN (${historical ? sql`'active','annulled','superseded'` : sql`'active','annulled'`})) OR
  (q.visibility = 'public' AND q.catalog_status = 'published' AND q.status = 'approved' AND q.rights_status = 'authorized' AND (q.reviewed_hash = q.content_hash) IS TRUE AND q.availability IN (${historical ? sql`'active','annulled','superseded'` : sql`'active','annulled'`}) AND EXISTS (
    SELECT 1 FROM question_sources src WHERE src.id = q.source_id AND src.rights_status = 'authorized' AND (src.rights_expires_at IS NULL OR src.rights_expires_at > now()))) OR
- (q.visibility='public' AND q.catalog_status='published' AND q.status='approved' AND public.f33_team_question_visible(q.id,q.content_hash))
+ (${teamReadable})
 )`;
 /** A published replacement permanently supersedes selection, even if later withdrawn. Drafts never hide the published version. */
 /** CCR-149 (0056): `question_superseded` holds every row a newer version supersedes (server-maintained by statement triggers). */
@@ -47,7 +57,7 @@ export const occurrenceProjection=sql`(SELECT jsonb_build_object('items',coalesc
  (SELECT jsonb_build_object('examId',p.id,'name',p.name,'institution',p.institution,'year',p.year,'edition',p.edition,'booklet',p.booklet,'ordinal',o.ordinal,'originalNumber',o.original_number,'sourceId',p.source_id,'sourceLabel',os.name) payload,count(*) OVER() total
  FROM exam_question_occurrences o JOIN exam_papers p ON p.id=o.paper_id JOIN question_sources os ON os.id=p.source_id
  WHERE o.question_id=q.id AND q.visibility='public' AND p.status='published' AND os.rights_status='authorized' AND (os.rights_expires_at IS NULL OR os.rights_expires_at>now()) ORDER BY p.year DESC,p.id,o.ordinal LIMIT 10) e)`;
-export const teamDisclosureProjection=sql`(SELECT jsonb_build_object('kind','remoa_team_attested','rightsStatus','pending','medicalReview',false,'explanationStatus',CASE WHEN q.explanation IS NULL THEN 'absent' ELSE 'source_provided' END,'professionCode',i.profession_code,'flags',i.flags,'resolutionEligible',q.availability='active','declarationDate','2026-10-19') FROM question_team_items i WHERE i.question_id=q.id AND q.validation_kind='remoa_team_attested')`;
+export const teamDisclosureProjection=sql`(SELECT jsonb_build_object('kind','remoa_team_attested','rightsStatus','pending','medicalReview',false,'sourceRightsStatus',tis.rights_status,'sourceApprovalBasis',CASE WHEN tis.rights_status='authorized' AND tis.rights_scope='g29-cp21-20261019' AND tis.rights_evidence='Aprovado por Remoa' AND tis.rights_expires_at IS NOT NULL THEN 'remoa_admin_attestation' ELSE 'unverified' END,'sourceRightsExpiresAt',tis.rights_expires_at,'explanationStatus',CASE WHEN q.explanation IS NULL THEN 'absent' ELSE 'source_provided' END,'professionCode',i.profession_code,'sourceAreaCodes',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' THEN i.original_payload->'areas' ELSE '[]'::jsonb END,'classificationStatus',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' AND jsonb_array_length(i.original_payload->'areas')>0 THEN 'source_tags_unreviewed' ELSE 'unclassified' END,'flags',i.flags,'resolutionEligible',q.availability='active','declarationDate','2026-10-19') FROM question_team_items i JOIN question_sources tis ON tis.id=i.source_id WHERE i.question_id=q.id AND q.validation_kind='remoa_team_attested')`;
 export const publicColumns = sql`q.id, coalesce(q.canonical_id,q.id) canonical_id, q.version, q.type, q.stem, q.alternatives,
  q.origin, q.visibility, q.availability, q.difficulty, q.enamed_topic_id, q.enamed_area_id, q.source_id, q.assets, ARRAY(SELECT c.id FROM cards c WHERE c.board_id=b.id AND c.deleted_at IS NULL AND c.id=ANY(q.card_ids)) card_ids, b.id board_id,
  q.profession_code,${teamDisclosureProjection} team_disclosure,
