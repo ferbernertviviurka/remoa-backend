@@ -49,7 +49,7 @@ export function stemPreview(stem: unknown): string {
 }
 const toItem = (r: Row, pinned: boolean) => ({
   questionId: r.id, canonicalId: r.canonical_id, version: r.version, areaId: r.enamed_area_id ?? null, topicId: r.enamed_topic_id ?? null, origin: r.origin,
-  difficulty: r.difficulty, stemPreview: stemPreview(r.stem), sourceLabel: r.source_label ?? null, validation: validationOf(r), pinned,
+  difficulty: r.difficulty, ...(r.validation_kind==='remoa_team_attested'?{difficultyAssessment:'unassessed' as const}:{}), stemPreview: stemPreview(r.stem), sourceLabel: r.source_label ?? null, validation: validationOf(r), pinned,
 });
 /** Distinct canonical per area = number of (area, canonical) groups: hash aggregates, no sort of every eligible row. */
 const areaCountsSQL = (rows: SQL) => sql`SELECT area area_id,count(*)::int available,count(*) FILTER (WHERE p)::int pinned

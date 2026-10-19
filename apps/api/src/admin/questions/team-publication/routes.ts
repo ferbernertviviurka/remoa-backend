@@ -4,6 +4,7 @@ import { err,parseWith,questionTeamCreateInputSchema,questionTeamItemsInputSchem
 import { withAdmin,reasonOf,send,type AdminEnv } from '../../core';
 import { invalidate } from '../../../cache';
 import { approveBatchSources,activateBatch,batchStatus,createBatch,importItems,uploadAssets,verifyActivationAssets,type AssetProof } from './service';
+import { indexTeamPapers } from './papers';
 const read=(c:{req:{json():Promise<unknown>}})=>c.req.json().catch(()=>null);
 async function guarded<T>(fn:()=>Promise<Result<T>>):Promise<Result<T>>{try{return await fn();}catch(e){if(e instanceof Error&&/^team_/.test(e.message))return err('conflict',e.message);throw e;}}
 /** Mounted inside requireAdmin/adminRateLimit, before legacy import admissions. One withAdmin audit per operation. */
@@ -17,6 +18,7 @@ export const questionTeamPublicationRoutes=new Hono<AdminEnv>()
   const input=parseWith(questionTeamCreateInputSchema,json);return input.ok?guarded(()=>approveBatchSources(tx,c.get('admin').id,input.data,audit)):Promise.resolve(input);
  });if(result.ok)await invalidate('question.changed',{userId:c.get('admin').id});return send(result);
 })
+.post('/papers/index',async c=>{const json=await read(c);const result=await withAdmin(c,'question.import',{reason:reasonOf(json),target:{type:'route',id:c.req.path}},(tx,audit)=>{const input=parseWith(questionTeamCreateInputSchema,json);return input.ok?guarded(()=>indexTeamPapers(tx,c.get('admin').id,input.data,audit)):Promise.resolve(input);});if(result.ok)await invalidate('question.changed',{userId:c.get('admin').id});return send(result);})
 .post('/assets',async c=>{const json=await read(c);return send(await withAdmin(c,'question.team_assets_upload',{reason:reasonOf(json),target:{type:'route',id:c.req.path}},(tx,audit)=>{const input=parseWith(questionTeamAssetsInputSchema,json);return input.ok?guarded(()=>uploadAssets(tx,c.get('admin').id,input.data,audit)):Promise.resolve(input);}));})
 .post('/items',async c=>{const json=await read(c);const result=await withAdmin(c,'question.team_items_import',{reason:reasonOf(json),target:{type:'route',id:c.req.path}},(tx,audit)=>{const input=parseWith(questionTeamItemsInputSchema,json);return input.ok?guarded(()=>importItems(tx,c.get('admin').id,input.data,audit)):Promise.resolve(input);});if(result.ok)await invalidate('question.changed',{userId:c.get('admin').id});return send(result);})
 // requireAdmin has authenticated the actor before the bounded storage readback starts.

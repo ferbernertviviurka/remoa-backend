@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { idSchema, questionOwnerOutboxQuerySchema, questionListQuerySchema, questionReportInputSchema, questionUserStateInputSchema, questionFacetQuerySchema, questionDrawerAnswerInputSchema } from '@remoa/contracts';
+import { examPaperListQuerySchema, idSchema, questionOwnerOutboxQuerySchema, questionListQuerySchema, questionReportInputSchema, questionUserStateInputSchema, questionFacetQuerySchema, questionDrawerAnswerInputSchema } from '@remoa/contracts';
 import type { Env } from '../app';
 import { fail } from '../app';
 import { asServer, guard, run } from '../db';
@@ -28,6 +28,7 @@ export function questionsRoutes(){return new Hono<Env>()
 }
 export function examsRoutes(){return new Hono<Env>()
   .get('/',c=>questionResponse(()=>questionExams.list(c.get('userId'))))
+  .get('/catalog',c=>questionResponse(()=>questionExams.catalog(c.get('userId'),parseQuestionInput(examPaperListQuerySchema,catalogQueryValues(c.req.url)))))
   .get('/:id',c=>questionResponse(()=>questionExams.get(c.get('userId'),parseQuestionInput(idSchema,c.req.param('id')))));
 }
 

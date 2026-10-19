@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
-import { catalogAlternativesSchema, questionPublicSchema, questionUserStateSchema, examPaperPublicSchema, questionListResultSchema, questionInstitutionListSchema, type QuestionListQuery, type QuestionPublic, type QuestionValidation, type QuestionUserState, type ExamPaperPublic } from '@remoa/contracts';
+import { catalogAlternativesSchema, questionPublicSchema, questionUserStateSchema, examPaperPublicSchema, questionListResultSchema, questionInstitutionListSchema, examPaperListResultSchema, type ExamPaperListQuery, type QuestionListQuery, type QuestionPublic, type QuestionValidation, type QuestionUserState, type ExamPaperPublic } from '@remoa/contracts';
 import { Abort, asServer, pgArray, run } from '../../db';
 import { invalidate } from '../../cache';
 import { presignGet } from '../../storage/storage';
@@ -30,13 +30,16 @@ export function decodeQuestionCursor(value: string, userId: string, query: Quest
 }
 /** Server-only equivalent of 0059's signed-team visibility guard. Keep every signature/source/batch check.
  * Expose the membership join to the planner: a non-inlined SQL function per candidate rescans the same graph for the full count.
+ * OFFSET0 fences the small eligible-source set: authorized-source statistics otherwise choose28k PK probes.
  * This predicate is only executed by asServer; authenticated RLS keeps its private UUID-only boolean helper unchanged.
  */
 export const teamReadable=sql`q.visibility='public' AND q.catalog_status='published' AND q.status='approved'
  AND q.origin='official_exam' AND q.user_id IS NULL AND q.validation_kind='remoa_team_attested' AND q.rights_status='pending'
- AND EXISTS(SELECT 1 FROM question_team_items ti JOIN question_team_batches tb ON tb.id=ti.batch_id JOIN question_sources ts ON ts.id=ti.source_id
+ AND EXISTS(SELECT 1 FROM question_team_items ti JOIN question_team_batches tb ON tb.id=ti.batch_id
+ JOIN(SELECT ts.id FROM question_sources ts WHERE
+ (ts.rights_status='pending' OR (ts.rights_status='authorized' AND ts.rights_scope='g29-cp21-20261019' AND ts.rights_evidence='Aprovado por Remoa' AND ts.rights_expires_at IS NOT NULL))
+ AND (ts.rights_expires_at IS NULL OR ts.rights_expires_at>now()) OFFSET 0) ts ON ts.id=ti.source_id
  WHERE ti.question_id=q.id AND ti.content_hash=q.content_hash AND ti.content_hash=q.reviewed_hash AND ti.source_id=q.source_id AND ti.profession_code=q.profession_code
- AND (ts.rights_status='pending' OR (ts.rights_status='authorized' AND ts.rights_scope='g29-cp21-20261019' AND ts.rights_evidence='Aprovado por Remoa' AND ts.rights_expires_at IS NOT NULL)) AND (ts.rights_expires_at IS NULL OR ts.rights_expires_at>now())
  AND tb.sealed_at IS NOT NULL AND tb.activated_at IS NOT NULL AND tb.revoked_at IS NULL)`;
 /** Every server read carries this access predicate, even when using a server connection. */
 export const readable = (userId: string, historical = false): SQL => sql`(
@@ -57,7 +60,7 @@ export const occurrenceProjection=sql`(SELECT jsonb_build_object('items',coalesc
  (SELECT jsonb_build_object('examId',p.id,'name',p.name,'institution',p.institution,'year',p.year,'edition',p.edition,'booklet',p.booklet,'ordinal',o.ordinal,'originalNumber',o.original_number,'sourceId',p.source_id,'sourceLabel',os.name) payload,count(*) OVER() total
  FROM exam_question_occurrences o JOIN exam_papers p ON p.id=o.paper_id JOIN question_sources os ON os.id=p.source_id
  WHERE o.question_id=q.id AND q.visibility='public' AND p.status='published' AND os.rights_status='authorized' AND (os.rights_expires_at IS NULL OR os.rights_expires_at>now()) ORDER BY p.year DESC,p.id,o.ordinal LIMIT 10) e)`;
-export const teamDisclosureProjection=sql`(SELECT jsonb_build_object('kind','remoa_team_attested','rightsStatus','pending','medicalReview',false,'sourceRightsStatus',tis.rights_status,'sourceApprovalBasis',CASE WHEN tis.rights_status='authorized' AND tis.rights_scope='g29-cp21-20261019' AND tis.rights_evidence='Aprovado por Remoa' AND tis.rights_expires_at IS NOT NULL THEN 'remoa_admin_attestation' ELSE 'unverified' END,'sourceRightsExpiresAt',tis.rights_expires_at,'explanationStatus',CASE WHEN q.explanation IS NULL THEN 'absent' ELSE 'source_provided' END,'professionCode',i.profession_code,'sourceAreaCodes',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' THEN i.original_payload->'areas' ELSE '[]'::jsonb END,'classificationStatus',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' AND jsonb_array_length(i.original_payload->'areas')>0 THEN 'source_tags_unreviewed' ELSE 'unclassified' END,'flags',i.flags,'resolutionEligible',q.availability='active','declarationDate','2026-10-19') FROM question_team_items i JOIN question_sources tis ON tis.id=i.source_id WHERE i.question_id=q.id AND q.validation_kind='remoa_team_attested')`;
+export const teamDisclosureProjection=sql`(SELECT jsonb_build_object('kind','remoa_team_attested','rightsStatus','pending','medicalReview',false,'difficultyAssessment','unassessed','sourceRightsStatus',tis.rights_status,'sourceApprovalBasis',CASE WHEN tis.rights_status='authorized' AND tis.rights_scope='g29-cp21-20261019' AND tis.rights_evidence='Aprovado por Remoa' AND tis.rights_expires_at IS NOT NULL THEN 'remoa_admin_attestation' ELSE 'unverified' END,'sourceRightsExpiresAt',tis.rights_expires_at,'explanationStatus',CASE WHEN q.explanation IS NULL THEN 'absent' ELSE 'source_provided' END,'professionCode',i.profession_code,'sourceAreaCodes',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' THEN i.original_payload->'areas' ELSE '[]'::jsonb END,'classificationStatus',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' AND jsonb_array_length(i.original_payload->'areas')>0 THEN 'source_tags_unreviewed' ELSE 'unclassified' END,'flags',i.flags,'resolutionEligible',q.availability='active','declarationDate','2026-10-19') FROM question_team_items i JOIN question_sources tis ON tis.id=i.source_id WHERE i.question_id=q.id AND q.validation_kind='remoa_team_attested')`;
 export const publicColumns = sql`q.id, coalesce(q.canonical_id,q.id) canonical_id, q.version, q.type, q.stem, q.alternatives,
  q.origin, q.visibility, q.availability, q.difficulty, q.enamed_topic_id, q.enamed_area_id, q.source_id, q.assets, ARRAY(SELECT c.id FROM cards c WHERE c.board_id=b.id AND c.deleted_at IS NULL AND c.id=ANY(q.card_ids)) card_ids, b.id board_id,
  q.profession_code,${teamDisclosureProjection} team_disclosure,
@@ -232,17 +235,29 @@ export const questionCatalog = {
   },
 };
 export const paperAccess = sql`p.status='published' AND src.rights_status='authorized' AND (src.rights_expires_at IS NULL OR src.rights_expires_at>now())`;
-const paperCols=sql`p.id,p.name,p.institution,p.year,p.edition,p.booklet,p.source_id,p.version,p.duration_sec,p.status`;
-export const toPaper=(row:Row):ExamPaperPublic=>examPaperPublicSchema.parse({id:row.id,name:row.name,institution:row.institution,year:row.year,edition:row.edition,booklet:row.booklet,sourceId:row.source_id,version:row.version,durationSec:row.duration_sec,questionCount:row.question_count,status:row.status});
+const paperCols=sql`p.id,p.name,p.institution,p.year,p.edition,p.booklet,p.source_id,p.version,p.duration_sec,p.status,p.coverage_kind,p.expected_question_count`;
+export const paperScorable=sql`q.type='objective' AND q.availability='active' AND NOT o.annulled AND (q.correct_key IS NOT NULL OR o.original_keys IS NOT NULL)`;
+export const toPaper=(row:Row):ExamPaperPublic=>examPaperPublicSchema.parse({id:row.id,name:row.name,institution:row.institution,year:row.year,edition:row.edition,booklet:row.booklet,sourceId:row.source_id,professionCode:row.profession_code??null,version:row.version,durationSec:row.duration_sec,questionCount:row.question_count,coverage:{kind:row.coverage_kind??'unknown',expectedQuestionCount:row.expected_question_count??null,availableQuestionCount:row.question_count,scorableQuestionCount:row.scorable_count??row.question_count},status:row.status});
+/** One eligibility scan for all papers, rather than rerunning signed membership for every paper. */
+export function paperCatalogSQL(userId:string,query:ExamPaperListQuery,offset:number,limit:number){
+ const filters:SQL[]=[paperAccess,sql`coalesce(stats.question_count,0)>0`];
+ if(query.course)filters.push(sql`stats.profession_code=${query.course}`);
+ if(query.year)filters.push(sql`p.year=${query.year}`);
+ if(query.institution)filters.push(sql`p.institution=${query.institution}`);
+ if(query.search){const pattern='%'+query.search.replace(/[\\%_]/g,'\\$&')+'%';filters.push(sql`(p.name ILIKE ${pattern} OR p.institution ILIKE ${pattern} OR p.booklet ILIKE ${pattern})`);}
+ return sql`WITH eligible_questions AS MATERIALIZED(SELECT q.id,q.type,q.availability,q.correct_key,q.profession_code FROM question_bank q WHERE ${readable(userId)} AND ${latest}), stats AS MATERIALIZED(SELECT o.paper_id,count(*)::int question_count,count(*) FILTER(WHERE ${paperScorable})::int scorable_count,CASE WHEN count(DISTINCT q.profession_code)=1 THEN min(q.profession_code) END profession_code FROM exam_question_occurrences o JOIN eligible_questions q ON q.id=o.question_id GROUP BY o.paper_id), eligible AS MATERIALIZED(SELECT ${paperCols},stats.question_count,stats.scorable_count,stats.profession_code FROM exam_papers p JOIN question_sources src ON src.id=p.source_id JOIN stats ON stats.paper_id=p.id WHERE ${sql.join(filters,sql` AND `)}), page AS(SELECT * FROM eligible ORDER BY year DESC,name,booklet,id OFFSET ${offset} LIMIT ${limit}) SELECT (SELECT count(*)::int FROM eligible) total,coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY year DESC,name,booklet,id) FROM page),'[]'::jsonb) items`;
+}
+function paperCursor(offset:number,userId:string,query:ExamPaperListQuery){const data=Buffer.from(JSON.stringify({offset,userId,query:{...query,cursor:undefined}})).toString('base64url');return data+'.'+createHmac('sha256',secret()).update('paper-cursor:'+data).digest('base64url');}
+function paperOffset(userId:string,query:ExamPaperListQuery){if(!query.cursor)return 0;try{const[data,mac,extra]=query.cursor.split('.');if(!data||!mac||extra!==undefined||Buffer.from(data,'base64url').toString('base64url')!==data)throw Error();const expected=createHmac('sha256',secret()).update('paper-cursor:'+data).digest(),actual=Buffer.from(mac,'base64url');if(actual.toString('base64url')!==mac||actual.length!==expected.length||!timingSafeEqual(actual,expected))throw Error();const parsed=JSON.parse(Buffer.from(data,'base64url').toString());if(parsed.userId!==userId||JSON.stringify(parsed.query)!==JSON.stringify({...query,cursor:undefined})||!Number.isSafeInteger(parsed.offset)||parsed.offset<0)throw Error();return parsed.offset as number;}catch{throw validation('invalid_cursor');}}
 export const questionExams={
-  async list(userId:string){return run(userId,async(tx)=>{
-    const rows=await asServer<Row>(tx,sql`SELECT ${paperCols},(SELECT count(*)::int FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id WHERE o.paper_id=p.id AND ${readable(userId)}) question_count FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE ${paperAccess} ORDER BY p.year DESC,p.name,p.booklet LIMIT 200`);return rows.map(toPaper);
-  });},
-  async get(userId:string,id:string){return run(userId,async(tx)=>{
-    const [paper]=await asServer<Row>(tx,sql`SELECT ${paperCols} FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE p.id=${id} AND ${paperAccess}`);if(!paper)throw missing();
-    const rows=await asServer<Row>(tx,sql`SELECT ${publicColumns},q.correct_key,q.distractor_notes,o.original_keys,o.annulled occurrence_annulled FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${id} AND ${readable(userId)} ORDER BY o.ordinal LIMIT 500`);
-    return {paper:toPaper({...paper,question_count:rows.length}),questions:await Promise.all(rows.map(applyOccurrence).map(toQuestion))};
-  });},
+ async catalog(userId:string,query:ExamPaperListQuery){return run(userId,async tx=>{const offset=paperOffset(userId,query);const [page]=await asServer<Row>(tx,paperCatalogSQL(userId,query,offset,query.limit));const items=(page?.items??[]) as Row[],total=Number(page?.total??0);return examPaperListResultSchema.parse({items:items.map(toPaper),total,nextCursor:offset+items.length<total?paperCursor(offset+items.length,userId,query):null});});},
+ async list(userId:string){return run(userId,async tx=>{const [page]=await asServer<Row>(tx,paperCatalogSQL(userId,{limit:100},0,200));return ((page?.items??[]) as Row[]).map(toPaper);});},
+ async get(userId:string,id:string){return run(userId,async tx=>{
+ const [paper]=await asServer<Row>(tx,sql`SELECT ${paperCols} FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE p.id=${id} AND ${paperAccess}`);if(!paper)throw missing();
+ const rows=await asServer<Row>(tx,sql`SELECT ${publicColumns},q.correct_key,q.distractor_notes,o.original_keys,o.original_number,o.annulled occurrence_annulled,(${paperScorable}) scorable FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${id} AND ${readable(userId)} AND ${latest} ORDER BY o.ordinal LIMIT 500`);
+ const professions=new Set(rows.map(r=>r.profession_code).filter(Boolean));
+ return {paper:toPaper({...paper,question_count:rows.length,scorable_count:rows.filter(r=>r.scorable).length,profession_code:professions.size===1?[...professions][0]:null}),questions:await Promise.all(rows.map(applyOccurrence).map(toQuestion))};
+ });},
 };
 
 export async function getQuestionInstitutions(userId:string){return run(userId,async tx=>{
