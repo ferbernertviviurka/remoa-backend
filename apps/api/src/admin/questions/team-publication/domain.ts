@@ -58,11 +58,20 @@ export function project(r: Wrapper) {
   const scopeHash=hash(JSON.stringify({namespace:NAMESPACE,itemId,offlineId:r.offlineId,payloadHash:r.payloadSha256,sourceId,origin:'official_exam',profession,language:'pt-BR',contentHash:projectedHash,availability,flags,rights:'pending',disclosure:1}));
   return {...content,questionId,itemId,sourceId,source,profession,availability,flags,contentHash:projectedHash,scopeHash,sourceName:(text(source.orgao)||text(p.exame)||'Prova oficial')+(mirror?' — espelho de pesquisa':''),sourcePublisher:text(source.banca)||text(source.orgao)||text(p.exame),sourceUrl,difficulty:'medium',paths:[...new Set([...(Array.isArray(p.imagens)?p.imagens.map(text):[]),text(source.prova_arquivo),text(source.gabarito_arquivo),...(Array.isArray(source.recortes)?source.recortes.map(c=>text(record(c).arquivo)):[])].filter(Boolean))]};
 }
+/** Linear bounded validation: grouped regex engines can overflow on legitimate multi-MiB assets. */
+export function decodeCanonicalBase64(encoded:string,expectedBytes:number):Buffer {
+  if(!Number.isSafeInteger(expectedBytes)||expectedBytes<0||expectedBytes>50*1024*1024||encoded.length%4!==0||encoded.length!==4*Math.ceil(expectedBytes/3))throw Error('team_asset_hash_mismatch');
+  const body=Buffer.from(encoded,'base64');
+  // Buffer decoding is intentionally permissive; exact re-encoding rejects whitespace, URL-safe alphabet and noncanonical padding bits.
+  if(body.length!==expectedBytes||body.toString('base64')!==encoded)throw Error('team_asset_hash_mismatch');
+  return body;
+}
 export function decodeFiles(input: {path:string;base64:string}[]) {
   let bytes=0; const seen=new Set<string>();
   return input.map(f=>{
-    const pin=files.get(f.path); if(!pin||seen.has(f.path)||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(f.base64))throw Error('team_asset_not_pinned');
-    seen.add(f.path); const body=Buffer.from(f.base64,'base64'); bytes+=body.length;
+    const pin=files.get(f.path); if(!pin||seen.has(f.path))throw Error('team_asset_not_pinned');
+    seen.add(f.path); bytes+=pin.bytes;if(bytes>50*1024*1024)throw Error('team_asset_hash_mismatch');
+    const body=decodeCanonicalBase64(f.base64,pin.bytes);
     if(bytes>50*1024*1024 || body.length!==pin.bytes || hash(body)!==pin.sha256)throw Error('team_asset_hash_mismatch');
     return {...pin,body,key:objectKey(pin.sha256),mime:f.path.endsWith('.pdf')?'application/pdf':/\.jpe?g$/i.test(f.path)?'image/jpeg':'image/png'};
   });
