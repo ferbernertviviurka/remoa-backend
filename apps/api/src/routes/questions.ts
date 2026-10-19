@@ -1,6 +1,7 @@
+import {classificationCatalog} from '../questions/classification/catalog';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { examPaperListQuerySchema, idSchema, questionOwnerOutboxQuerySchema, questionListQuerySchema, questionReportInputSchema, questionUserStateInputSchema, questionFacetQuerySchema, questionDrawerAnswerInputSchema } from '@remoa/contracts';
+import { questionClassificationQuerySchema, examPaperListQuerySchema, idSchema, questionOwnerOutboxQuerySchema, questionListQuerySchema, questionReportInputSchema, questionUserStateInputSchema, questionFacetQuerySchema, questionDrawerAnswerInputSchema } from '@remoa/contracts';
 import type { Env } from '../app';
 import { fail } from '../app';
 import { asServer, guard, run } from '../db';
@@ -18,6 +19,7 @@ export function questionsRoutes(){return new Hono<Env>()
   .get('/generation/outbox',c=>questionResponse(async()=>{const userId=c.get('userId'),query=parseQuestionInput(questionOwnerOutboxQuerySchema,catalogQueryValues(c.req.url));const page=await run(userId,tx=>outboxPage(q=>asServer<Record<string,unknown>>(tx,q),query,{actor:{id:userId,role:'owner'},route:c.req.path,query},userId));if(!page.ok)throw validation(page.error.message);return page.data;}))
   .get('/',c=>questionResponse(()=>questionCatalog.list(c.get('userId'),parseQuestionInput(questionListQuerySchema,catalogQueryValues(c.req.url)),{bank:questionFeatures().bankStudent})))
   // F34 (CCR-147): behind bankStudent; registered before '/:id'.
+  .get('/classification',questionFeatureGate('bankStudent'),c=>questionResponse(()=>classificationCatalog(c.get('userId'),parseQuestionInput(questionClassificationQuerySchema,catalogQueryValues(c.req.url)).course)))
   .get('/facets',questionFeatureGate('bankStudent'),c=>questionResponse(()=>questionFacets(c.get('userId'),parseQuestionInput(questionFacetQuerySchema,catalogQueryValues(c.req.url)))))
   .get('/:id',c=>questionResponse(()=>questionCatalog.get(c.get('userId'),parseQuestionInput(idSchema,c.req.param('id')))))
   .post('/:id/answer',questionFeatureGate('bankStudent'),c=>questionResponse(async()=>drawerAnswer(c.get('userId'),parseQuestionInput(idSchema,c.req.param('id')),parseQuestionInput(questionDrawerAnswerInputSchema,await c.req.json().catch(()=>null)))))

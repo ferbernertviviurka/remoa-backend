@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { idSchema } from './common';
+import { questionClassificationStatusSchema } from './question-classification';
 import { healthCourseCodeSchema } from './health-course-codes';
 
 const uniqueIds = (max: number) => z.array(idSchema).max(max).default([]).refine((a) => new Set(a).size === a.length, 'duplicate_ids');
@@ -19,6 +20,7 @@ export const examBuilderDistributions = ['balanced', 'proportional'] as const;
 export type ExamBuilderDistribution = typeof examBuilderDistributions[number];
 export const examBuilderFilterSchema = z.object({
   source: z.enum(examBuilderSources).default('catalog'),
+  classificationStatus: questionClassificationStatusSchema.optional(),
   /** [] = every area with available questions. */
   areaIds: uniqueIds(EXAM_BUILDER_LIMITS.maxAreas),
   topicIds: uniqueIds(EXAM_BUILDER_LIMITS.maxTopics),

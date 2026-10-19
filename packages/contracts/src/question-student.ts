@@ -1,3 +1,4 @@
+import { questionEffectiveClassificationSchema, questionClassificationKindSchema } from './question-classification';
 /**
  * F34 / G27 (CCR-147): student question bank (facets, drawer answer) and exam builder (availability, preview, swap,
  * revalidate, templates). Reuses the F33/G26 catalog predicate, session snapshot and reference gate.
@@ -56,7 +57,7 @@ export type ExamPreviewInput = z.input<typeof examPreviewInputSchema>;
 /** Safe projection only (no alternatives, key, explanation or verdict). stemPreview ≤ 280 chars. */
 export const examPreviewItemSchema = z.object({
   questionId: idSchema, canonicalId: idSchema, version: z.number().int().positive(), areaId: idSchema.nullable(), topicId: idSchema.nullable(),
-  origin: z.enum(questionOrigins), difficulty: z.enum(difficulties), difficultyAssessment: z.literal('unassessed').optional(), stemPreview: z.string().min(1).max(280), sourceLabel: z.string().max(300).nullable(),
+  origin: z.enum(questionOrigins), difficulty: z.enum(difficulties), difficultyAssessment: z.literal('unassessed').optional(), classificationKind: questionClassificationKindSchema.optional(), classification: questionEffectiveClassificationSchema.optional(), stemPreview: z.string().min(1).max(280), sourceLabel: z.string().max(300).nullable(),
   validation: questionValidationSchema.nullable(), pinned: z.boolean(),
 }).strict();
 export type ExamPreviewItem = z.infer<typeof examPreviewItemSchema>;

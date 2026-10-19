@@ -1,6 +1,8 @@
 /** CCR139: bounded metadata discovery. Authorization and opaque cursor signing are server responsibilities. */
 import { z } from 'zod';
 import { idSchema, timestampSchema } from './common';
+import { healthCourseCodeSchema } from './health-course-codes';
+import { questionClassificationStatusSchema, questionEffectiveClassificationSchema } from './question-classification';
 import { auditEntrySchema, reasonSchema } from './admin';
 import { questionAvailabilityStatuses, questionCatalogStatuses, questionImportStatuses, questionOrigins, questionRightsStatuses, questionImportProgressSchema, questionSessionSummaryPublicSchema } from './question-catalog';
 
@@ -11,10 +13,11 @@ const limit = (maximum: number, fallback: number) => z.union([z.number().int(), 
 const date = z.union([z.date(), z.string().datetime({ offset: true })]).pipe(timestampSchema);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0,10) === v, 'invalid_calendar_date');
+const queryIds = (maximum: number) => z.preprocess(value => value === undefined || Array.isArray(value) ? value : [value], z.array(idSchema).min(1).max(maximum).refine(values => new Set(values).size === values.length, 'duplicate_ids')).optional();
 const pageFields = { limit: limit(50,25), cursor: cursor.optional() };
-export const questionAdminCatalogQuerySchema = z.object({ ...pageFields, search: search.optional(), status: z.enum(questionCatalogStatuses).optional(), sourceId: idSchema.optional(), type: z.enum(['objective','discursive']).optional(), versions: z.enum(['latest','all']).default('latest'), /** D-1804: 'missing' lists content_hash IS NULL for preparation. */ hashState: z.enum(['missing','present']).optional() }).strict();
+export const questionAdminCatalogQuerySchema = z.object({ ...pageFields, course: healthCourseCodeSchema.optional(), areaIds: queryIds(20), topicIds: queryIds(100), classificationStatus: questionClassificationStatusSchema.optional(), search: search.optional(), status: z.enum(questionCatalogStatuses).optional(), sourceId: idSchema.optional(), type: z.enum(['objective','discursive']).optional(), versions: z.enum(['latest','all']).default('latest'), /** D-1804: 'missing' lists content_hash IS NULL for preparation. */ hashState: z.enum(['missing','present']).optional() }).strict();
 export type QuestionAdminCatalogQuery = z.infer<typeof questionAdminCatalogQuerySchema>;
-export const questionAdminCatalogItemSchema = z.object({ id:idSchema, canonicalId:idSchema, supersedesId:idSchema.nullable(), version:z.number().int().positive(), type:z.enum(['objective','discursive']), origin:z.enum(questionOrigins), stemPreview:z.string().max(300), catalogStatus:z.enum(questionCatalogStatuses), rightsStatus:z.enum(questionRightsStatuses), availability:z.enum(questionAvailabilityStatuses), sourceId:idSchema.nullable(), sourceLabel:z.string().max(300).nullable(), contentHash:hash.nullable(), reviewedHash:hash.nullable(), createdAt:date, updatedAt:date, publishedAt:date.nullable() }).strict();
+export const questionAdminCatalogItemSchema = z.object({ classification: questionEffectiveClassificationSchema.optional(), id:idSchema, canonicalId:idSchema, supersedesId:idSchema.nullable(), version:z.number().int().positive(), type:z.enum(['objective','discursive']), origin:z.enum(questionOrigins), stemPreview:z.string().max(300), catalogStatus:z.enum(questionCatalogStatuses), rightsStatus:z.enum(questionRightsStatuses), availability:z.enum(questionAvailabilityStatuses), sourceId:idSchema.nullable(), sourceLabel:z.string().max(300).nullable(), contentHash:hash.nullable(), reviewedHash:hash.nullable(), createdAt:date, updatedAt:date, publishedAt:date.nullable() }).strict();
 export type QuestionAdminCatalogItem = z.infer<typeof questionAdminCatalogItemSchema>;
 export const questionAdminCatalogPageSchema = z.object({ items:z.array(questionAdminCatalogItemSchema).max(50), nextCursor:cursor.nullable() }).strict();
 export const questionAdminCatalogResultSchema = questionAdminCatalogPageSchema.extend({ audit:auditEntrySchema }).strict();

@@ -1,3 +1,4 @@
+import {hasAutomaticIds} from '../questions/classification/semantics';
 import { Hono } from 'hono';
 import {
   EXAM_GENERATE_CHUNK, examBoardContentQuerySchema, examBuilderFilterSchema, examGenerateInputSchema, examGenerateResultSchema, examPreviewInputSchema,
@@ -61,6 +62,7 @@ export function examBuilderRoutes(generate: typeof generateQuestions = generateQ
       const userId = c.get('userId');
       const parsed = examGenerateInputSchema.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) return fail({ code: 'validation', message: 'invalid_question_input' });
+      if(hasAutomaticIds(parsed.data))return fail({code:'validation',message:'automatic_classification_catalog_only'});
       const slot = takeAiSlot(userId);
       if (!slot.ok) { const res = fail(slot.error); res.headers.set('retry-after', '60'); return res; }
       const { boardId, areaIds, topicIds, theme, count, difficulty } = parsed.data;

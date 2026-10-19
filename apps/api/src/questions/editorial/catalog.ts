@@ -1,3 +1,4 @@
+import {classificationFilters,classificationProjection} from '../classification/semantics';
 /** CCR139 metadata discovery; institutional only. No question references or assets are selected. */
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
@@ -27,13 +28,15 @@ export async function catalogStaff(tx:Tx,id:string,role?:CatalogActor['role']):P
  if(!p||(p.role!=='admin'&&p.role!=='reviewer')||(role&&p.role!==role))return null;return {id,role:p.role};
 }
 const institution=sql`q.visibility='public' AND q.user_id IS NULL`;
-const columns=sql`q.id,coalesce(q.canonical_id,q.id) "canonicalId",q.supersedes_id "supersedesId",q.version,q.type,q.origin,left(q.stem,300) "stemPreview",q.catalog_status "catalogStatus",q.rights_status "rightsStatus",q.availability,q.source_id "sourceId",left(s.name,300) "sourceLabel",q.content_hash "contentHash",q.reviewed_hash "reviewedHash",q.created_at "createdAt",q.updated_at "updatedAt",q.published_at "publishedAt",to_char(q.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "cursorAt"`;
+const columns=sql`q.id,${classificationProjection} classification,coalesce(q.canonical_id,q.id) "canonicalId",q.supersedes_id "supersedesId",q.version,q.type,q.origin,left(q.stem,300) "stemPreview",q.catalog_status "catalogStatus",q.rights_status "rightsStatus",q.availability,q.source_id "sourceId",left(s.name,300) "sourceLabel",q.content_hash "contentHash",q.reviewed_hash "reviewedHash",q.created_at "createdAt",q.updated_at "updatedAt",q.published_at "publishedAt",to_char(q.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') "cursorAt"`;
 /** drizzle's postgres-js execute() returns timestamptz as 'YYYY-MM-DD HH:MM:SS.ffffff+00' text, not ISO: parse before the wire schema. */
 const ts=(v:unknown)=>typeof v==='string'?new Date(v):v;
-const item=(row:Row)=>{const fields=Object.fromEntries(['id','canonicalId','supersedesId','version','type','origin','stemPreview','catalogStatus','rightsStatus','availability','sourceId','sourceLabel','contentHash','reviewedHash','createdAt','updatedAt','publishedAt'].map(k=>[k,['createdAt','updatedAt','publishedAt'].includes(k)?ts(row[k]):row[k]]));for(const key of ['stemPreview','sourceLabel'])if(typeof fields[key]==='string')fields[key]=(fields[key] as string).slice(0,300);return questionAdminCatalogItemSchema.parse(fields);};
+const item=(row:Row)=>{const fields=Object.fromEntries(['id','canonicalId','supersedesId','version','type','origin','stemPreview','catalogStatus','rightsStatus','availability','sourceId','sourceLabel','contentHash','reviewedHash','createdAt','updatedAt','publishedAt'].map(k=>[k,['createdAt','updatedAt','publishedAt'].includes(k)?ts(row[k]):row[k]]));for(const key of ['stemPreview','sourceLabel'])if(typeof fields[key]==='string')fields[key]=(fields[key] as string).slice(0,300);if(row.classification)fields.classification=row.classification;return questionAdminCatalogItemSchema.parse(fields);};
 const escapedLike=(s:string)=>'%'+s.replace(/[\\%_]/g,'\\$&')+'%';
 export function catalogPageSQL(query:QuestionAdminCatalogQuery,cur:{at:string;id:string}|null){
  const clauses:SQL[]=[institution];
+ if(query.course)clauses.push(sql`coalesce(q.profession_code,'medicine')=${query.course}`);
+ clauses.push(...classificationFilters(query));
  if(query.status)clauses.push(sql`q.catalog_status=${query.status}`);if(query.sourceId)clauses.push(sql`q.source_id=${query.sourceId}::uuid`);if(query.type)clauses.push(sql`q.type=${query.type}`);
  if(query.hashState)clauses.push(query.hashState==='missing'?sql`q.content_hash IS NULL`:sql`q.content_hash IS NOT NULL`); // D-1804; part of the cursor binding (all filters are)
  if(query.search)clauses.push(sql`(q.stem ILIKE ${escapedLike(query.search)} ESCAPE ${'\\'} OR s.name ILIKE ${escapedLike(query.search)} ESCAPE ${'\\'})`);

@@ -1,3 +1,5 @@
+import {teamReadable} from './access';
+import { classificationFilters,classificationNodes,classificationProjection,effectiveKind,effectiveTopic } from '../classification/semantics';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Tx } from '@remoa/db';
@@ -28,19 +30,7 @@ export function decodeQuestionCursor(value: string, userId: string, query: Quest
     return { at: row.at, id: row.id, ...(sorted ? { s: row.s as string | number } : {}) };
   } catch { throw validation('invalid_cursor'); }
 }
-/** Server-only equivalent of 0059's signed-team visibility guard. Keep every signature/source/batch check.
- * Expose the membership join to the planner: a non-inlined SQL function per candidate rescans the same graph for the full count.
- * OFFSET0 fences the small eligible-source set: authorized-source statistics otherwise choose28k PK probes.
- * This predicate is only executed by asServer; authenticated RLS keeps its private UUID-only boolean helper unchanged.
- */
-export const teamReadable=sql`q.visibility='public' AND q.catalog_status='published' AND q.status='approved'
- AND q.origin='official_exam' AND q.user_id IS NULL AND q.validation_kind='remoa_team_attested' AND q.rights_status='pending'
- AND EXISTS(SELECT 1 FROM question_team_items ti JOIN question_team_batches tb ON tb.id=ti.batch_id
- JOIN(SELECT ts.id FROM question_sources ts WHERE
- (ts.rights_status='pending' OR (ts.rights_status='authorized' AND ts.rights_scope='g29-cp21-20261019' AND ts.rights_evidence='Aprovado por Remoa' AND ts.rights_expires_at IS NOT NULL))
- AND (ts.rights_expires_at IS NULL OR ts.rights_expires_at>now()) OFFSET 0) ts ON ts.id=ti.source_id
- WHERE ti.question_id=q.id AND ti.content_hash=q.content_hash AND ti.content_hash=q.reviewed_hash AND ti.source_id=q.source_id AND ti.profession_code=q.profession_code
- AND tb.sealed_at IS NOT NULL AND tb.activated_at IS NOT NULL AND tb.revoked_at IS NULL)`;
+export {teamReadable} from './access';
 /** Every server read carries this access predicate, even when using a server connection. */
 export const readable = (userId: string, historical = false): SQL => sql`(
  (q.visibility = 'private' AND q.user_id = ${userId} AND q.status <> 'archived' AND q.catalog_status NOT IN ('rejected','withdrawn') AND q.availability IN (${historical ? sql`'active','annulled','superseded'` : sql`'active','annulled'`})) OR
@@ -62,7 +52,7 @@ export const occurrenceProjection=sql`(SELECT jsonb_build_object('items',coalesc
  WHERE o.question_id=q.id AND q.visibility='public' AND p.status='published' AND os.rights_status='authorized' AND (os.rights_expires_at IS NULL OR os.rights_expires_at>now()) ORDER BY p.year DESC,p.id,o.ordinal LIMIT 10) e)`;
 export const teamDisclosureProjection=sql`(SELECT jsonb_build_object('kind','remoa_team_attested','rightsStatus','pending','medicalReview',false,'difficultyAssessment','unassessed','sourceRightsStatus',tis.rights_status,'sourceApprovalBasis',CASE WHEN tis.rights_status='authorized' AND tis.rights_scope='g29-cp21-20261019' AND tis.rights_evidence='Aprovado por Remoa' AND tis.rights_expires_at IS NOT NULL THEN 'remoa_admin_attestation' ELSE 'unverified' END,'sourceRightsExpiresAt',tis.rights_expires_at,'explanationStatus',CASE WHEN q.explanation IS NULL THEN 'absent' ELSE 'source_provided' END,'professionCode',i.profession_code,'sourceAreaCodes',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' THEN i.original_payload->'areas' ELSE '[]'::jsonb END,'classificationStatus',CASE WHEN jsonb_typeof(i.original_payload->'areas')='array' AND jsonb_array_length(i.original_payload->'areas')>0 THEN 'source_tags_unreviewed' ELSE 'unclassified' END,'flags',i.flags,'resolutionEligible',q.availability='active','declarationDate','2026-10-19') FROM question_team_items i JOIN question_sources tis ON tis.id=i.source_id WHERE i.question_id=q.id AND q.validation_kind='remoa_team_attested')`;
 export const publicColumns = sql`q.id, coalesce(q.canonical_id,q.id) canonical_id, q.version, q.type, q.stem, q.alternatives,
- q.origin, q.visibility, q.availability, q.difficulty, q.enamed_topic_id, q.enamed_area_id, q.source_id, q.assets, ARRAY(SELECT c.id FROM cards c WHERE c.board_id=b.id AND c.deleted_at IS NULL AND c.id=ANY(q.card_ids)) card_ids, b.id board_id,
+ q.origin, q.visibility, q.availability, q.difficulty,q.enamed_area_id,q.enamed_topic_id,${effectiveKind} classification_kind,${classificationProjection} classification, q.source_id, q.assets, ARRAY(SELECT c.id FROM cards c WHERE c.board_id=b.id AND c.deleted_at IS NULL AND c.id=ANY(q.card_ids)) card_ids, b.id board_id,
  q.profession_code,${teamDisclosureProjection} team_disclosure,
  q.created_at, q.created_at::text cursor_at, (q.reviewed_hash IS NOT NULL AND q.reviewed_hash=q.content_hash) reviewed, q.validation_kind, q.reviewer_name validation_label,
  src.name source_label, b.title board_title,${occurrenceProjection} occurrences,
@@ -104,14 +94,15 @@ export function validationOf(row: Row, reviewed = row.reviewed === true): Questi
 }
 /** Reference-after-answer signature fields. Institutional: no reviewer name, never a CRM. */
 export function signature(row: Row, reviewed: boolean) {
+  const classification={...(row.classification_kind?{classificationKind:row.classification_kind}:{}),...(row.classification?{classification:row.classification}:{})};
   const v = validationOf({ ...row, validation_label: row.validation_label ?? row.reviewer_name }, reviewed);
-  return v && ['remoa_institutional','remoa_team_attested'].includes(v.kind) ? { reviewerName: null, reviewerCrm: null, validation: v }
-    : { reviewerName: (row.reviewer_name as string | null) ?? null, reviewerCrm: (row.reviewer_crm as string | null) ?? null, validation: v };
+  return v && ['remoa_institutional','remoa_team_attested'].includes(v.kind) ? { ...classification,reviewerName: null, reviewerCrm: null, validation: v }
+    : { ...classification,reviewerName: (row.reviewer_name as string | null) ?? null, reviewerCrm: (row.reviewer_crm as string | null) ?? null, validation: v };
 }
 export async function toQuestion(row: Row): Promise<QuestionPublic> {
   return questionPublicSchema.parse({ id: row.id, canonicalId: row.canonical_id ?? row.id, version: row.version, type: row.type, stem: row.stem, alternatives: row.alternatives,
     origin: row.origin, visibility: row.visibility, availability: row.availability, difficulty: row.difficulty, topicId: row.enamed_topic_id ?? null, areaId: row.enamed_area_id ?? null,
-    sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, validation: validationOf(row), ...(row.team_disclosure ? {teamDisclosure:row.team_disclosure}:{}), assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
+    ...(row.classification_kind?{classificationKind:row.classification_kind}:{}),...(row.classification?{classification:row.classification}:{}), sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, validation: validationOf(row), ...(row.team_disclosure ? {teamDisclosure:row.team_disclosure}:{}), assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
     boardId: row.board_id ?? null, boardTitle: row.board_title ?? null, userState: { favorite: row.favorite ?? false, doubtful: row.doubtful ?? false, annotation: row.annotation ?? '' }, createdAt: row.created_at });
 }
 export const many = <T>(plural: readonly T[] | undefined, single?: T): T[] => [...new Set([...(plural ?? []), ...(single === undefined ? [] : [single])])];
@@ -151,8 +142,7 @@ export function catalogWhere(userId: string, query: QuestionListQuery, activeOnl
   const fields = [['origin', query.origin], ['board_id', query.boardId], ['type', query.type], ['source_id', query.sourceId]] as const;
   for (const [name, value] of fields) if (value) parts.push(sql`${sql.raw('q.' + name)}=${value}`);
   const areas = omit === 'area' ? [] : many(query.areaIds, query.areaId), topics = omit === 'topic' ? [] : many(query.topicIds, query.topicId), diffs = omit === 'difficulty' ? [] : many(query.difficulties, query.difficulty);
-  if (areas.length) parts.push(sql`q.enamed_area_id=ANY(${pgArray(areas, 'uuid')})`);
-  if (topics.length) parts.push(sql`q.enamed_topic_id=ANY(${pgArray(topics, 'uuid')})`);
+  parts.push(...classificationFilters({areaIds:areas,topicIds:topics,classificationStatus:query.classificationStatus}));
   if (diffs.length) parts.push(sql`q.difficulty::text=ANY(${pgArray(diffs, 'text')})`);
   if (query.search) parts.push(sql`q.stem ILIKE ${'%' + query.search.replace(/[\\%_]/g, '\\$&') + '%'}`);
   const pf = paperFilters(query, omit);
@@ -185,7 +175,7 @@ export function catalogCountSQL(userId:string,query:QuestionListQuery):SQL{
 }
 /** F34 FR-11: keyset by (sort key asc, created_at desc, id desc). `recent` has a constant key, so it is the old (created_at,id) order. */
 const sortKey = (sort: QuestionListQuery['sort']) => sort === 'difficulty' ? { expr: sql`CASE q.difficulty::text WHEN 'easy' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`, join: sql``, cast: sql.raw('int') }
-  : sort === 'topic' ? { expr: sql`coalesce(tp.name,chr(1114111))`, join: sql`LEFT JOIN enamed_taxonomy tp ON tp.id=q.enamed_topic_id`, cast: sql.raw('text') }
+  : sort === 'topic' ? { expr: sql`coalesce(tp.label,chr(1114111))`, join: sql`LEFT JOIN ${classificationNodes} tp ON tp.id=${effectiveTopic}`, cast: sql.raw('text') }
   : { expr: sql`0`, join: sql``, cast: sql.raw('int') };
 /** Reuse the exact authorized ID set for pagination and the global total, including empty pages. */
 export function catalogPageSQL(userId:string,query:QuestionListQuery,cur:{at:string;id:string;s?:string|number}|null=null,withProgress=false):SQL{

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { ipBucket } from './shared';
 
 describe('ipBucket (D-543)', () => {
@@ -14,9 +14,14 @@ describe('ipBucket (D-543)', () => {
 });
 
 describe('unlock gate (D-543)', () => {
+  let sharedRoutes: typeof import('../routes/public')['sharedRoutes'];
+  // Keep the five-second test budget on the 61 HTTP requests, not cold route transpilation.
+  beforeAll(async () => {
+    ({ sharedRoutes } = await import('../routes/public'));
+  });
+
   it('61st unlock from the same /64 in a minute is 429 before any DB work', async () => {
     vi.stubEnv('TRUSTED_PROXY_HOPS', '1');
-    const { sharedRoutes } = await import('../routes/public');
     const app = sharedRoutes();
     const hit = (n: number) => app.request('/not-a-token/unlock', { method: 'POST', body: '{"password":"x"}', headers: { 'content-type': 'application/json', 'x-forwarded-for': `2001:db8:77:1::${n.toString(16)}` } });
     for (let i = 1; i <= 60; i++) expect((await hit(i)).status).toBe(404);

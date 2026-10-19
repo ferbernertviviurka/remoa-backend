@@ -1,4 +1,5 @@
 /** F34 FR-3/FR-8: disjunctive facet counts. Eligible rows only (readable()+latest via catalogWhere), distinct canonical, no answer key anywhere. */
+import {effectiveArea,effectiveTopic,classificationNodes} from '../classification/semantics';
 import { sql, type SQL } from 'drizzle-orm';
 import { questionFacetGroups, questionFacetsSchema, type QuestionFacetQuery, type QuestionListQuery } from '@remoa/contracts';
 import { asServer, pgArray, run } from '../../db';
@@ -35,15 +36,15 @@ export function questionFacetSQL(userId: string, query: QuestionFacetQuery): SQL
   const parts: SQL[] = [sql`'total',(SELECT count(DISTINCT b.canonical)::int FROM base b WHERE ${cond()})`];
   if (groups.has('area')) parts.push(sql`'areas',${agg(sql`SELECT b.area id,count(DISTINCT b.canonical)::int count FROM base b WHERE ${cond('area')} AND b.area IS NOT NULL GROUP BY 1 ORDER BY count DESC,id LIMIT 50`)}`);
   if (groups.has('topic')) {
-    const text = query.topicQuery ? sql`AND tp.name ILIKE ${'%' + query.topicQuery.replace(/[\\%_]/g, '\\$&') + '%'}` : sql``;
-    parts.push(sql`'topics',${agg(sql`SELECT tp.id,tp.name,count(DISTINCT b.canonical)::int count FROM base b JOIN enamed_taxonomy tp ON tp.id=b.topic WHERE ${cond('topic')} ${text} GROUP BY tp.id,tp.name ORDER BY count DESC,tp.name,tp.id LIMIT 50`)}`);
+    const text = query.topicQuery ? sql`AND tp.label ILIKE ${'%' + query.topicQuery.replace(/[\\%_]/g, '\\$&') + '%'}` : sql``;
+    parts.push(sql`'topics',${agg(sql`SELECT tp.id,tp.label name,count(DISTINCT b.canonical)::int count FROM base b JOIN ${classificationNodes} tp ON tp.id=b.topic WHERE ${cond('topic')} ${text} GROUP BY tp.id,tp.label ORDER BY count DESC,tp.label,tp.id LIMIT 50`)}`);
   }
   if (groups.has('institution')) parts.push(sql`'institutions',${agg(sql`SELECT min(pp.inst) name,count(DISTINCT b.canonical)::int count FROM base b JOIN papers pp ON pp.id=b.id WHERE ${cond('institution', true)} AND pp.inst<>'' GROUP BY pp.inst_key ORDER BY count DESC,pp.inst_key LIMIT 100`)}`);
   if (groups.has('year')) parts.push(sql`'years',${agg(sql`SELECT pp.year,count(DISTINCT b.canonical)::int count FROM base b JOIN papers pp ON pp.id=b.id WHERE ${cond('year', true)} GROUP BY pp.year ORDER BY pp.year DESC LIMIT 100`)}`);
   if (groups.has('difficulty')) parts.push(sql`'difficulties',${agg(sql`SELECT b.difficulty value,count(DISTINCT b.canonical)::int count FROM base b WHERE ${cond('difficulty')} GROUP BY 1 ORDER BY CASE b.difficulty WHEN 'easy' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`)}`);
   const base = withoutGroups(list);
   // `papers` is only scanned when a group or a filter references it (an unreferenced CTE is never executed).
-  const statement = sql`WITH base AS MATERIALIZED (SELECT q.id,coalesce(q.canonical_id,q.id) canonical,q.enamed_area_id area,q.enamed_topic_id topic,q.difficulty::text difficulty
+  const statement = sql`WITH base AS MATERIALIZED (SELECT q.id,coalesce(q.canonical_id,q.id) canonical,${effectiveArea} area,${effectiveTopic} topic,q.difficulty::text difficulty
       FROM question_bank q ${stateJoin(userId, list)} WHERE ${catalogWhere(userId, base)}),
     papers AS MATERIALIZED (SELECT o.question_id id,btrim(p.institution) inst,lower(btrim(p.institution)) inst_key,p.year FROM base JOIN exam_question_occurrences o ON o.question_id=base.id
       JOIN exam_papers p ON p.id=o.paper_id JOIN question_sources ps ON ps.id=p.source_id WHERE ${sql.join([paperBase, ...paperFilters(base)], sql` AND `)})
