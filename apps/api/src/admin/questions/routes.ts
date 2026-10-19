@@ -1,3 +1,4 @@
+import { catalogCapacitySQL, type CatalogCapacity } from './capacity';
 import { questionTeamPublicationRoutes } from './team-publication/routes';
 import { questionImportsPageRoutes } from "./imports-page";
 import { questionAdminCatalogRoutes } from './catalog';
@@ -26,9 +27,9 @@ import {
   questionImportContextResolveInputSchema,
   reasonSchema,
   questionOrigins,
+  questionAcervoCoverageSchema,
 } from "@remoa/contracts";
 import { dbm } from "../../db";
-import {latest,readable} from "../../questions/catalog/service";
 import { withAdmin, reasonOf, send, type AdminEnv } from "../core";
 import {
   createImport,
@@ -830,12 +831,7 @@ export const questionAdminRoutes = new Hono<AdminEnv>()
             questionDocuments: d,
           } = await dbm();
           // Share the catalog's exact canonical/rights/chain selection; an unpublished clone cannot shrink capacity.
-          const [capacity]=await tx.execute<{public_canonical:number;origins:{origin:string;count:number}[];areas:{areaId:string;name:string;count:number}[];topics:{topicId:string;name:string;count:number}[]}>(sql`WITH eligible AS MATERIALIZED
-            (SELECT coalesce(q.canonical_id,q.id) canonical,q.origin,q.enamed_area_id area_id,q.enamed_topic_id topic_id FROM question_bank q WHERE q.visibility='public' AND q.availability='active' AND ${readable('00000000-0000-0000-0000-000000000000')} AND ${latest})
-            SELECT (SELECT count(DISTINCT canonical)::int FROM eligible) public_canonical,
-            (SELECT coalesce(jsonb_agg(row),'[]'::jsonb) FROM (SELECT origin,count(DISTINCT canonical)::int count FROM eligible GROUP BY origin ORDER BY origin) row) origins,
-            (SELECT coalesce(jsonb_agg(row),'[]'::jsonb) FROM (SELECT e.area_id "areaId",t.name,count(DISTINCT e.canonical)::int count FROM eligible e JOIN enamed_taxonomy t ON t.id=e.area_id GROUP BY e.area_id,t.name ORDER BY t.name,e.area_id LIMIT 501) row) areas,
-            (SELECT coalesce(jsonb_agg(row),'[]'::jsonb) FROM (SELECT e.topic_id "topicId",t.name,count(DISTINCT e.canonical)::int count FROM eligible e JOIN enamed_taxonomy t ON t.id=e.topic_id GROUP BY e.topic_id,t.name ORDER BY t.name,e.topic_id LIMIT 501) row) topics`);
+          const [capacity]=await tx.execute<CatalogCapacity>(catalogCapacitySQL());
           const importsByStatus = await tx
             .select({ status: i.status, count: count() })
             .from(i)
@@ -854,6 +850,7 @@ export const questionAdminRoutes = new Hono<AdminEnv>()
           audit.after({ publicCanonical: Number(capacity?.public_canonical ?? 0) });
           return ok({
             publicCanonical: Number(capacity?.public_canonical ?? 0),
+            acervoCoverage: questionAcervoCoverageSchema.parse(capacity?.acervo_coverage),
             importsByStatus,
             candidateCounts,
             documents: Number(documents?.n ?? 0),

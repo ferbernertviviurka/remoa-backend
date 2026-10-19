@@ -6,7 +6,7 @@ import { catalogAlternativeKeys } from './constants';
 import { questionSessionBuilderSchema } from './exam-builder';
 import { healthCourseCodeSchema } from './health-course-codes';
 import { healthProfessionCodeSchema } from './health-taxonomy';
-import { questionTeamDisclosureSchema } from './question-team-publication';
+import { questionSourceAreaCodeSchema, questionTeamDisclosureSchema } from './question-team-publication';
 export {
   QUESTION_PDF_PARSER_VERSION, QUESTION_PDF_OCR_MODEL_ID, QUESTION_PDF_OCR_MODEL_COMMIT,
   QUESTION_PDF_OCR_MODEL_SHA256, QUESTION_PDF_OCR_DPI, QUESTION_PDF_OCR_VERSION, catalogAlternativeKeys,
@@ -218,7 +218,27 @@ export const questionEditorialQueueSchema=z.object({items:z.array(questionReview
 export const questionEditorialDetailSchema=z.object({question:questionReviewDetailSchema,source:questionSourceSchema.nullable(),latestReview:questionLatestReviewSchema.nullable()}).strict();
 export const questionMedicalReviewResultSchema=z.object({id:idSchema,decision:z.enum(['approved','changes_requested','rejected']),contentHash:z.string(),audit:auditEntrySchema}).strict();
 export const questionPublicationResultSchema=z.object({id:idSchema,status:z.enum(['published','withdrawn']),audit:auditEntrySchema}).strict();
-export const questionCatalogMetricsSchema=z.object({publicCanonical:z.number().int().nonnegative(),importsByStatus:z.array(z.object({status:z.enum(questionImportStatuses),count:z.number().int().nonnegative()}).strict()),candidateCounts:z.array(z.object({state:z.enum(questionCandidateStatuses),count:z.number().int().nonnegative()}).strict()),documents:z.number().int().nonnegative(),generatedPrivate:z.number().int().nonnegative(),duplicateOrVersionNotCounted:z.literal(true),publicByOrigin:z.array(z.object({origin:z.enum(questionOrigins),count:z.number().int().nonnegative()}).strict()).max(4).default([]),coverageByArea:z.array(z.object({areaId:idSchema,name:z.string(),count:z.number().int().nonnegative()}).strict()).max(500).default([]),coverageByTopic:z.array(z.object({topicId:idSchema,name:z.string(),count:z.number().int().nonnegative()}).strict()).max(500).default([]),coverageTruncated:z.boolean().default(false),audit:auditEntrySchema}).strict();
+/** G29 acervo coverage: scoring-eligible public canonical questions only. Documentary source tags are NOT editorial taxonomy. */
+export const questionAcervoCoverageSchema = z.object({
+  eligibleTotal: z.number().int().nonnegative(),
+  byCourse: z.array(z.object({ course: healthCourseCodeSchema, count: z.number().int().nonnegative() }).strict()).max(19),
+  unclassifiedArea: z.number().int().nonnegative(),
+  unclassifiedTopic: z.number().int().nonnegative(),
+  /** Tags may overlap; never sum them as unique-question capacity. */
+  sourceAreaTags: z.array(z.object({ code: questionSourceAreaCodeSchema, count: z.number().int().nonnegative() }).strict()).max(14),
+  sourceAreaTagsUnreviewed: z.literal(true),
+}).strict().superRefine((value, ctx) => {
+  if (new Set(value.byCourse.map(row => row.course)).size !== value.byCourse.length)
+    ctx.addIssue({ code: 'custom', path: ['byCourse'], message: 'duplicate_course' });
+  if (new Set(value.sourceAreaTags.map(row => row.code)).size !== value.sourceAreaTags.length)
+    ctx.addIssue({ code: 'custom', path: ['sourceAreaTags'], message: 'duplicate_source_area' });
+  if (value.byCourse.reduce((sum, row) => sum + row.count, 0) !== value.eligibleTotal)
+    ctx.addIssue({ code: 'custom', path: ['byCourse'], message: 'course_total_mismatch' });
+  if (value.unclassifiedArea > value.eligibleTotal || value.unclassifiedTopic > value.eligibleTotal || value.sourceAreaTags.some(row => row.count > value.eligibleTotal))
+    ctx.addIssue({ code: 'custom', message: 'coverage_exceeds_total' });
+});
+export type QuestionAcervoCoverage = z.infer<typeof questionAcervoCoverageSchema>;
+export const questionCatalogMetricsSchema=z.object({publicCanonical:z.number().int().nonnegative(),importsByStatus:z.array(z.object({status:z.enum(questionImportStatuses),count:z.number().int().nonnegative()}).strict()),candidateCounts:z.array(z.object({state:z.enum(questionCandidateStatuses),count:z.number().int().nonnegative()}).strict()),documents:z.number().int().nonnegative(),generatedPrivate:z.number().int().nonnegative(),duplicateOrVersionNotCounted:z.literal(true),publicByOrigin:z.array(z.object({origin:z.enum(questionOrigins),count:z.number().int().nonnegative()}).strict()).max(4).default([]),coverageByArea:z.array(z.object({areaId:idSchema,name:z.string(),count:z.number().int().nonnegative()}).strict()).max(500).default([]),coverageByTopic:z.array(z.object({topicId:idSchema,name:z.string(),count:z.number().int().nonnegative()}).strict()).max(500).default([]),coverageTruncated:z.boolean().default(false),acervoCoverage:questionAcervoCoverageSchema.optional(),audit:auditEntrySchema}).strict();
 export const questionRectificationResultSchema=z.object({id:idSchema,version:z.number().int().positive(),supersedesId:idSchema,audit:auditEntrySchema}).strict();
 
 export const questionDraftUpdateInputSchema=z.object({expectedContentHash:z.string().regex(/^[a-f0-9]{64}$/),content:importCandidateReviewInputSchema}).strict();
