@@ -46,3 +46,5 @@ export * from './health-taxonomy';
 export * from './question-curation';
 
 export * from './question-team-publication';
+
+export * from './question-classification';

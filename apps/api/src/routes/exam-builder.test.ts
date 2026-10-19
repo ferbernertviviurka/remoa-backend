@@ -1,3 +1,4 @@
+import classificationSeed from '../../../../packages/db/seed/question-classification/g29-v1.json';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -32,6 +33,16 @@ describe('POST /v1/exam-builder/generate', () => {
     expect(body.data).toMatchObject({ requested: 3, reused: 1, generated: 1, shortfall: 1, stoppedBy: null, shortfallReason: 'rejected' });
     expect(JSON.stringify(body)).not.toMatch(/stem|correctKey/);
     expect(gen).toHaveBeenCalledWith(expect.objectContaining({ userId, boardId: BOARD, scope: { kind: 'board' }, n: 3, questionType: 'objective', difficulty: 'mixed', requestId: 'req-1', batchSize: 5, extraBatches: 2 }));
+  });
+  it('rejects automatic taxonomy before consuming an AI slot or reaching either provider', async () => {
+    const gen=vi.fn<Gen>(async()=>out()),topic=vi.fn<GenTopic>(async()=>out() as Awaited<ReturnType<GenTopic>>),user=randomUUID(),app=appFor(gen,user,topic);
+    for(const field of ['areaIds','topicIds'])for(const accept of ['application/json','text/event-stream']){
+      const id=classificationSeed.nodes.find(n=>n.kind===(field==='areaIds'?'area':'topic'))!.id;
+      const response=await post(app,{[field]:[id],count:1},accept);
+      expect(response.status).toBe(422);expect(await response.json()).toEqual({error:{code:'validation',message:'automatic_classification_catalog_only'}});
+    }
+    expect(gen).not.toHaveBeenCalled();expect(topic).not.toHaveBeenCalled();
+    expect((await post(app,{boardId:BOARD,count:1})).status).toBe(200);expect(gen).toHaveBeenCalledOnce();
   });
   it('a board the user does not own (or missing) is 404 not_found', async () => {
     const res = await post(appFor(async () => err('not_found', 'board not found')), { boardId: BOARD, count: 2 });

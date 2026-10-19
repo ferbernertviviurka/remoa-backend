@@ -85,5 +85,8 @@
   },
   "admin/questions/team-publication/papers.ts": {
     "reason": "Uses the caller withAdmin transaction; team-publication/routes.ts invalidates question.changed after successful COMMIT. Paper and occurrence catalog reads query the database directly; no invalidation is emitted before commit."
+  },
+  "admin/questions/classification/index-service.ts": {
+    "reason": "Receives caller withAdmin transaction; team-publication/routes.ts invalidates question.changed only after successful COMMIT. Search classifications are read directly from the database."
   }
 }
