@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { pgArray } from '../../../db';
+import { teamReadable } from '../../../questions/catalog/service';
 import type { Tx } from '@remoa/db';
 import { err, ok, type QuestionTeamAssetsInput, type QuestionTeamItemsInput } from '@remoa/contracts';
 import { headObject, getBytes, putBytes } from '../../../storage/storage';
@@ -77,4 +78,26 @@ export async function activateBatch(tx:Tx,actor:string,audit:AuditCapture,proof?
 }
 export async function batchStatus(tx:Tx,audit:AuditCapture){
  const [row]=await tx.execute<Row>(sql`SELECT b.id,b.namespace,b.expected_count,b.activated_at,b.revoked_at,count(i.id)::int imported FROM question_team_batches b LEFT JOIN question_team_items i ON i.batch_id=b.id WHERE b.namespace=${NAMESPACE} GROUP BY b.id`);audit.after({namespace:NAMESPACE,imported:row?.imported??0});return ok({batch:row??null});
+}
+
+export const SOURCE_APPROVAL={rightsStatus:'authorized',rightsEvidence:'Aprovado por Remoa',rightsScope:NAMESPACE,rightsExpiresAt:'2030-11-19T23:59:59.000Z'} as const;
+/** Only the immutable complete G29 batch's sources; source labels, acquisition URLs and every question signature remain unchanged. */
+export async function approveBatchSources(tx:Tx,actor:string,input:{idempotencyKey:string;reason:string},audit:AuditCapture){
+ if(input.reason!==SOURCE_APPROVAL.rightsEvidence)return err('validation','team_source_approval_reason_mismatch');
+ const b=await batch(tx,actor,true);if(!b.activated_at)return err('conflict','team_batch_not_active');
+ const members=await tx.execute<Row>(sql`SELECT offline_id,payload_hash FROM question_team_items WHERE batch_id=${batchId} ORDER BY offline_id COLLATE "C"`);
+ if(members.length!==28188||hash(members.map(r=>`${String(r.offline_id)}\t${String(r.payload_hash)}\n`).join(''))!==MEMBERSHIP_HASH)return err('conflict','team_membership_incomplete');
+ const sources=await tx.execute<Row>(sql`SELECT * FROM question_sources WHERE id IN(SELECT source_id FROM question_team_items WHERE batch_id=${batchId}) ORDER BY id FOR UPDATE`);
+ if(sources.length!==841)return err('conflict','team_source_count_changed');
+ const requestHash=hash(JSON.stringify({namespace:NAMESPACE,sources:sources.map(s=>s.id),approval:SOURCE_APPROVAL}));
+ const replay=await idempotentReplay(tx,'question.source_update',actor,input.idempotencyKey,requestHash);if(!replay.ok)return replay;
+ const approved=(s:Row)=>s.rights_status==='authorized'&&s.rights_scope===NAMESPACE&&s.rights_evidence===SOURCE_APPROVAL.rightsEvidence&&s.rights_expires_at!==null&&new Date(String(s.rights_expires_at)).toISOString()===SOURCE_APPROVAL.rightsExpiresAt;
+ if(replay.data){if(!sources.every(approved))return err('conflict','team_source_approval_replay_state_changed');audit.after({idempotencyKey:input.idempotencyKey,requestHash,replayOf:replay.data.auditId,count:841,approval:SOURCE_APPROVAL});return ok({replayed:true,count:841,approval:SOURCE_APPROVAL});}
+ if(sources.some(s=>s.rights_status!=='pending'&&!approved(s)))return err('conflict','team_source_state_changed');
+ audit.before({sources});
+ await tx.execute(sql`UPDATE question_sources SET rights_status='authorized',rights_evidence=${SOURCE_APPROVAL.rightsEvidence},rights_scope=${NAMESPACE},rights_expires_at=${SOURCE_APPROVAL.rightsExpiresAt}::timestamptz,updated_at=now() WHERE id IN(SELECT source_id FROM question_team_items WHERE batch_id=${batchId})`);
+ const [visible]=await tx.execute<{n:number}>(sql`SELECT count(*)::int n FROM question_bank q JOIN question_team_items i ON i.question_id=q.id WHERE i.batch_id=${batchId} AND ${teamReadable}`);
+ if(visible?.n!==28188)throw Error('team_source_approval_visibility_failed');
+ const results=sources.map(s=>({id:s.id,outcome:'approved'}));audit.after({idempotencyKey:input.idempotencyKey,requestHash,count:841,approval:SOURCE_APPROVAL,results});
+ return ok({replayed:false,count:841,approval:SOURCE_APPROVAL});
 }
