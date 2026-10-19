@@ -6,6 +6,11 @@ const choices=[{key:'A',text:'Synthetic 1 mg'},{key:'B',text:'Synthetic 2 mg'}];
 const frozen=()=>({id:item,question_id:original,payload_public:{id:original,version:1,type:'objective',stem:'Synthetic stem',alternatives:choices},reference_snapshot:{version:1,correctKey:'A',annulled:false},answered:true,selected_key:'A'});
 const current=()=>({id:original,version:1,type:'objective',stem:'Synthetic stem',alternatives:choices,correct_key:'A',availability:'active',visibility:'private'});
 describe('CCR116 semantic comparison and explicit uncertainty',()=>{
+ it('preserves team rights/finality disclosures after recalculation',()=>{
+  const disclosure={kind:'remoa_team_attested',rightsStatus:'pending',medicalReview:false,explanationStatus:'absent',professionCode:'nursing',flags:['key_finality_unverified'],resolutionEligible:true,declarationDate:'2026-10-19'};
+  const result=compareSessionItem(frozen(),{...current(),visibility:'public',validation_kind:'remoa_team_attested',team_disclosure:disclosure,source_url:''});
+  expect(result.reference?.teamDisclosure).toEqual(disclosure);expect(result.reference?.sourceUrl).toBeNull();
+ });
  it('distinguishes explicit uncertainty from untouched items and excludes annulled items',()=>{
   expect(answerOutcome(true,null,'A',false)).toBe('incorrect');expect(answerOutcome(false,null,'A',false)).toBe('unanswered');expect(answerOutcome(true,'A','A',false)).toBe('correct');expect(answerOutcome(true,'B','A',false)).toBe('incorrect');expect(answerOutcome(true,null,null,true)).toBe('annulled');
  });

@@ -24,7 +24,7 @@ export function sourceWhere(userId: string, source: Source, boardId: string | nu
 }
 /** Readable now, latest version, active, objective, inside the source (+ the owner's progress filter). */
 export function eligibleWhere(userId: string, source: Source, progress: ExamBuilderFilter['progress'] = 'all', boardId: string | null = null, course: ExamBuilderFilter['course'] = null): SQL {
-  // D-1861: course applies to the public catalog only (catalogWhere drops it for a course other than medicine); the private AI pool is never filtered.
+  // D-1861: course filters the documentary profession of the public catalog; the private AI pool is never filtered.
   return sql`${catalogWhere(userId, questionListQuerySchema.parse({ ...(progress === 'all' ? {} : { state: progress }), ...(course ? { course } : {}) }), true)} AND ${sourceWhere(userId, source, boardId)}`;
 }
 function filterWhere(userId: string, f: ExamBuilderFilter): SQL {

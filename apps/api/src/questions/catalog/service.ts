@@ -32,7 +32,8 @@ export function decodeQuestionCursor(value: string, userId: string, query: Quest
 export const readable = (userId: string, historical = false): SQL => sql`(
  (q.visibility = 'private' AND q.user_id = ${userId} AND q.status <> 'archived' AND q.catalog_status NOT IN ('rejected','withdrawn') AND q.availability IN (${historical ? sql`'active','annulled','superseded'` : sql`'active','annulled'`})) OR
  (q.visibility = 'public' AND q.catalog_status = 'published' AND q.status = 'approved' AND q.rights_status = 'authorized' AND (q.reviewed_hash = q.content_hash) IS TRUE AND q.availability IN (${historical ? sql`'active','annulled','superseded'` : sql`'active','annulled'`}) AND EXISTS (
-   SELECT 1 FROM question_sources src WHERE src.id = q.source_id AND src.rights_status = 'authorized' AND (src.rights_expires_at IS NULL OR src.rights_expires_at > now())))
+   SELECT 1 FROM question_sources src WHERE src.id = q.source_id AND src.rights_status = 'authorized' AND (src.rights_expires_at IS NULL OR src.rights_expires_at > now()))) OR
+ (q.visibility='public' AND q.catalog_status='published' AND q.status='approved' AND public.f33_team_question_visible(q.id,q.content_hash))
 )`;
 /** A published replacement permanently supersedes selection, even if later withdrawn. Drafts never hide the published version. */
 /** CCR-149 (0056): `question_superseded` holds every row a newer version supersedes (server-maintained by statement triggers). */
@@ -46,8 +47,10 @@ export const occurrenceProjection=sql`(SELECT jsonb_build_object('items',coalesc
  (SELECT jsonb_build_object('examId',p.id,'name',p.name,'institution',p.institution,'year',p.year,'edition',p.edition,'booklet',p.booklet,'ordinal',o.ordinal,'originalNumber',o.original_number,'sourceId',p.source_id,'sourceLabel',os.name) payload,count(*) OVER() total
  FROM exam_question_occurrences o JOIN exam_papers p ON p.id=o.paper_id JOIN question_sources os ON os.id=p.source_id
  WHERE o.question_id=q.id AND q.visibility='public' AND p.status='published' AND os.rights_status='authorized' AND (os.rights_expires_at IS NULL OR os.rights_expires_at>now()) ORDER BY p.year DESC,p.id,o.ordinal LIMIT 10) e)`;
+export const teamDisclosureProjection=sql`(SELECT jsonb_build_object('kind','remoa_team_attested','rightsStatus','pending','medicalReview',false,'explanationStatus',CASE WHEN q.explanation IS NULL THEN 'absent' ELSE 'source_provided' END,'professionCode',i.profession_code,'flags',i.flags,'resolutionEligible',q.availability='active','declarationDate','2026-10-19') FROM question_team_items i WHERE i.question_id=q.id AND q.validation_kind='remoa_team_attested')`;
 export const publicColumns = sql`q.id, coalesce(q.canonical_id,q.id) canonical_id, q.version, q.type, q.stem, q.alternatives,
  q.origin, q.visibility, q.availability, q.difficulty, q.enamed_topic_id, q.enamed_area_id, q.source_id, q.assets, ARRAY(SELECT c.id FROM cards c WHERE c.board_id=b.id AND c.deleted_at IS NULL AND c.id=ANY(q.card_ids)) card_ids, b.id board_id,
+ q.profession_code,${teamDisclosureProjection} team_disclosure,
  q.created_at, q.created_at::text cursor_at, (q.reviewed_hash IS NOT NULL AND q.reviewed_hash=q.content_hash) reviewed, q.validation_kind, q.reviewer_name validation_label,
  src.name source_label, b.title board_title,${occurrenceProjection} occurrences,
  coalesce(us.favorite,false) favorite, coalesce(us.doubtful,false) doubtful, coalesce(us.annotation,'') annotation`;
@@ -81,6 +84,7 @@ export function applyOccurrence(row: Row): Row {
 /** D-1819 public seal: institutional = "Remoa" (never a name or CRM); medical = reviewer name. Private/unreviewed = null. */
 export function validationOf(row: Row, reviewed = row.reviewed === true): QuestionValidation | null {
   if (row.visibility !== 'public' || !reviewed) return null;
+  if (row.validation_kind === 'remoa_team_attested') return { kind: 'remoa_team_attested', label: 'Remoa', scope: 'team_declaration' };
   if (row.validation_kind === 'remoa_institutional') return { kind: 'remoa_institutional', label: 'Remoa' };
   const label = typeof row.validation_label === 'string' ? row.validation_label.trim() : '';
   return label ? { kind: 'medical_review', label } : null;
@@ -88,13 +92,13 @@ export function validationOf(row: Row, reviewed = row.reviewed === true): Questi
 /** Reference-after-answer signature fields. Institutional: no reviewer name, never a CRM. */
 export function signature(row: Row, reviewed: boolean) {
   const v = validationOf({ ...row, validation_label: row.validation_label ?? row.reviewer_name }, reviewed);
-  return v?.kind === 'remoa_institutional' ? { reviewerName: null, reviewerCrm: null, validation: v }
+  return v && ['remoa_institutional','remoa_team_attested'].includes(v.kind) ? { reviewerName: null, reviewerCrm: null, validation: v }
     : { reviewerName: (row.reviewer_name as string | null) ?? null, reviewerCrm: (row.reviewer_crm as string | null) ?? null, validation: v };
 }
 export async function toQuestion(row: Row): Promise<QuestionPublic> {
   return questionPublicSchema.parse({ id: row.id, canonicalId: row.canonical_id ?? row.id, version: row.version, type: row.type, stem: row.stem, alternatives: row.alternatives,
     origin: row.origin, visibility: row.visibility, availability: row.availability, difficulty: row.difficulty, topicId: row.enamed_topic_id ?? null, areaId: row.enamed_area_id ?? null,
-    sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, validation: validationOf(row), assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
+    sourceId: row.source_id ?? null, sourceLabel: row.source_label ?? null, occurrences:row.occurrences??{items:[],total:0,truncated:false}, reviewed: row.reviewed ?? false, validation: validationOf(row), ...(row.team_disclosure ? {teamDisclosure:row.team_disclosure}:{}), assets: await publicAssets(row.assets), cardIds: row.card_ids ?? [],
     boardId: row.board_id ?? null, boardTitle: row.board_title ?? null, userState: { favorite: row.favorite ?? false, doubtful: row.doubtful ?? false, annotation: row.annotation ?? '' }, createdAt: row.created_at });
 }
 export const many = <T>(plural: readonly T[] | undefined, single?: T): T[] => [...new Set([...(plural ?? []), ...(single === undefined ? [] : [single])])];
@@ -128,9 +132,8 @@ export function catalogWhere(userId: string, query: QuestionListQuery, activeOnl
   const parts: SQL[] = [readable(userId), latest];
   if (query.scope === 'mine') parts.push(sql`q.visibility='private' AND q.user_id=${userId}`);
   if (query.scope === 'catalog') parts.push(sql`q.visibility='public'`);
-  // F35 D-1861: only 'medicine' has a published catalog today; any other course empties the public part (own private questions stay).
-  // ponytail: replace with the CCR-150 profession column once it lands.
-  if (query.course && query.course !== 'medicine') parts.push(sql`q.visibility<>'public'`);
+  // Legacy public questions without classification retain medicine; the frozen corpus carries its documentary profession.
+  if (query.course) parts.push(sql`(q.visibility<>'public' OR coalesce(q.profession_code,'medicine')=${query.course})`);
   if (activeOnly) parts.push(sql`q.availability='active' AND q.type='objective'`);
   const fields = [['origin', query.origin], ['board_id', query.boardId], ['type', query.type], ['source_id', query.sourceId]] as const;
   for (const [name, value] of fields) if (value) parts.push(sql`${sql.raw('q.' + name)}=${value}`);

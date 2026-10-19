@@ -3,7 +3,7 @@ import {
   type AnyPgColumn, boolean, check, foreignKey, index, integer, jsonb, pgTable, real, smallint, text, timestamp, unique, uniqueIndex, uuid,
 } from 'drizzle-orm/pg-core';
 import {
-  catalogAlternativeKeys, questionOrigins, questionVisibilities, questionCatalogStatuses, questionRightsStatuses, questionAvailabilityStatuses, aiItemTypes, cardRubricStatuses, challengeFormats, challengeItemKinds, challengeSessionStatuses, enamedTaxonomyKinds, questionValidationKinds,
+  catalogAlternativeKeys, questionOrigins, questionVisibilities, questionCatalogStatuses, questionRightsStatuses, questionAvailabilityStatuses, aiItemTypes, cardRubricStatuses, challengeFormats, challengeItemKinds, challengeSessionStatuses, enamedTaxonomyKinds, questionValidationKinds, healthProfessionCodes,
   gradedBy, grades, questionDifficulties, questionSources, questionStatuses, questionTypes, summaryFocuses, summarySizes, verdicts,
   type AiAnswerInput, type AiChallengeItemPublic, type ChallengeConfig, type ChallengeScope, type QuestionEvidence, type QuestionStats,
   type ReferenceRef, type ShuffleMap, type SummarySection,
@@ -69,6 +69,7 @@ export const questionBank = pgTable('question_bank', {
   stats: jsonb('stats').$type<QuestionStats>().notNull().default({ seen: 0, correct: 0, partial: 0, incorrect: 0 }),
   version: integer('version').notNull().default(1),
   supersedesId: uuid('supersedes_id').references((): AnyPgColumn => questionBank.id, { onDelete: 'set null' }),
+  professionCode: text('profession_code', { enum: healthProfessionCodes }),
   origin: text('origin', { enum: questionOrigins }).notNull().default('ai_generated'),
   visibility: text('visibility', { enum: questionVisibilities }).notNull().default('private'),
   catalogStatus: text('catalog_status', { enum: questionCatalogStatuses }).notNull().default('draft'),
@@ -96,6 +97,7 @@ export const questionBank = pgTable('question_bank', {
   index('question_bank_canonical_idx').on(t.canonicalId),
   index('question_bank_canonical_latest_idx').on(sql`coalesce(${t.canonicalId}, ${t.id})`, t.version, t.createdAt, t.id),
   index('question_bank_stem_trgm_idx').using('gin', sql`${t.stem} gin_trgm_ops`),
+  check('question_bank_profession_chk', sql`${t.professionCode} IS NULL OR ${t.professionCode} IN (${sql.raw(healthProfessionCodes.map(v => "'" + v + "'").join(','))})`),
   index('question_bank_source_idx').on(t.sourceId),
   //0047 also creates expression statistics(reviewed_hash=content_hash); customSQL, not representable in Drizzle snapshots.
   index('question_bank_created_id_idx').on(t.createdAt.desc().nullsFirst(),t.id.desc().nullsFirst()),
@@ -108,7 +110,7 @@ export const questionBank = pgTable('question_bank', {
   check('question_bank_public_privacy_chk', sql`${t.visibility} <> 'public' or (${t.boardId} is null and cardinality(${t.cardIds}) = 0 and ${t.evidences} = '[]'::jsonb)`),
   check('question_bank_owner_chk', sql`${t.userId} is not null or (${t.visibility} = 'public' and ${t.origin} in ('official_exam','remoa_authored'))`),
   check('question_bank_validation_kind_chk', oneOf(t.validationKind, questionValidationKinds)),
-  check('question_bank_publish_chk', sql`${t.catalogStatus} <> 'published' or (${t.visibility} = 'public' and ${t.rightsStatus} = 'authorized' and ${t.status} = 'approved' and ${t.enamedAreaId} is not null and ${t.enamedTopicId} is not null and ${t.contentHash} is not null and ${t.reviewedHash} is not null and ${t.reviewedHash} = ${t.contentHash} and nullif(btrim(${t.reviewerName}),'') is not null and ${t.referenceDate} is not null and ((${t.validationKind} = 'medical_review' and ${t.integrityConfirmed} and ${t.keyFinal} and ${t.enamedConfirmed} and nullif(btrim(${t.reviewerCrm}),'') is not null) or (${t.validationKind} = 'remoa_institutional' and ${t.userId} is null and ${t.origin} = 'remoa_authored' and ${t.reviewerCrm} is null and ${t.correctKey} is not null)))`),
+  check('question_bank_publish_chk', sql`${t.catalogStatus} <> 'published' or ((${t.visibility} = 'public' and ${t.rightsStatus} = 'authorized' and ${t.status} = 'approved' and ${t.enamedAreaId} is not null and ${t.enamedTopicId} is not null and ${t.contentHash} is not null and ${t.reviewedHash} is not null and ${t.reviewedHash} = ${t.contentHash} and nullif(btrim(${t.reviewerName}),'') is not null and ${t.referenceDate} is not null and ((${t.validationKind} = 'medical_review' and ${t.integrityConfirmed} and ${t.keyFinal} and ${t.enamedConfirmed} and nullif(btrim(${t.reviewerCrm}),'') is not null) or (${t.validationKind} = 'remoa_institutional' and ${t.userId} is null and ${t.origin} = 'remoa_authored' and ${t.reviewerCrm} is null and ${t.correctKey} is not null))) OR (${t.visibility}='public' AND ${t.origin}='official_exam' AND ${t.userId} IS NULL AND ${t.validationKind}='remoa_team_attested' AND ${t.rightsStatus}='pending' AND ${t.status}='approved' AND ${t.contentHash} IS NOT NULL AND ${t.reviewedHash}=${t.contentHash} AND ${t.reviewerName}='Remoa' AND ${t.reviewerCrm} IS NULL AND ${t.referenceDate}='2026-10-19' AND ${t.professionCode} IS NOT NULL)) IS TRUE`),
   index('question_bank_board_idx').on(t.boardId),
   index('question_bank_supersedes_idx').on(t.supersedesId).where(sql`${t.supersedesId} is not null`),
   check('question_bank_type_chk', oneOf(t.type, questionTypes)),

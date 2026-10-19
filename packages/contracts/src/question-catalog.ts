@@ -5,6 +5,7 @@ import { auditEntrySchema, reasonSchema } from './admin';
 import { catalogAlternativeKeys } from './constants';
 import { questionSessionBuilderSchema } from './exam-builder';
 import { healthCourseCodeSchema } from './health-course-codes';
+import { questionTeamDisclosureSchema } from './question-team-publication';
 export {
   QUESTION_PDF_PARSER_VERSION, QUESTION_PDF_OCR_MODEL_ID, QUESTION_PDF_OCR_MODEL_COMMIT,
   QUESTION_PDF_OCR_MODEL_SHA256, QUESTION_PDF_OCR_DPI, QUESTION_PDF_OCR_VERSION, catalogAlternativeKeys,
@@ -23,7 +24,7 @@ export type QuestionOrigin = typeof questionOrigins[number];
  * `remoa_institutional` = Remoa's own content (origin remoa_authored, source rights_scope remoa_owned) approved by the Remoa
  * medical founder via an audited admin action; integrity/key/taxonomy are institutionally attested, never medically confirmed.
  */
-export const questionValidationKinds = ['medical_review', 'remoa_institutional'] as const;
+export const questionValidationKinds = ['medical_review', 'remoa_institutional', 'remoa_team_attested'] as const;
 export type QuestionValidationKind = typeof questionValidationKinds[number];
 /** D-1819: the one rights_scope that marks Remoa-owned content. Only the institutional approval may create/use it. */
 export const QUESTION_REMOA_RIGHTS_SCOPE = 'remoa_owned' as const;
@@ -31,6 +32,7 @@ export const QUESTION_REMOA_RIGHTS_SCOPE = 'remoa_owned' as const;
 export const questionValidationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('medical_review'), label: z.string().trim().min(1).max(300) }).strict(),
   z.object({ kind: z.literal('remoa_institutional'), label: z.literal('Remoa') }).strict(),
+  z.object({ kind: z.literal('remoa_team_attested'), label: z.literal('Remoa'), scope: z.literal('team_declaration') }).strict(),
 ]);
 export type QuestionValidation = z.infer<typeof questionValidationSchema>;
 export type QuestionVisibility = typeof questionVisibilities[number];
@@ -49,12 +51,12 @@ export type QuestionUserState = z.infer<typeof questionUserStateSchema>;
 export const questionOccurrencePublicSchema=z.object({examId:idSchema,name:z.string().max(300),institution:z.string().max(300),year:z.number().int(),edition:z.string().max(200),booklet:z.string().max(100),ordinal:z.number().int().nonnegative(),originalNumber:z.string().max(100),sourceId:idSchema,sourceLabel:z.string().max(300)}).strict();
 export const questionOccurrencesSchema=z.object({items:z.array(questionOccurrencePublicSchema).max(10),total:z.number().int().nonnegative(),truncated:z.boolean()}).strict().refine(x=>x.total>=x.items.length && x.truncated===(x.total>x.items.length),'occurrence_count_mismatch');
 export type QuestionOccurrences=z.infer<typeof questionOccurrencesSchema>;
-export const questionPublicSchema = z.object({ id: idSchema, canonicalId: idSchema, version: z.number().int().positive(), type: z.enum(['objective', 'discursive']), stem: z.string().min(1).max(20000), alternatives: catalogAlternativesSchema.nullable(), origin: z.enum(questionOrigins), visibility: z.enum(questionVisibilities), availability: z.enum(questionAvailabilityStatuses), difficulty: z.enum(['easy', 'medium', 'hard']), topicId: idSchema.nullable(), areaId: idSchema.nullable(), sourceId: idSchema.nullable(), sourceLabel: z.string().max(300).nullable(), occurrences:questionOccurrencesSchema.optional(), reviewed: z.boolean(), validation: questionValidationSchema.nullable().optional(), assets: z.array(questionAssetSchema), boardId: idSchema.nullable().default(null), boardTitle: z.string().max(300).nullable().optional(), userState: questionUserStateSchema.optional(), /* F34 FR-5/FR-12: owner's latest counted attempt (same rule as state filter); never a key or verdict for the current view. */ progress: z.enum(['unseen', 'correct', 'wrong']).optional(), cardIds: z.array(idSchema), createdAt: timestampSchema }).strict();
+export const questionPublicSchema = z.object({ id: idSchema, canonicalId: idSchema, version: z.number().int().positive(), type: z.enum(['objective', 'discursive']), stem: z.string().min(1).max(20000), alternatives: catalogAlternativesSchema.nullable(), origin: z.enum(questionOrigins), visibility: z.enum(questionVisibilities), availability: z.enum(questionAvailabilityStatuses), difficulty: z.enum(['easy', 'medium', 'hard']), topicId: idSchema.nullable(), areaId: idSchema.nullable(), sourceId: idSchema.nullable(), sourceLabel: z.string().max(300).nullable(), occurrences:questionOccurrencesSchema.optional(), reviewed: z.boolean(), validation: questionValidationSchema.nullable().optional(), teamDisclosure: questionTeamDisclosureSchema.optional(), assets: z.array(questionAssetSchema), boardId: idSchema.nullable().default(null), boardTitle: z.string().max(300).nullable().optional(), userState: questionUserStateSchema.optional(), /* F34 FR-5/FR-12: owner's latest counted attempt (same rule as state filter); never a key or verdict for the current view. */ progress: z.enum(['unseen', 'correct', 'wrong']).optional(), cardIds: z.array(idSchema), createdAt: timestampSchema }).strict();
 export type QuestionPublic = z.infer<typeof questionPublicSchema>;
 export const questionListResultSchema = z.object({ items: z.array(questionPublicSchema), nextCursor: z.string().nullable(), total: z.number().int().nonnegative() }).strict();
 /** Never use this schema on catalog, session creation, or answer acknowledgement. Gate reference on server. */
-export const questionReferenceAfterAnswerSchema = z.object({ questionId: idSchema, version: z.number().int().positive(), correctKey: z.enum(catalogAlternativeKeys).nullable(), explanation: z.string().max(20000).nullable(), distractorNotes: z.record(z.enum(catalogAlternativeKeys), z.string().max(6000)).nullable(), annulled: z.boolean(), reviewed: z.boolean(), reviewerName: z.string().nullable(), reviewerCrm: z.string().nullable(), referenceDate: z.string().nullable(), sourceUrl: httpUrl.nullable(), obsolete: z.boolean(), validation: questionValidationSchema.nullable().optional() }).strict()
-  .refine((r) => r.validation?.kind !== 'remoa_institutional' || r.reviewerCrm === null, 'institutional_validation_has_no_crm');
+export const questionReferenceAfterAnswerSchema = z.object({ questionId: idSchema, version: z.number().int().positive(), correctKey: z.enum(catalogAlternativeKeys).nullable(), explanation: z.string().max(20000).nullable(), distractorNotes: z.record(z.enum(catalogAlternativeKeys), z.string().max(6000)).nullable(), annulled: z.boolean(), reviewed: z.boolean(), reviewerName: z.string().nullable(), reviewerCrm: z.string().nullable(), referenceDate: z.string().nullable(), sourceUrl: httpUrl.nullable(), obsolete: z.boolean(), validation: questionValidationSchema.nullable().optional(), teamDisclosure: questionTeamDisclosureSchema.optional() }).strict()
+  .refine((r) => !['remoa_institutional', 'remoa_team_attested'].includes(r.validation?.kind ?? '') || r.reviewerCrm === null, 'institutional_validation_has_no_crm');
 export type QuestionReferenceAfterAnswer = z.infer<typeof questionReferenceAfterAnswerSchema>;
 export const examPaperPublicSchema = z.object({ id: idSchema, name: z.string().min(1).max(300), institution: z.string().min(1).max(300), year: z.number().int(), edition: z.string().max(200), booklet: z.string().max(100), sourceId: idSchema, version: z.number().int().positive(), durationSec: z.number().int().positive().nullable(), questionCount: z.number().int().nonnegative(), status: z.enum(['draft', 'published', 'withdrawn']) }).strict();
 export type ExamPaperPublic = z.infer<typeof examPaperPublicSchema>;

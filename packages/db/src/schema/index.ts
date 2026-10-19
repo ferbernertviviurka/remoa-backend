@@ -14,3 +14,5 @@ export * from './blog';
 
 export * from './question-catalog';
 export * from './study-profile';
+
+export * from './question-team-publication';

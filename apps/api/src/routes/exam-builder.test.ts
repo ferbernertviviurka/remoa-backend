@@ -114,9 +114,12 @@ describe('builder pool predicate (D-1846)', () => {
 
 describe('builder course predicate (D-1861)', () => {
   const sqlOf = (course: 'medicine' | 'nursing' | null) => new PgDialect().sqlToQuery(eligibleWhere('u1', 'catalog_and_ai', 'all', null, course)).sql;
-  it('only a course other than medicine empties the public part', () => {
-    expect(sqlOf('nursing')).toContain("q.visibility<>'public'");
-    expect(sqlOf('medicine')).not.toContain("q.visibility<>'public'");
-    expect(sqlOf(null)).not.toContain("q.visibility<>'public'");
+  it('filters documentary profession for every public course and keeps the private pool', () => {
+    for (const course of ['nursing','medicine'] as const) {
+      const query = new PgDialect().sqlToQuery(eligibleWhere('u1','catalog_and_ai','all',null,course));
+      expect(query.sql).toContain("q.visibility<>'public' OR coalesce(q.profession_code,'medicine')=");
+      expect(query.params).toContain(course);
+    }
+    expect(sqlOf(null)).not.toContain('coalesce(q.profession_code');
   });
 });

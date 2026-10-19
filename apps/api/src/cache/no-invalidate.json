@@ -79,5 +79,8 @@
   },
   "questions/templates/service.ts": {
     "reason": "exam_templates (F34): lista lida sempre direto do banco, sem cached(); nenhuma leitura cacheada depende da tabela"
+  },
+  "admin/questions/team-publication/service.ts": {
+    "reason": "Functions use caller withAdmin transaction; team-publication/routes.ts invalidates question.changed after successful COMMIT for item import and batch activation. Asset upload and private batch creation alone expose no catalog items."
   }
 }

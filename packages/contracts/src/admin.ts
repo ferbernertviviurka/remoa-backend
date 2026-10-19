@@ -51,6 +51,7 @@ export const adminActions = [
   'question.content_hash_prepare', 'question.generation_view', 'question.generation_recover',
   /** D-1819: institutional approval + publication of remoa_authored questions ("Validado pela Remoa"). */
   'question.institutional_approve',
+  'question.team_batch_create', 'question.team_items_import', 'question.team_assets_upload', 'question.team_activate',
 ] as const;
 export const auditTargetTypes = ['user', 'board', 'payment', 'referral', 'grant', 'ticket', 'export', 'route', 'blog_post', 'blog_category', 'blog_asset', 'sitemap', 'question', 'question_source', 'question_import', 'question_candidate', 'question_context', 'question_report', 'question_batch', 'question_outbox'] as const;
 /** List filters. `deleting` = account in the 7-day grace (F13); `pending` = e-mail not confirmed. */

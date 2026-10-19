@@ -44,3 +44,5 @@ export * from './question-admin-catalog';
 export * from './question-operations';
 export * from './health-taxonomy';
 export * from './question-curation';
+
+export * from './question-team-publication';

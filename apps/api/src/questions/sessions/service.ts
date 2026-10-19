@@ -33,9 +33,9 @@ async function reference(tx: Tx, userId: string, item: Row): Promise<QuestionRef
   const saved = object(item.reference_snapshot);
   return questionReferenceAfterAnswerSchema.parse({ ...saved, annulled: saved.annulled === true || current.availability === 'annulled', obsolete: saved.obsolete === true || current.obsolete === true });
 }
-function snapshotReference(q: Row): QuestionReferenceAfterAnswer {
+export function snapshotReference(q: Row): QuestionReferenceAfterAnswer {
   return questionReferenceAfterAnswerSchema.parse({ questionId:q.id,version:q.version,correctKey:q.correct_key ?? null,explanation:q.explanation ?? null,distractorNotes:q.distractor_notes ?? null,
-    annulled:q.availability==='annulled' || q.occurrence_annulled===true, reviewed:q.reviewed ?? false,...signature(q,q.reviewed===true),referenceDate:q.reference_date ?? null,sourceUrl:q.source_url ?? null,obsolete:false });
+    annulled:q.availability==='annulled' || q.occurrence_annulled===true, reviewed:q.reviewed ?? false,...signature(q,q.reviewed===true),...(q.team_disclosure?{teamDisclosure:q.team_disclosure}:{}),referenceDate:q.reference_date ?? null,sourceUrl:q.source_url || null,obsolete:false });
 }
 /** Fisher–Yates, server randomness; saved key mapping is never a public field. */
 export function shuffleQuestion(question: QuestionPublic, ref: QuestionReferenceAfterAnswer) {
@@ -74,7 +74,7 @@ async function publicSession(tx:Tx,userId:string,session:Row){
     const visible=visibleById.get(String(item.question_id));
     const payload=object(item.payload_public);
     // Build only the input here; the final strict session schema validates every nested question exactly once.
-    const question=visible ? {...payload,boardId:visible.board_id??null,boardTitle:visible.board_title??null,cardIds:visible.card_ids??[],assets:await publicAssets(payload.assets),userState:{favorite:visible.favorite,doubtful:visible?.doubtful ?? false,annotation:visible.annotation}} : {...payload,stem:'Questão indisponível.',alternatives:null,assets:[],availability:'unavailable',reviewed:false,cardIds:[],boardId:null,boardTitle:null,sourceLabel:null,sourceId:null,occurrences:{items:[],total:0,truncated:false},topicId:null,areaId:null,userState:undefined};
+    const question=visible ? {...payload,boardId:visible.board_id??null,boardTitle:visible.board_title??null,cardIds:visible.card_ids??[],assets:await publicAssets(payload.assets),userState:{favorite:visible.favorite,doubtful:visible?.doubtful ?? false,annotation:visible.annotation}} : {...payload,stem:'Questão indisponível.',alternatives:null,assets:[],availability:'unavailable',reviewed:false,validation:null,teamDisclosure:undefined,cardIds:[],boardId:null,boardTitle:null,sourceLabel:null,sourceId:null,occurrences:{items:[],total:0,truncated:false},topicId:null,areaId:null,userState:undefined};
     return {id:item.id,position:item.position,question,originalNumber:visible ? item.original_number ?? null : null,selectedKey:item.selected_key ?? null,answered:item.answered,doubtful:visible?.doubtful ?? false,revision:item.revision};
   }));
   return questionSessionPublicSchema.parse({id:session.id,mode:session.mode,status:session.status,revision:session.revision,startedAt:session.started_at,deadline:session.deadline ?? null,finishedAt:session.finished_at ?? null,serverTime:session.server_time,items:output});
@@ -86,7 +86,7 @@ async function gatedReport(tx:Tx,userId:string,session:Row){
   const visibleRows=await asServer<Row>(tx,sql`SELECT q.id,q.availability,${obsoleteSuccessor} obsolete FROM question_bank q WHERE q.id=ANY(${pgArray(rows.map(i=>String(i.question_id)),'uuid')}) AND ${readable(userId,true)}`);
   const visible=new Map(visibleRows.map(q=>[String(q.id),q]));
   const checked=new Map<string,QuestionReferenceAfterAnswer>();
-  for(const item of rows){const current=visible.get(String(item.question_id));const saved=object(item.reference_snapshot);if(!current){checked.set(String(item.id),questionReferenceAfterAnswerSchema.parse({...saved,correctKey:null,explanation:null,distractorNotes:null,reviewed:false,reviewerName:null,reviewerCrm:null,referenceDate:null,sourceUrl:null,obsolete:true}));continue;}checked.set(String(item.id),questionReferenceAfterAnswerSchema.parse({...saved,annulled:saved.annulled===true||current.availability==='annulled',obsolete:saved.obsolete===true||current.obsolete===true}));}
+  for(const item of rows){const current=visible.get(String(item.question_id));const saved=object(item.reference_snapshot);if(!current){checked.set(String(item.id),questionReferenceAfterAnswerSchema.parse({...saved,correctKey:null,explanation:null,distractorNotes:null,reviewed:false,validation:null,teamDisclosure:undefined,reviewerName:null,reviewerCrm:null,referenceDate:null,sourceUrl:null,obsolete:true}));continue;}checked.set(String(item.id),questionReferenceAfterAnswerSchema.parse({...saved,annulled:saved.annulled===true||current.availability==='annulled',obsolete:saved.obsolete===true||current.obsolete===true}));}
   // Scores remain frozen. Current obsolescence/annulment warnings attach to each saved reference.
   return questionSessionReportSchema.parse({...report,items:report.items.map((i)=>({...i,reference:checked.get(i.itemId)!}))});
 }
@@ -129,7 +129,7 @@ async function createRow(tx:Tx,userId:string,config:QuestionSessionConfig,key:st
   let rows:Row[];const timer=config.timerSec;
   if(config.examId){
     const [paper]=await asServer<Row>(tx,sql`SELECT p.duration_sec FROM exam_papers p JOIN question_sources src ON src.id=p.source_id WHERE p.id=${config.examId} AND ${paperAccess}`);if(!paper)throw missing();
-    rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns},o.original_keys,o.original_number,o.annulled occurrence_annulled FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${config.examId} AND ${readable(userId)} AND q.type='objective' ORDER BY o.ordinal LIMIT ${config.count}`);
+    rows=await asServer<Row>(tx,sql`SELECT ${selectionColumns},o.original_keys,o.original_number,o.annulled occurrence_annulled FROM exam_question_occurrences o JOIN question_bank q ON q.id=o.question_id ${catalogJoins(userId)} WHERE o.paper_id=${config.examId} AND ${readable(userId)} AND q.type='objective' AND (q.validation_kind<>'remoa_team_attested' OR q.availability='active') ORDER BY o.ordinal LIMIT ${config.count}`);
     const [count]=await asServer<Row>(tx,sql`SELECT count(*)::int n FROM exam_question_occurrences WHERE paper_id=${config.examId}`);
     if(Number(count?.n??0)!==config.count || rows.length!==config.count)throw conflict('exam_count_must_match_full_paper');
   }else if(config.questionIds){
