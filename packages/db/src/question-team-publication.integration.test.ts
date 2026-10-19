@@ -50,6 +50,10 @@ describe.skipIf(!enabled)('G29 team publication SQL security',()=>{
   await tx`update public.question_team_batches set sealed_at=now(),activated_at=now() where id=${batch}`;
   await tx`alter table public.question_team_batches enable trigger f33_team_batch_guard`;
   expect(await visible()).toBe(1);
+  // The authenticated wrapper accepts only an ID; callers cannot enumerate candidate content hashes to discover a key.
+  expect((await tx`select to_regprocedure('remoa_private.team_question_visible(uuid,text)') as oracle,has_function_privilege('authenticated','public.f33_team_question_visible(uuid,text)','EXECUTE') as hash_allowed`)[0]).toEqual({oracle:null,hash_allowed:false});
+  expect(await denied(async sp=>{await sp`set local role authenticated`;await sp`select public.f33_team_question_visible(${question}::uuid,${contentHash}::text)`;})).toBe(true);
+  expect(await denied(async sp=>{await sp`set local role authenticated`;await sp`select remoa_private.team_question_visible(${question}::uuid,${contentHash}::text)`;})).toBe(true);
   expect(await tx.savepoint(async sp=>{await sp`set local role authenticated`;const n=(await sp`select id from public.question_sources where id=${source}`).length;await sp`reset role`;return n;})).toBe(1);
   expect(await denied(async sp=>{await sp`set local role authenticated`;await sp`update public.question_team_batches set revoked_at=now() where id=${batch}`;})).toBe(true);
   expect(await denied(async sp=>{await sp`set local role authenticated`;await sp`select original_payload from public.question_team_items`;})).toBe(true);
